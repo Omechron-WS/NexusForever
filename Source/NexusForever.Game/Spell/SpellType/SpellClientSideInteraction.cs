@@ -58,7 +58,10 @@ namespace NexusForever.Game.Spell.SpellType
         {
             Execute();
 
-            // TODO: integrate with CSI system (Phase 3) to call TriggerSuccess on the activating entity
+            // If the spell has no Activate effect, trigger the entity success callback directly.
+            // Spells with an Activate effect handle the callback through the effect handler.
+            if (!Parameters.SpellInfo.Effects.Any(e => (SpellEffectType)e.EffectType == SpellEffectType.Activate))
+                Parameters.ClientSideInteraction?.TriggerSuccess();
         }
 
         /// <summary>
@@ -66,7 +69,7 @@ namespace NexusForever.Game.Spell.SpellType
         /// </summary>
         public void FailClientInteraction()
         {
-            // TODO: integrate with CSI system (Phase 3) to call TriggerFail on the activating entity
+            Parameters.ClientSideInteraction?.TriggerFail();
             CancelCast(CastResult.ClientSideInteractionFail);
         }
     }

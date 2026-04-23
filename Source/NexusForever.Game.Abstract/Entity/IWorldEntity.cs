@@ -87,6 +87,16 @@ namespace NexusForever.Game.Abstract.Entity
         void OnActivateCast(IPlayer activator);
 
         /// <summary>
+        /// Invoked when a client-side interaction on this entity succeeds.
+        /// </summary>
+        void OnActivateSuccess(IPlayer activator);
+
+        /// <summary>
+        /// Invoked when a client-side interaction on this entity fails.
+        /// </summary>
+        void OnActivateFail(IPlayer activator);
+
+        /// <summary>
         /// Return a collection of <see cref="IItemVisual"/> for <see cref="IWorldEntity"/>.
         /// </summary>
         IEnumerable<IItemVisual> GetVisuals();

@@ -1,4 +1,5 @@
-﻿using NexusForever.Game.Abstract.Spell;
+using NexusForever.Game.Abstract.CSI;
+using NexusForever.Game.Abstract.Spell;
 using NexusForever.Network.World.Entity;
 
 namespace NexusForever.Game.Spell
@@ -13,5 +14,6 @@ namespace NexusForever.Game.Spell
         public uint PrimaryTargetId { get; set; }
         public Position Position { get; set; }
         public ushort TaxiNode { get; set; }
+        public IClientSideInteraction ClientSideInteraction { get; set; }
     }
 }

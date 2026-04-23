@@ -383,6 +383,22 @@ namespace NexusForever.Game.Entity
         }
 
         /// <summary>
+        /// Invoked when a client-side interaction on this entity succeeds.
+        /// </summary>
+        public virtual void OnActivateSuccess(IPlayer activator)
+        {
+            // deliberately empty — overridden by entity subclasses
+        }
+
+        /// <summary>
+        /// Invoked when a client-side interaction on this entity fails.
+        /// </summary>
+        public virtual void OnActivateFail(IPlayer activator)
+        {
+            // deliberately empty — overridden by entity subclasses
+        }
+
+        /// <summary>
         /// Return a collection of <see cref="IItemVisual"/> for <see cref="IWorldEntity"/>.
         /// </summary>
         public IEnumerable<IItemVisual> GetVisuals()
