@@ -29,8 +29,11 @@ namespace NexusForever.Game.Spell
         private uint nextCastingId = 1;
         private uint nextEffectId = 1;
 
+        private delegate ISpell SpellFactoryDelegate(IUnitEntity caster, ISpellParameters parameters);
+
         private readonly Dictionary<uint, ISpellBaseInfo> spellBaseInfoStore = new();
         private readonly Dictionary<SpellEffectType, SpellEffectDelegate> spellEffectDelegates = new();
+        private ImmutableDictionary<CastMethod, SpellFactoryDelegate> spellFactoryDelegates;
 
         // entry caches
         private ImmutableDictionary<uint, ImmutableList<Spell4Entry>> spellEntries;
@@ -42,6 +45,7 @@ namespace NexusForever.Game.Spell
             CacheSpellEntries();
             InitialiseSpellInfo();
             InitialiseSpellEffectHandlers();
+            InitialiseSpellFactories();
         }
 
         private void CacheSpellEntries()
@@ -98,6 +102,52 @@ namespace NexusForever.Game.Spell
 
                 spellEffectDelegates.Add(attribute.SpellEffectType, lambda.Compile());
             }
+        }
+
+        private void InitialiseSpellFactories()
+        {
+            var builder = ImmutableDictionary.CreateBuilder<CastMethod, SpellFactoryDelegate>();
+
+            foreach (Type type in Assembly.GetExecutingAssembly().GetTypes())
+            {
+                SpellTypeAttribute attribute = type.GetCustomAttribute<SpellTypeAttribute>();
+                if (attribute == null)
+                    continue;
+
+                ConstructorInfo constructor = type.GetConstructor(new[] { typeof(IUnitEntity), typeof(ISpellParameters) });
+                if (constructor == null)
+                {
+                    log.Warn($"Spell type {type.Name} has [SpellType] but no matching constructor.");
+                    continue;
+                }
+
+                ParameterExpression casterParam = Expression.Parameter(typeof(IUnitEntity));
+                ParameterExpression paramsParam = Expression.Parameter(typeof(ISpellParameters));
+
+                NewExpression newExpr = Expression.New(constructor, casterParam, paramsParam);
+                Expression<SpellFactoryDelegate> lambda =
+                    Expression.Lambda<SpellFactoryDelegate>(newExpr, casterParam, paramsParam);
+
+                builder.Add(attribute.CastMethod, lambda.Compile());
+            }
+
+            spellFactoryDelegates = builder.ToImmutable();
+            log.Info($"Registered {spellFactoryDelegates.Count} spell type factories.");
+        }
+
+        /// <summary>
+        /// Create a new <see cref="ISpell"/> instance for the supplied <see cref="CastMethod"/>.
+        /// </summary>
+        public ISpell NewSpell(CastMethod castMethod, IUnitEntity caster, ISpellParameters parameters)
+        {
+            if (spellFactoryDelegates.TryGetValue(castMethod, out SpellFactoryDelegate factory))
+                return factory.Invoke(caster, parameters);
+
+            log.Warn($"Unhandled cast method {castMethod}, falling back to {CastMethod.Normal}.");
+            if (spellFactoryDelegates.TryGetValue(CastMethod.Normal, out SpellFactoryDelegate normalFactory))
+                return normalFactory.Invoke(caster, parameters);
+
+            return null;
         }
 
         /// <summary>

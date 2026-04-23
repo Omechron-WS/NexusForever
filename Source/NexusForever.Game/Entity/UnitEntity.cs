@@ -319,7 +319,11 @@ namespace NexusForever.Game.Entity
                     player.Dismount();
             }
 
-            var spell = new Spell.Spell(this, parameters);
+            CastMethod castMethod = (CastMethod)parameters.SpellInfo.BaseInfo.Entry.CastMethod;
+            ISpell spell = GlobalSpellManager.Instance.NewSpell(castMethod, this, parameters);
+            if (spell == null)
+                return;
+
             spell.Cast();
             pendingSpells.Add(spell);
         }
