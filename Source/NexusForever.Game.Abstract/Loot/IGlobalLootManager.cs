@@ -1,10 +1,11 @@
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Static.Account;
 using NexusForever.Game.Static.Entity;
+using NexusForever.Shared;
 
 namespace NexusForever.Game.Abstract.Loot
 {
-    public interface IGlobalLootManager
+    public interface IGlobalLootManager : IUpdate
     {
         /// <summary>
         /// Initialise loot tables from the world database.

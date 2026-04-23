@@ -6,15 +6,15 @@ using NexusForever.Game.Static.Account;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Loot;
 using NexusForever.Game.Static.Quest;
-using NexusForever.Network.World.Message.Model;
-using NexusForever.Network.World.Message.Model.Shared;
 using NexusForever.Network.World.Message.Static;
+using NetworkLootItem = NexusForever.Network.World.Message.Model.Loot.LootItem;
+using ServerLootGrant = NexusForever.Network.World.Message.Model.Loot.ServerLootGrant;
 
 namespace NexusForever.Game.Loot
 {
     public class LootInstanceItem : ILootInstanceItem
     {
-        private static int nextLootId;
+        private static uint nextLootId;
 
         public int Id { get; }
         public uint StaticId { get; }
@@ -28,7 +28,7 @@ namespace NexusForever.Game.Loot
 
         public LootInstanceItem(uint staticId, LootItemType type, uint amount)
         {
-            Id       = System.Threading.Interlocked.Increment(ref nextLootId);
+            Id       = (int)System.Threading.Interlocked.Increment(ref nextLootId);
             StaticId = staticId;
             Type     = type;
             Amount   = amount;
@@ -81,37 +81,37 @@ namespace NexusForever.Game.Loot
             {
                 player.Session.EnqueueMessageEncrypted(new ServerLootGrant
                 {
-                    UnitId   = LootUnitGuid,
-                    LooterId = player.Guid,
-                    LootItem = Build()
+                    OwnerUnitId  = LootUnitGuid,
+                    LooterUnitId = player.Guid,
+                    LootItem     = Build()
                 });
             }
         }
 
         /// <summary>
-        /// Build a <see cref="NetworkLootItem"/> for packet serialisation.
+        /// Build a <see cref="LootItem"/> for packet serialisation.
         /// </summary>
         public NetworkLootItem Build()
         {
             return new NetworkLootItem
             {
-                UniqueId          = Id,
+                LootUnitId        = (uint)Id,
                 Type              = Type,
-                StaticId          = StaticId,
+                ItemId            = StaticId,
                 Amount            = Amount,
                 CanLoot           = !Delivered,
-                NeedsRoll         = false,
+                RequiresRoll      = false,
+                OnlyMasterLootable = false,
                 Explosion         = false,
-                Granted           = Delivered,
                 RollTime          = 0,
                 RandomCircuitData = 0,
                 RandomGlyphData   = 0,
-                Unknown2          = 0
+                ItemQuality2Id    = 0
             };
         }
 
         /// <summary>
-        /// Build a list of <see cref="NetworkLootItem"/> for account currency with visual splitting.
+        /// Build a list of <see cref="LootItem"/> for account currency with visual splitting.
         /// </summary>
         public List<NetworkLootItem> BuildForAccountCurrency()
         {
@@ -127,18 +127,18 @@ namespace NexusForever.Game.Loot
 
                 items.Add(new NetworkLootItem
                 {
-                    UniqueId          = Id,
+                    LootUnitId        = (uint)Id,
                     Type              = Type,
-                    StaticId          = StaticId,
+                    ItemId            = StaticId,
                     Amount            = chunk,
                     CanLoot           = false,
-                    NeedsRoll         = false,
+                    RequiresRoll      = false,
+                    OnlyMasterLootable = false,
                     Explosion         = true,
-                    Granted           = true,
                     RollTime          = 0,
                     RandomCircuitData = 0,
                     RandomGlyphData   = 0,
-                    Unknown2          = 0
+                    ItemQuality2Id    = 0
                 });
             }
 

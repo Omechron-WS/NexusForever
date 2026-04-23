@@ -1,11 +1,12 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Numerics;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Loot;
 using NexusForever.Game.Static.Loot;
-using NexusForever.Network.World.Message.Model;
-using NexusForever.Network.World.Message.Model.Shared;
+using NetworkLootItem = NexusForever.Network.World.Message.Model.Loot.LootItem;
+using ServerLootNotify = NexusForever.Network.World.Message.Model.Loot.ServerLootNotify;
 
 namespace NexusForever.Game.Loot
 {
@@ -18,6 +19,12 @@ namespace NexusForever.Game.Loot
         public LooterType LooterType { get; }
         public bool Explosion { get; set; }
 
+        /// <summary>
+        /// World position where the loot was dropped (entity death position).
+        /// Used for range checks when players attempt to loot.
+        /// </summary>
+        public Vector3 Position { get; }
+
         public bool HasExpired => expiryTimer <= 0d
             || lootItems.Values.All(i => i.Delivered);
 
@@ -25,11 +32,12 @@ namespace NexusForever.Game.Loot
         private readonly Dictionary<int, LootInstanceItem> lootItems = new();
         private double expiryTimer = ExpiryDuration;
 
-        public LootInstance(uint guid, LootEntityType entityType, LooterType looterType)
+        public LootInstance(uint guid, LootEntityType entityType, LooterType looterType, Vector3 position)
         {
             Guid           = guid;
             LootEntityType = entityType;
             LooterType     = looterType;
+            Position       = position;
         }
 
         /// <summary>
@@ -86,10 +94,10 @@ namespace NexusForever.Game.Loot
 
             player.Session.EnqueueMessageEncrypted(new ServerLootNotify
             {
-                UnitId    = Guid,
-                Unknown0  = 0,
-                Explosion = Explosion,
-                LootItems = lootItemList
+                OwnerUnitId  = Guid,
+                ParentUnitId = 0,
+                Explosion    = Explosion,
+                LootItems    = lootItemList
             });
         }
 

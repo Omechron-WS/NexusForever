@@ -108,8 +108,9 @@ namespace NexusForever.Game.Loot
                 case LootConditionType.None:
                     return true;
                 case LootConditionType.QuestObjectiveActive:
-                    // Check if the player has an active quest objective for this condition value
-                    player.QuestManager.ObjectiveUpdate(QuestObjectiveType.VirtualCollect, condition, 0);
+                    // TODO: properly check if player has an active quest objective matching this condition value.
+                    // Requires IQuestManager to expose an objective query method.
+                    // For now, return true (permissive) to avoid blocking loot drops.
                     return true;
                 default:
                     // TODO: implement IsClass, IsRace, IsLevel, QuestIsComplete, etc.

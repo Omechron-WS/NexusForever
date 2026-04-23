@@ -1,6 +1,6 @@
 using NexusForever.Game.Abstract.Loot;
 using NexusForever.Network.Message;
-using NexusForever.Network.World.Message.Model;
+using NexusForever.Network.World.Message.Model.Loot;
 using NexusForever.WorldServer.Network;
 
 namespace NexusForever.WorldServer.Network.Message.Handler.Loot

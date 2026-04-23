@@ -1,6 +1,6 @@
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Static.Loot;
-using NexusForever.Network.World.Message.Model.Shared;
+using NexusForever.Network.World.Message.Model.Loot;
 
 namespace NexusForever.Game.Abstract.Loot
 {
@@ -24,8 +24,8 @@ namespace NexusForever.Game.Abstract.Loot
         void DeliverItem(IPlayer player, bool sendAsGrant = true);
 
         /// <summary>
-        /// Build a <see cref="NetworkLootItem"/> for packet serialisation.
+        /// Build a <see cref="LootItem"/> for packet serialisation.
         /// </summary>
-        NetworkLootItem Build();
+        LootItem Build();
     }
 }

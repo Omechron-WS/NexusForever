@@ -124,22 +124,21 @@ namespace NexusForever.Game.Tests.Loot
         }
 
         [Fact]
-        public void Build_ReturnsCorrectNetworkLootItem()
+        public void Build_ReturnsCorrectLootItem()
         {
             var item = new LootInstanceItem(42, LootItemType.StaticItem, 5);
 
             var network = item.Build();
 
-            Assert.Equal(item.Id, network.UniqueId);
+            Assert.Equal((uint)item.Id, network.LootUnitId);
             Assert.Equal(LootItemType.StaticItem, network.Type);
-            Assert.Equal(42u, network.StaticId);
+            Assert.Equal(42u, network.ItemId);
             Assert.Equal(5u, network.Amount);
             Assert.True(network.CanLoot);
-            Assert.False(network.Granted);
         }
 
         [Fact]
-        public void Build_AfterDelivery_ShowsGranted()
+        public void Build_AfterDelivery_CanLootIsFalse()
         {
             var (player, _) = CreateMockPlayerWithMocks();
             var item = new LootInstanceItem(42, LootItemType.StaticItem, 5);
@@ -148,7 +147,6 @@ namespace NexusForever.Game.Tests.Loot
             var network = item.Build();
 
             Assert.False(network.CanLoot);
-            Assert.True(network.Granted);
         }
 
         [Fact]
@@ -161,7 +159,6 @@ namespace NexusForever.Game.Tests.Loot
             Assert.True(networkItems.Count <= 50);
             Assert.Equal(100u, (uint)networkItems.Sum(i => i.Amount));
             Assert.All(networkItems, i => Assert.True(i.Explosion));
-            Assert.All(networkItems, i => Assert.True(i.Granted));
         }
 
         [Fact]

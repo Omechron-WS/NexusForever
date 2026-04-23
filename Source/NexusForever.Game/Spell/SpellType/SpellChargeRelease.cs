@@ -83,8 +83,7 @@ namespace NexusForever.Game.Spell.SpellType
 
         protected override bool IsCastingInternal()
         {
-            return base.IsCastingInternal()
-                && (status == SpellStatus.Casting || status == SpellStatus.Executing || status == SpellStatus.Waiting);
+            return status == SpellStatus.Casting || status == SpellStatus.Executing || status == SpellStatus.Waiting;
         }
 
         protected override bool CanFinish()

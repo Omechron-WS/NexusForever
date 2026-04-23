@@ -10,9 +10,9 @@ using NexusForever.Game.Abstract.Loot;
 using NexusForever.Game.Static.Account;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Loot;
-using NexusForever.Network.World.Message.Model;
-using NexusForever.Network.World.Message.Model.Shared;
 using NexusForever.Shared;
+using NetworkLootItem = NexusForever.Network.World.Message.Model.Loot.LootItem;
+using ServerLootGrant = NexusForever.Network.World.Message.Model.Loot.ServerLootGrant;
 using NLog;
 
 namespace NexusForever.Game.Loot
@@ -102,6 +102,7 @@ namespace NexusForever.Game.Loot
                 looter,
                 lootedEntity.Guid,
                 LootEntityType.Creature,
+                lootedEntity.Position,
                 groups);
 
             if (instance == null)
@@ -131,6 +132,7 @@ namespace NexusForever.Game.Loot
                 looter,
                 looter.Guid,
                 LootEntityType.Item,
+                looter.Position,
                 groups);
 
             if (instance == null)
@@ -160,7 +162,7 @@ namespace NexusForever.Game.Loot
             if (item == null || item.Delivered)
                 return;
 
-            float distance = Vector3.Distance(looter.Position, GetEntityPosition(lootInstance));
+            float distance = Vector3.Distance(looter.Position, lootInstance.Position);
             if (distance > LootRange)
                 return;
 
@@ -180,7 +182,7 @@ namespace NexusForever.Game.Loot
                 if (instance.HasExpired)
                     continue;
 
-                float distance = Vector3.Distance(looter.Position, GetEntityPosition(instance));
+                float distance = Vector3.Distance(looter.Position, instance.Position);
                 if (distance > LootRange)
                     continue;
 
@@ -199,15 +201,14 @@ namespace NexusForever.Game.Loot
 
             player.Session.EnqueueMessageEncrypted(new ServerLootGrant
             {
-                UnitId   = lootUnitId,
-                LooterId = player.Guid,
-                LootItem = new NetworkLootItem
+                OwnerUnitId  = lootUnitId,
+                LooterUnitId = player.Guid,
+                LootItem     = new NetworkLootItem
                 {
-                    UniqueId = 0,
-                    Type     = LootItemType.AccountCurrency,
-                    StaticId = (uint)type,
-                    Amount   = count,
-                    Granted  = true
+                    LootUnitId = 0,
+                    Type       = LootItemType.AccountCurrency,
+                    ItemId     = (uint)type,
+                    Amount     = count
                 }
             });
         }
@@ -221,20 +222,19 @@ namespace NexusForever.Game.Loot
 
             player.Session.EnqueueMessageEncrypted(new ServerLootGrant
             {
-                UnitId   = lootUnitId,
-                LooterId = player.Guid,
-                LootItem = new NetworkLootItem
+                OwnerUnitId  = lootUnitId,
+                LooterUnitId = player.Guid,
+                LootItem     = new NetworkLootItem
                 {
-                    UniqueId = 0,
-                    Type     = LootItemType.Cash,
-                    StaticId = (uint)type,
-                    Amount   = count,
-                    Granted  = true
+                    LootUnitId = 0,
+                    Type       = LootItemType.Cash,
+                    ItemId     = (uint)type,
+                    Amount     = count
                 }
             });
         }
 
-        private LootInstance GenerateLootInstance(IPlayer looter, uint entityGuid, LootEntityType entityType, List<ILootGroup> groups)
+        private LootInstance GenerateLootInstance(IPlayer looter, uint entityGuid, LootEntityType entityType, Vector3 position, List<ILootGroup> groups)
         {
             var allDrops = new Dictionary<ILootItem, uint>();
             foreach (ILootGroup group in groups)
@@ -247,7 +247,7 @@ namespace NexusForever.Game.Loot
             if (allDrops.Count == 0)
                 return null;
 
-            var instance = new LootInstance(entityGuid, entityType, LooterType.Player);
+            var instance = new LootInstance(entityGuid, entityType, LooterType.Player, position);
             instance.AddLooter(looter.CharacterId, looter.Guid);
 
             foreach ((ILootItem item, uint count) in allDrops)
@@ -259,14 +259,6 @@ namespace NexusForever.Game.Loot
         private LootInstance GetLootInstanceForItem(int itemId)
         {
             return activeLootInstances.FirstOrDefault(i => i.HasLootInstanceId(itemId));
-        }
-
-        private Vector3 GetEntityPosition(LootInstance instance)
-        {
-            // For item loot (loot bags), position check isn't meaningful — return zero
-            // For entity loot, we'd need to look up the entity position
-            // TODO: integrate with entity tracking for accurate range checks
-            return Vector3.Zero;
         }
     }
 }

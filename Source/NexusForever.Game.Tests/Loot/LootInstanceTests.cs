@@ -14,7 +14,7 @@ namespace NexusForever.Game.Tests.Loot
         [Fact]
         public void Constructor_SetsProperties()
         {
-            var instance = new LootInstance(42u, LootEntityType.Creature, LooterType.Player);
+            var instance = new LootInstance(42u, LootEntityType.Creature, LooterType.Player, System.Numerics.Vector3.Zero);
             instance.AddLootItem(100u, LootItemType.StaticItem, 1u);
 
             Assert.Equal(42u, instance.Guid);
@@ -27,7 +27,7 @@ namespace NexusForever.Game.Tests.Loot
         [Fact]
         public void AddLootItem_ItemCanBeEnumerated()
         {
-            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player);
+            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player, System.Numerics.Vector3.Zero);
             instance.AddLootItem(100u, LootItemType.StaticItem, 3u);
 
             var items = instance.ToList();
@@ -40,7 +40,7 @@ namespace NexusForever.Game.Tests.Loot
         [Fact]
         public void HasLooter_ReturnsTrueForRegisteredLooter()
         {
-            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player);
+            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player, System.Numerics.Vector3.Zero);
             instance.AddLooter(12345uL, 99u);
 
             Assert.True(instance.HasLooter(12345uL));
@@ -50,7 +50,7 @@ namespace NexusForever.Game.Tests.Loot
         [Fact]
         public void HasLootInstanceId_ReturnsTrueForExistingItem()
         {
-            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player);
+            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player, System.Numerics.Vector3.Zero);
             instance.AddLootItem(100u, LootItemType.StaticItem, 1u);
 
             var items = instance.ToList();
@@ -61,7 +61,7 @@ namespace NexusForever.Game.Tests.Loot
         [Fact]
         public void HasExpired_FalseInitially()
         {
-            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player);
+            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player, System.Numerics.Vector3.Zero);
             instance.AddLootItem(100u, LootItemType.StaticItem, 1u);
 
             Assert.False(instance.HasExpired);
@@ -70,7 +70,7 @@ namespace NexusForever.Game.Tests.Loot
         [Fact]
         public void HasExpired_TrueAfterTimerElapsed()
         {
-            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player);
+            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player, System.Numerics.Vector3.Zero);
             instance.AddLootItem(100u, LootItemType.StaticItem, 1u);
 
             // Simulate 1801 seconds passing (exceeds 1800s expiry)
@@ -82,7 +82,7 @@ namespace NexusForever.Game.Tests.Loot
         [Fact]
         public void HasExpired_TrueWhenAllItemsDelivered()
         {
-            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player);
+            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player, System.Numerics.Vector3.Zero);
             instance.AddLootItem(100u, LootItemType.StaticItem, 1u);
             instance.AddLooter(1uL, 1u);
 
@@ -96,7 +96,7 @@ namespace NexusForever.Game.Tests.Loot
         [Fact]
         public void MultipleItems_TrackedIndependently()
         {
-            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player);
+            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player, System.Numerics.Vector3.Zero);
             instance.AddLootItem(100u, LootItemType.StaticItem, 1u);
             instance.AddLootItem(200u, LootItemType.Cash, 500u);
             instance.AddLootItem(300u, LootItemType.AccountCurrency, 10u);
