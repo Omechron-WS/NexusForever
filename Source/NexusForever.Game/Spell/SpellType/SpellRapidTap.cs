@@ -69,7 +69,7 @@ namespace NexusForever.Game.Spell.SpellType
 
         protected override bool IsCastingInternal()
         {
-            return base.IsCastingInternal() && status == SpellStatus.Casting;
+            return status == SpellStatus.Casting || status == SpellStatus.Waiting;
         }
 
         protected override bool CanFinish()

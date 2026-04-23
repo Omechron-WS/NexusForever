@@ -51,7 +51,7 @@ namespace NexusForever.Game.Spell.SpellType
                     if (Parameters.SpellInfo.Entry.SpellCoolDown != 0u)
                         p.SpellManager.SetSpellCooldown(Parameters.SpellInfo.Entry.Id, Parameters.SpellInfo.Entry.SpellCoolDown / 1000d);
 
-                CostSpell();
+                // CostSpell is called inside base.Execute(), no need to call it here
                 Execute();
             }));
 

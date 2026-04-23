@@ -57,6 +57,9 @@ namespace NexusForever.Game.Spell.SpellType
                     double delay = (channelInitialDelay + channelPulseTime * i) / 1000d;
                     events.EnqueueEvent(new SpellEvent(delay, () =>
                     {
+                        if (status == SpellStatus.Finishing || status == SpellStatus.Finished)
+                            return;
+
                         targets.Clear();
                         Execute();
                     }));
