@@ -126,8 +126,13 @@ namespace NexusForever.Game.Entity
             foreach (ISpell spell in pendingSpells.ToArray())
             {
                 spell.Update(lastTick);
+                spell.LateUpdate(lastTick);
+
                 if (spell.IsFinished)
+                {
+                    spell.Dispose();
                     pendingSpells.Remove(spell);
+                }
             }
 
             statUpdateTimer.Update(lastTick);

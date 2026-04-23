@@ -23,19 +23,23 @@ namespace NexusForever.Game.Spell
 
         public ISpellParameters Parameters { get; }
         public uint CastingId { get; }
-        public bool IsCasting => status == SpellStatus.Casting;
+        public bool IsCasting => IsCastingInternal();
         public bool IsFinished => status == SpellStatus.Finished;
+        public bool IsFinishing => status == SpellStatus.Finishing;
+        public bool IsWaiting => status == SpellStatus.Waiting;
 
         public IUnitEntity Caster { get; }
 
-        private SpellStatus status;
+        protected SpellStatus status;
 
-        private readonly List<ISpellTargetInfo> targets = new();
-        private readonly List<ITelegraph> telegraphs = new();
+        protected readonly List<ISpellTargetInfo> targets = new();
+        protected readonly List<ITelegraph> telegraphs = new();
 
-        private readonly ISpellEventManager events = new SpellEventManager();
+        protected readonly ISpellEventManager events = new SpellEventManager();
 
         private IScriptCollection scriptCollection;
+
+        protected byte currentPhase = 255;
 
         public Spell(IUnitEntity caster, ISpellParameters parameters)
         {
@@ -57,27 +61,50 @@ namespace NexusForever.Game.Spell
             scriptCollection = null;
         }
 
-        public void Update(double lastTick)
+        public virtual void Update(double lastTick)
         {
             scriptCollection.Invoke<IUpdate>(s => s.Update(lastTick));
-
             events.Update(lastTick);
+        }
 
-            if (status == SpellStatus.Executing && !events.HasPendingEvent)
+        /// <summary>
+        /// Post-tick update for state transitions and cleanup.
+        /// </summary>
+        public virtual void LateUpdate(double lastTick)
+        {
+            if (CanFinish())
             {
-                // spell effects have finished executing
                 status = SpellStatus.Finished;
                 log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} has finished.");
-
-                // TODO: add a timer to count down on the Effect before sending the finish - sending the finish will e.g. wear off the buff
-                //SendSpellFinish();
             }
+        }
+
+        /// <summary>
+        /// Returns whether the spell can transition to Finished.
+        /// </summary>
+        protected virtual bool CanFinish()
+        {
+            if (status == SpellStatus.Executing && !events.HasPendingEvent)
+                return true;
+
+            if (status == SpellStatus.Finishing && !events.HasPendingEvent)
+                return true;
+
+            return false;
+        }
+
+        /// <summary>
+        /// Returns whether the spell is currently casting. Subtypes can override.
+        /// </summary>
+        protected virtual bool IsCastingInternal()
+        {
+            return status == SpellStatus.Casting;
         }
 
         /// <summary>
         /// Begin cast, checking prerequisites before initiating.
         /// </summary>
-        public void Cast()
+        public virtual void Cast()
         {
             if (status != SpellStatus.Initiating)
                 throw new InvalidOperationException();
@@ -95,7 +122,7 @@ namespace NexusForever.Game.Spell
                 if (Parameters.SpellInfo.GlobalCooldown != null)
                     player.SpellManager.SetGlobalSpellCooldown(Parameters.SpellInfo.GlobalCooldown.CooldownTime / 1000d);
 
-            // It's assumed that non-player entities will be stood still to cast (most do). 
+            // It's assumed that non-player entities will be stood still to cast (most do).
             // TODO: There are a handful of telegraphs that are attached to moving units (specifically rotating units) which this needs to be updated to account for.
             if (Caster is not IPlayer)
                 InitialiseTelegraphs();
@@ -109,7 +136,7 @@ namespace NexusForever.Game.Spell
             log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} has started casting.");
         }
 
-        private CastResult CheckCast()
+        protected virtual CastResult CheckCast()
         {
             CastResult preReqCheck = CheckPrerequisites();
             if (preReqCheck != CastResult.Ok)
@@ -189,7 +216,7 @@ namespace NexusForever.Game.Spell
             return CastResult.Ok;
         }
 
-        private void InitialiseTelegraphs()
+        protected void InitialiseTelegraphs()
         {
             telegraphs.Clear();
             foreach (TelegraphDamageEntry telegraphDamageEntry in Parameters.SpellInfo.Telegraphs)
@@ -199,7 +226,7 @@ namespace NexusForever.Game.Spell
         /// <summary>
         /// Cancel cast with supplied <see cref="CastResult"/>.
         /// </summary>
-        public void CancelCast(CastResult result)
+        public virtual void CancelCast(CastResult result)
         {
             if (status != SpellStatus.Casting)
                 throw new InvalidOperationException();
@@ -220,7 +247,19 @@ namespace NexusForever.Game.Spell
             log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} cast was cancelled.");
         }
 
-        private void Execute()
+        /// <summary>
+        /// Force-end the spell and all its effects.
+        /// </summary>
+        public virtual void Finish()
+        {
+            if (status == SpellStatus.Finished)
+                return;
+
+            events.CancelEvents();
+            status = SpellStatus.Finishing;
+        }
+
+        protected virtual void Execute()
         {
             status = SpellStatus.Executing;
             log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} has started executing.");
@@ -236,13 +275,13 @@ namespace NexusForever.Game.Spell
             SendSpellGo();
         }
 
-        private void CostSpell()
+        protected void CostSpell()
         {
             if (Parameters.CharacterSpell?.MaxAbilityCharges > 0)
                 Parameters.CharacterSpell.UseCharge();
         }
 
-        private void SelectTargets()
+        protected virtual void SelectTargets()
         {
             targets.Add(new SpellTargetInfo(SpellEffectTargetFlags.Caster, Caster));
 
@@ -263,7 +302,7 @@ namespace NexusForever.Game.Spell
             }
         }
 
-        private void ExecuteEffects()
+        protected void ExecuteEffects()
         {
             foreach (Spell4EffectsEntry spell4EffectsEntry in Parameters.SpellInfo.Effects)
             {
@@ -296,7 +335,7 @@ namespace NexusForever.Game.Spell
             return Parameters.SpellInfo.Entry.CastTime > 0;
         }
 
-        private void SendSpellCastResult(CastResult castResult)
+        protected void SendSpellCastResult(CastResult castResult)
         {
             if (castResult == CastResult.Ok)
                 return;
@@ -313,7 +352,7 @@ namespace NexusForever.Game.Spell
             }
         }
 
-        private void SendSpellStart()
+        protected void SendSpellStart()
         {
             var spellStart = new ServerSpellStart
             {
@@ -365,7 +404,7 @@ namespace NexusForever.Game.Spell
             Caster.EnqueueToVisible(spellStart, true);
         }
 
-        private void SendSpellFinish()
+        protected void SendSpellFinish()
         {
             if (status != SpellStatus.Finished)
                 return;
@@ -376,7 +415,7 @@ namespace NexusForever.Game.Spell
             }, true);
         }
 
-        private void SendSpellGo()
+        protected void SendSpellGo()
         {
             List<ICombatLog> combatLogs = [];
 
@@ -490,7 +529,7 @@ namespace NexusForever.Game.Spell
 
         }
 
-        private void SendRemoveBuff(uint unitId)
+        protected void SendRemoveBuff(uint unitId)
         {
             if (!Parameters.SpellInfo.BaseInfo.HasIcon)
                 throw new InvalidOperationException();
