@@ -31,6 +31,46 @@ namespace NexusForever.Game.Spell
             target.TakeDamage(spell.Caster, info.Damage);
         }
 
+        [SpellEffectHandler(SpellEffectType.Heal)]
+        public static void HandleEffectHeal(ISpell spell, IUnitEntity target, ISpellTargetEffectInfo info)
+        {
+            if (target.CanAttack(spell.Caster))
+                return;
+
+            var factory = LegacyServiceProvider.Provider.GetService<IFactory<IDamageCalculator>>();
+            var damageCalculator = factory.Resolve();
+            uint healing = damageCalculator.CalculateBaseAmount(spell.Caster, target, info);
+
+            info.AddDamage(new SpellTargetInfo.SpellTargetEffectInfo.DamageDescription
+            {
+                DamageType     = DamageType.Heal,
+                RawDamage      = healing,
+                AdjustedDamage = healing,
+                CombatResult   = CombatResult.Hit
+            });
+            target.ModifyHealth(healing, DamageType.Heal, spell.Caster);
+        }
+
+        [SpellEffectHandler(SpellEffectType.HealShields)]
+        public static void HandleEffectHealShields(ISpell spell, IUnitEntity target, ISpellTargetEffectInfo info)
+        {
+            if (target.CanAttack(spell.Caster))
+                return;
+
+            var factory = LegacyServiceProvider.Provider.GetService<IFactory<IDamageCalculator>>();
+            var damageCalculator = factory.Resolve();
+            uint healing = damageCalculator.CalculateBaseAmount(spell.Caster, target, info);
+
+            info.AddDamage(new SpellTargetInfo.SpellTargetEffectInfo.DamageDescription
+            {
+                DamageType     = DamageType.HealShields,
+                RawDamage      = healing,
+                AdjustedDamage = healing,
+                CombatResult   = CombatResult.Hit
+            });
+            target.Shield = Math.Min(target.Shield + healing, target.MaxShieldCapacity);
+        }
+
         [SpellEffectHandler(SpellEffectType.Resurrect)]
         public static void HandleEffectResurrect(ISpell spell, IUnitEntity target, ISpellTargetEffectInfo info)
         {

@@ -95,6 +95,15 @@ namespace NexusForever.Game.Combat
         }
 
         /// <summary>
+        /// Calculate the base amount from spell effect parameters without the combat pipeline.
+        /// Used for heals, shield restoration, and other non-damage effects.
+        /// </summary>
+        public uint CalculateBaseAmount(IUnitEntity caster, IUnitEntity target, ISpellTargetEffectInfo info)
+        {
+            return CalculateBaseDamage(caster, target, info.Entry);
+        }
+
+        /// <summary>
         /// Get base damage value for the given <see cref="IUnitEntity"/> with the provided parameter data from the <see cref="Spell4EffectsEntry"/>.
         /// </summary>
         private uint CalculateBaseDamage(IUnitEntity caster, IUnitEntity target, Spell4EffectsEntry entry)
