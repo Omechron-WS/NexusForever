@@ -109,7 +109,7 @@ namespace NexusForever.Game.Spell
             if (status != SpellStatus.Initiating)
                 throw new InvalidOperationException();
 
-            log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} has started initating.");
+            log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} has started initiating.");
 
             CastResult result = CheckCast();
             if (result != CastResult.Ok)

@@ -4,7 +4,6 @@ using NexusForever.Database.World.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Loot;
 using NexusForever.Game.Static.Loot;
-using NexusForever.Game.Static.Quest;
 
 namespace NexusForever.Game.Loot
 {

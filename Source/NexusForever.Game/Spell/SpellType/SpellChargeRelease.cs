@@ -69,15 +69,16 @@ namespace NexusForever.Game.Spell.SpellType
         {
             base.Update(lastTick);
 
-            if (status == SpellStatus.Waiting)
+            // Check status after base.Update in case events changed it
+            if (status != SpellStatus.Waiting)
+                return;
+
+            holdDuration += lastTick;
+            if (totalThresholdTimer > 0 && holdDuration >= totalThresholdTimer)
             {
-                holdDuration += lastTick;
-                if (totalThresholdTimer > 0 && holdDuration >= totalThresholdTimer)
-                {
-                    // Auto-release at max charge
-                    Execute();
-                    status = SpellStatus.Finishing;
-                }
+                // Auto-release at max charge
+                Execute();
+                status = SpellStatus.Finishing;
             }
         }
 
