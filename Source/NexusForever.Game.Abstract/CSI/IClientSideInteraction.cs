@@ -23,13 +23,9 @@ namespace NexusForever.Game.Abstract.CSI
 
         /// <summary>
         /// GameTable entry with CSI parameters (threshold, duration, etc.).
+        /// May be null for non-CSI activations.
         /// </summary>
         ClientSideInteractionEntry Entry { get; }
-
-        /// <summary>
-        /// Called when the CSI is ready for client input.
-        /// </summary>
-        void TriggerReady();
 
         /// <summary>
         /// Called when the client reports CSI success.

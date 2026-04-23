@@ -376,10 +376,39 @@ namespace NexusForever.Game.Entity
 
         /// <summary>
         /// Invoked when <see cref="IWorldEntity"/> is cast activated.
+        /// Creates a CSI callback bridge, resolves the activation spell from the
+        /// creature entry, and casts it on behalf of the activating player.
         /// </summary>
         public virtual void OnActivateCast(IPlayer activator)
         {
-            // deliberately empty
+            if (CreatureEntry == null)
+                return;
+
+            // Resolve activation spell from creature entry (first non-zero spell)
+            uint spell4Id = CreatureEntry.Spell4IdActivate00;
+            if (spell4Id == 0)
+                return;
+
+            // Look up the spell's CSI entry ID (if any)
+            Spell4Entry spell4Entry = GameTableManager.Instance.Spell4.GetEntry(spell4Id);
+            uint csiId = 0;
+            if (spell4Entry != null)
+            {
+                Spell4BaseEntry baseEntry = GameTableManager.Instance.Spell4Base.GetEntry(spell4Entry.Spell4BaseIdBaseSpell);
+                if (baseEntry != null)
+                    csiId = baseEntry.ClientSideInteractionId;
+            }
+
+            var csi = new CSI.ClientSideInteraction(activator, this, activator.Guid, csiId);
+
+            var parameters = new Spell.SpellParameters
+            {
+                PrimaryTargetId        = Guid,
+                ClientSideInteraction  = csi,
+                UserInitiatedSpellCast = true
+            };
+
+            activator.CastSpell(spell4Id, parameters);
         }
 
         /// <summary>

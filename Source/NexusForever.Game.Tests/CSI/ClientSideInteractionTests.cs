@@ -1,6 +1,7 @@
 using NexusForever.Game.Abstract.CSI;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Spell;
+using NexusForever.Game.CSI;
 using NexusForever.Game.Static.CSI;
 using Moq;
 
@@ -9,48 +10,67 @@ namespace NexusForever.Game.Tests.CSI
     public class ClientSideInteractionTests
     {
         [Fact]
-        public void IClientSideInteraction_InterfaceExists()
+        public void Constructor_SetsProperties()
         {
-            var type = typeof(IClientSideInteraction);
-            Assert.NotNull(type);
-            Assert.True(type.IsInterface);
+            var mockPlayer = new Mock<IPlayer>();
+            var mockEntity = new Mock<IWorldEntity>();
+
+            var csi = new ClientSideInteraction(mockPlayer.Object, mockEntity.Object, 99u);
+
+            Assert.Equal(99u, csi.ClientUniqueId);
+            Assert.Same(mockEntity.Object, csi.ActivateUnit);
+            Assert.Equal(CSIType.Interaction, csi.CsiType);
+            Assert.Null(csi.Entry);
         }
 
         [Fact]
-        public void IClientSideInteraction_HasClientUniqueId()
+        public void Constructor_ThrowsOnNullOwner()
         {
-            var prop = typeof(IClientSideInteraction).GetProperty("ClientUniqueId");
-            Assert.NotNull(prop);
-            Assert.Equal(typeof(uint), prop.PropertyType);
+            var mockEntity = new Mock<IWorldEntity>();
+            Assert.Throws<ArgumentNullException>(() =>
+                new ClientSideInteraction(null, mockEntity.Object, 1u));
         }
 
         [Fact]
-        public void IClientSideInteraction_HasActivateUnit()
+        public void Constructor_ThrowsOnNullEntity()
         {
-            var prop = typeof(IClientSideInteraction).GetProperty("ActivateUnit");
-            Assert.NotNull(prop);
-            Assert.Equal(typeof(IWorldEntity), prop.PropertyType);
+            var mockPlayer = new Mock<IPlayer>();
+            Assert.Throws<ArgumentNullException>(() =>
+                new ClientSideInteraction(mockPlayer.Object, null, 1u));
         }
 
         [Fact]
-        public void IClientSideInteraction_HasTriggerMethods()
+        public void TriggerSuccess_CallsEntityOnActivateSuccess()
         {
-            var type = typeof(IClientSideInteraction);
-            Assert.NotNull(type.GetMethod("TriggerReady"));
-            Assert.NotNull(type.GetMethod("TriggerSuccess"));
-            Assert.NotNull(type.GetMethod("TriggerFail"));
+            var mockPlayer = new Mock<IPlayer>();
+            var mockEntity = new Mock<IWorldEntity>();
+
+            var csi = new ClientSideInteraction(mockPlayer.Object, mockEntity.Object, 42u);
+            csi.TriggerSuccess();
+
+            mockEntity.Verify(e => e.OnActivateSuccess(mockPlayer.Object), Times.Once);
         }
 
         [Fact]
-        public void ClientSideInteraction_ImplementsInterface()
+        public void TriggerFail_CallsEntityOnActivateFail()
         {
-            var type = Type.GetType("NexusForever.Game.CSI.ClientSideInteraction, NexusForever.Game");
-            Assert.NotNull(type);
-            Assert.True(typeof(IClientSideInteraction).IsAssignableFrom(type));
+            var mockPlayer = new Mock<IPlayer>();
+            var mockEntity = new Mock<IWorldEntity>();
+
+            var csi = new ClientSideInteraction(mockPlayer.Object, mockEntity.Object, 42u);
+            csi.TriggerFail();
+
+            mockEntity.Verify(e => e.OnActivateFail(mockPlayer.Object), Times.Once);
         }
 
         [Fact]
-        public void ISpellParameters_HasClientSideInteraction()
+        public void ImplementsIClientSideInteraction()
+        {
+            Assert.True(typeof(IClientSideInteraction).IsAssignableFrom(typeof(ClientSideInteraction)));
+        }
+
+        [Fact]
+        public void ISpellParameters_HasClientSideInteractionProperty()
         {
             var prop = typeof(ISpellParameters).GetProperty("ClientSideInteraction");
             Assert.NotNull(prop);
@@ -72,44 +92,14 @@ namespace NexusForever.Game.Tests.CSI
         }
 
         [Fact]
-        public void TriggerSuccess_CallsEntityOnActivateSuccess()
+        public void DefaultCsiTypeIsInteraction_WhenNoCsiEntry()
         {
             var mockPlayer = new Mock<IPlayer>();
             var mockEntity = new Mock<IWorldEntity>();
 
-            var type = Type.GetType("NexusForever.Game.CSI.ClientSideInteraction, NexusForever.Game");
-            var csi = Activator.CreateInstance(type, mockPlayer.Object, mockEntity.Object, 42u) as IClientSideInteraction;
+            var csi = new ClientSideInteraction(mockPlayer.Object, mockEntity.Object, 1u, 0);
 
-            csi.TriggerSuccess();
-
-            mockEntity.Verify(e => e.OnActivateSuccess(mockPlayer.Object), Times.Once);
-        }
-
-        [Fact]
-        public void TriggerFail_CallsEntityOnActivateFail()
-        {
-            var mockPlayer = new Mock<IPlayer>();
-            var mockEntity = new Mock<IWorldEntity>();
-
-            var type = Type.GetType("NexusForever.Game.CSI.ClientSideInteraction, NexusForever.Game");
-            var csi = Activator.CreateInstance(type, mockPlayer.Object, mockEntity.Object, 42u) as IClientSideInteraction;
-
-            csi.TriggerFail();
-
-            mockEntity.Verify(e => e.OnActivateFail(mockPlayer.Object), Times.Once);
-        }
-
-        [Fact]
-        public void Constructor_SetsProperties()
-        {
-            var mockPlayer = new Mock<IPlayer>();
-            var mockEntity = new Mock<IWorldEntity>();
-
-            var type = Type.GetType("NexusForever.Game.CSI.ClientSideInteraction, NexusForever.Game");
-            var csi = Activator.CreateInstance(type, mockPlayer.Object, mockEntity.Object, 99u) as IClientSideInteraction;
-
-            Assert.Equal(99u, csi.ClientUniqueId);
-            Assert.Same(mockEntity.Object, csi.ActivateUnit);
+            Assert.Equal(CSIType.Interaction, csi.CsiType);
         }
     }
 }

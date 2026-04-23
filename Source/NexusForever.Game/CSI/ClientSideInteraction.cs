@@ -1,6 +1,7 @@
 using NexusForever.Game.Abstract.CSI;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Static.CSI;
+using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
 
 namespace NexusForever.Game.CSI
@@ -9,33 +10,25 @@ namespace NexusForever.Game.CSI
     {
         public uint ClientUniqueId { get; }
         public IWorldEntity ActivateUnit { get; }
-        public CSIType CsiType { get; private set; }
-        public ClientSideInteractionEntry Entry { get; private set; }
+        public CSIType CsiType { get; }
+        public ClientSideInteractionEntry Entry { get; }
 
         private readonly IPlayer owner;
 
-        public ClientSideInteraction(IPlayer owner, IWorldEntity activateUnit, uint clientUniqueId)
+        /// <summary>
+        /// Create a new CSI for the given player activating the given entity.
+        /// Optionally loads the CSI entry from the GameTable via the spell's ClientSideInteractionId.
+        /// </summary>
+        public ClientSideInteraction(IPlayer owner, IWorldEntity activateUnit, uint clientUniqueId, uint clientSideInteractionId = 0)
         {
-            this.owner     = owner;
-            ActivateUnit   = activateUnit;
+            this.owner     = owner ?? throw new ArgumentNullException(nameof(owner));
+            ActivateUnit   = activateUnit ?? throw new ArgumentNullException(nameof(activateUnit));
             ClientUniqueId = clientUniqueId;
-        }
 
-        /// <summary>
-        /// Set the CSI entry from the GameTable, determining the interaction type and parameters.
-        /// </summary>
-        public void SetEntry(ClientSideInteractionEntry entry)
-        {
-            Entry   = entry;
-            CsiType = entry != null ? (CSIType)entry.InteractionType : CSIType.Interaction;
-        }
+            if (clientSideInteractionId > 0)
+                Entry = GameTableManager.Instance.ClientSideInteraction.GetEntry(clientSideInteractionId);
 
-        /// <summary>
-        /// Called when the CSI is ready for client input.
-        /// </summary>
-        public void TriggerReady()
-        {
-            // Placeholder for future timer-based triggers
+            CsiType = Entry != null ? (CSIType)Entry.InteractionType : CSIType.Interaction;
         }
 
         /// <summary>
@@ -43,7 +36,7 @@ namespace NexusForever.Game.CSI
         /// </summary>
         public void TriggerSuccess()
         {
-            ActivateUnit.OnActivateSuccess(owner);
+            ActivateUnit?.OnActivateSuccess(owner);
         }
 
         /// <summary>
@@ -51,7 +44,7 @@ namespace NexusForever.Game.CSI
         /// </summary>
         public void TriggerFail()
         {
-            ActivateUnit.OnActivateFail(owner);
+            ActivateUnit?.OnActivateFail(owner);
         }
     }
 }
