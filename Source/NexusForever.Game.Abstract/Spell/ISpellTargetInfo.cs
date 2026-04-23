@@ -7,6 +7,7 @@ namespace NexusForever.Game.Abstract.Spell
     {
         IUnitEntity Entity { get; }
         SpellEffectTargetFlags Flags { get; }
+        TargetSelectionState TargetSelectionState { get; set; }
         List<ISpellTargetEffectInfo> Effects { get; }
     }
 }
