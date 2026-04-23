@@ -68,7 +68,7 @@ namespace NexusForever.Game.Spell
                 AdjustedDamage = healing,
                 CombatResult   = CombatResult.Hit
             });
-            target.Shield = Math.Min(target.Shield + healing, target.MaxShieldCapacity);
+            target.Shield += healing; // setter clamps to MaxShieldCapacity
         }
 
         [SpellEffectHandler(SpellEffectType.Resurrect)]
