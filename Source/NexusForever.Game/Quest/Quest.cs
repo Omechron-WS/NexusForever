@@ -1,10 +1,12 @@
 ﻿using System.Collections;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Quest;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Quest;
 using NexusForever.Network.World.Message.Model;
 using NexusForever.Script;
@@ -40,7 +42,7 @@ namespace NexusForever.Game.Quest
                 QuestState oldState = state;
 
                 state = value;
-                saveMask |= QuestSaveMask.State;
+                saveMask.Mark(QuestSaveMask.State);
 
                 OnStateChange(oldState);
             }
@@ -54,7 +56,7 @@ namespace NexusForever.Game.Quest
             set
             {
                 flags = value;
-                saveMask |= QuestSaveMask.Flags;
+                saveMask.Mark(QuestSaveMask.Flags);
             }
         }
 
@@ -66,7 +68,7 @@ namespace NexusForever.Game.Quest
             set
             {
                 timer = value;
-                saveMask |= QuestSaveMask.Timer;
+                saveMask.Mark(QuestSaveMask.Timer);
             }
         }
 
@@ -78,7 +80,7 @@ namespace NexusForever.Game.Quest
             set
             {
                 reset = value;
-                saveMask |= QuestSaveMask.Reset;
+                saveMask.Mark(QuestSaveMask.Reset);
             }
         }
 
@@ -87,14 +89,14 @@ namespace NexusForever.Game.Quest
         /// <summary>
         /// Returns if <see cref="IQuest"/> is enqueued to be saved to the database.
         /// </summary>
-        public bool PendingCreate => (saveMask & QuestSaveMask.Create) != 0;
+        public bool PendingCreate => (saveMask.Current & QuestSaveMask.Create) != 0;
 
         /// <summary>
         /// Returns if <see cref="IQuest"/> is enqueued to be deleted from the database.
         /// </summary>
-        public bool PendingDelete => (saveMask & QuestSaveMask.Delete) != 0;
+        public bool PendingDelete => (saveMask.Current & QuestSaveMask.Delete) != 0;
 
-        private QuestSaveMask saveMask;
+        private readonly VersionedSaveMask<QuestSaveMask> saveMask;
 
         private readonly IPlayer player;
         private readonly List<IQuestObjective> objectives = new();
@@ -114,6 +116,7 @@ namespace NexusForever.Game.Quest
             flags  = (QuestStateFlags)model.Flags;
             timer  = model.Timer;
             reset  = model.Reset;
+            saveMask = new VersionedSaveMask<QuestSaveMask>();
 
             if (timer != null)
                 questTimer = new UpdateTimer(timer.Value);
@@ -139,7 +142,7 @@ namespace NexusForever.Game.Quest
             if (objectives.Count == 0)
                 state = QuestState.Achieved;
 
-            saveMask = QuestSaveMask.Create;
+            saveMask = new VersionedSaveMask<QuestSaveMask>(QuestSaveMask.Create);
 
             scriptCollection = ScriptManager.Instance.InitialiseOwnedScripts<IQuest>(this, info.Entry.Id);
         }
@@ -165,21 +168,53 @@ namespace NexusForever.Game.Quest
 
         public void Save(CharacterContext context)
         {
-            if (saveMask != QuestSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance, null);
+        }
+
+        /// <summary>
+        /// Stage quest changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            Save(context, commitScope, null);
+        }
+
+        /// <summary>
+        /// Stage quest changes and register their successful-commit acknowledgements.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        /// <param name="deleteAcknowledged">Action invoked when a requested deletion commits.</param>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope, Action deleteAcknowledged)
+        {
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            VersionedSaveMaskSnapshot<QuestSaveMask> snapshot = saveMask.Capture();
+            QuestSaveMask stagedMask = snapshot.Mask;
+            bool stagesDelete = (stagedMask & QuestSaveMask.Delete) != 0;
+            bool stagesTransientDelete = (stagedMask & (QuestSaveMask.Create | QuestSaveMask.Delete)) ==
+                (QuestSaveMask.Create | QuestSaveMask.Delete);
+
+            if (stagedMask != QuestSaveMask.None)
             {
-                if ((saveMask & QuestSaveMask.Create) != 0)
+                QuestState stagedState = state;
+                QuestStateFlags stagedFlags = flags;
+                uint? stagedTimer = timer;
+                DateTime? stagedReset = reset;
+
+                if (!stagesTransientDelete && (stagedMask & QuestSaveMask.Create) != 0)
                 {
                     context.Add(new CharacterQuestModel
                     {
                         Id      = player.CharacterId,
                         QuestId = Id,
-                        State   = (byte)State,
-                        Flags   = (byte)Flags,
-                        Timer   = Timer,
-                        Reset   = Reset
+                        State   = (byte)stagedState,
+                        Flags   = (byte)stagedFlags,
+                        Timer   = stagedTimer,
+                        Reset   = stagedReset
                     });
                 }
-                else if ((saveMask & QuestSaveMask.Delete) != 0)
+                else if (!stagesTransientDelete && stagesDelete)
                 {
                     var model = new CharacterQuestModel
                     {
@@ -189,7 +224,7 @@ namespace NexusForever.Game.Quest
 
                     context.Entry(model).State = EntityState.Deleted;
                 }
-                else
+                else if (!stagesTransientDelete)
                 {
                     var model = new CharacterQuestModel
                     {
@@ -198,36 +233,57 @@ namespace NexusForever.Game.Quest
                     };
 
                     EntityEntry<CharacterQuestModel> entity = context.Attach(model);
-                    if ((saveMask & QuestSaveMask.State) != 0)
+                    if ((stagedMask & QuestSaveMask.State) != 0)
                     {
-                        model.State = (byte)State;
+                        model.State = (byte)stagedState;
                         entity.Property(p => p.State).IsModified = true;
                     }
 
-                    if ((saveMask & QuestSaveMask.Flags) != 0)
+                    if ((stagedMask & QuestSaveMask.Flags) != 0)
                     {
-                        model.Flags = (byte)Flags;
+                        model.Flags = (byte)stagedFlags;
                         entity.Property(p => p.Flags).IsModified = true;
                     }
 
-                    if ((saveMask & QuestSaveMask.Reset) != 0)
+                    if ((stagedMask & QuestSaveMask.Reset) != 0)
                     {
-                        model.Reset = Reset;
+                        model.Reset = stagedReset;
                         entity.Property(p => p.Reset).IsModified = true;
                     }
 
-                    if ((saveMask & QuestSaveMask.Timer) != 0)
+                    if ((stagedMask & QuestSaveMask.Timer) != 0)
                     {
-                        model.Timer = Timer;
+                        model.Timer = stagedTimer;
                         entity.Property(p => p.Timer).IsModified = true;
                     }
                 }
 
-                saveMask = QuestSaveMask.None;
+                commitScope.Register(() => AcknowledgeSave(snapshot, stagedMask, deleteAcknowledged));
             }
 
+            if (!stagesDelete)
+                foreach (IQuestObjective objective in objectives)
+                    objective.Save(context, commitScope);
+        }
+
+        private void AcknowledgeSave(VersionedSaveMaskSnapshot<QuestSaveMask> snapshot,
+            QuestSaveMask stagedMask, Action deleteAcknowledged)
+        {
+            bool deleteStillRequested = PendingDelete;
+            saveMask.Acknowledge(snapshot);
+
+            if ((stagedMask & QuestSaveMask.Delete) == 0)
+                return;
+
+            if (deleteStillRequested)
+            {
+                deleteAcknowledged?.Invoke();
+                return;
+            }
+
+            saveMask.Mark(QuestSaveMask.Create);
             foreach (IQuestObjective objective in objectives)
-                objective.Save(context);
+                objective.EnqueueCreate();
         }
 
         public void Update(double lastTick)
@@ -254,9 +310,9 @@ namespace NexusForever.Game.Quest
         public void EnqueueDelete(bool set)
         {
             if (set)
-                saveMask |= QuestSaveMask.Delete;
+                saveMask.Mark(QuestSaveMask.Delete);
             else
-                saveMask &= ~QuestSaveMask.Delete;
+                saveMask.Clear(QuestSaveMask.Delete);
         }
 
         /// <summary>

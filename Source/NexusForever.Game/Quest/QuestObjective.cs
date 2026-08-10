@@ -1,8 +1,10 @@
 ﻿using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Quest;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Quest;
 using NexusForever.GameTable.Model;
 
@@ -29,8 +31,8 @@ namespace NexusForever.Game.Quest
             get => progress;
             set
             {
-                saveMask |= QuestObjectiveSaveMask.Progress;
                 progress = value;
+                saveMask.Mark(QuestObjectiveSaveMask.Progress);
             }
         }
 
@@ -41,14 +43,14 @@ namespace NexusForever.Game.Quest
             get => timer;
             set
             {
-                saveMask |= QuestObjectiveSaveMask.Timer;
                 timer = value;
+                saveMask.Mark(QuestObjectiveSaveMask.Timer);
             }
         }
 
         private uint? timer;
 
-        private QuestObjectiveSaveMask saveMask;
+        private readonly VersionedSaveMask<QuestObjectiveSaveMask> saveMask;
 
         private readonly IPlayer player;
 
@@ -64,6 +66,7 @@ namespace NexusForever.Game.Quest
             Index         = model.Index;
             progress      = model.Progress;
             timer         = model.Timer;
+            saveMask      = new VersionedSaveMask<QuestObjectiveSaveMask>();
         }
 
         /// <summary>
@@ -82,22 +85,38 @@ namespace NexusForever.Game.Quest
                 // TODO
             }
 
-            saveMask = QuestObjectiveSaveMask.Create;
+            saveMask = new VersionedSaveMask<QuestObjectiveSaveMask>(QuestObjectiveSaveMask.Create);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == QuestObjectiveSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage objective changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            VersionedSaveMaskSnapshot<QuestObjectiveSaveMask> snapshot = saveMask.Capture();
+            QuestObjectiveSaveMask stagedMask = snapshot.Mask;
+            if (stagedMask == QuestObjectiveSaveMask.None)
                 return;
 
-            if ((saveMask & QuestObjectiveSaveMask.Create) != 0)
+            uint stagedProgress = progress;
+            uint? stagedTimer = timer;
+
+            if ((stagedMask & QuestObjectiveSaveMask.Create) != 0)
             {
                 context.Add(new CharacterQuestObjectiveModel
                 {
                     Id       = player.CharacterId,
                     QuestId  = (ushort)QuestInfo.Entry.Id,
                     Index    = Index,
-                    Progress = Progress
+                    Progress = stagedProgress,
+                    Timer    = stagedTimer
                 });
             }
             else
@@ -110,19 +129,28 @@ namespace NexusForever.Game.Quest
                 };
 
                 EntityEntry<CharacterQuestObjectiveModel> entity = context.Entry(model);
-                if ((saveMask & QuestObjectiveSaveMask.Progress) != 0)
+                if ((stagedMask & QuestObjectiveSaveMask.Progress) != 0)
                 {
-                    model.Progress = Progress;
+                    model.Progress = stagedProgress;
                     entity.Property(p => p.Progress).IsModified = true;
                 }
 
-                if ((saveMask & QuestObjectiveSaveMask.Timer) != 0)
+                if ((stagedMask & QuestObjectiveSaveMask.Timer) != 0)
                 {
-                    // TODO
+                    model.Timer = stagedTimer;
+                    entity.Property(p => p.Timer).IsModified = true;
                 }
             }
 
-            saveMask = QuestObjectiveSaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
+        }
+
+        /// <summary>
+        /// Enqueue the objective to be inserted after its parent quest deletion was cancelled.
+        /// </summary>
+        public void EnqueueCreate()
+        {
+            saveMask.Mark(QuestObjectiveSaveMask.Create);
         }
 
         public void Update(double lastTick)

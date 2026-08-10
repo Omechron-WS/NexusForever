@@ -1,7 +1,9 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Quest;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Prerequisite;
 using NexusForever.Game.Quest;
 using NexusForever.Game.Static;
@@ -82,24 +84,40 @@ namespace NexusForever.Game.Entity
 
         public void Save(CharacterContext context)
         {
-            foreach (IQuest quest in completedQuests.Values)
-                quest.Save(context);
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
 
-            foreach (IQuest quest in inactiveQuests.Values.ToList())
-            {
-                if (quest.PendingDelete)
-                    inactiveQuests.Remove(quest.Id);
+        /// <summary>
+        /// Stage quest changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(commitScope);
 
-                quest.Save(context);
-            }
+            foreach (IQuest quest in completedQuests.Values
+                .Concat(inactiveQuests.Values)
+                .Concat(activeQuests.Values)
+                .Distinct()
+                .ToList())
+                quest.Save(context, commitScope, () => RemoveDeletedQuest(quest));
+        }
 
-            foreach (IQuest quest in activeQuests.Values.ToList())
-            {
-                if (quest.PendingDelete)
-                    activeQuests.Remove(quest.Id);
+        private void RemoveDeletedQuest(IQuest quest)
+        {
+            bool removed = RemoveQuest(completedQuests, quest);
+            removed |= RemoveQuest(inactiveQuests, quest);
+            removed |= RemoveQuest(activeQuests, quest);
 
-                quest.Save(context);
-            }
+            if (removed)
+                quest.Dispose();
+        }
+
+        private static bool RemoveQuest(Dictionary<ushort, IQuest> quests, IQuest quest)
+        {
+            if (!quests.TryGetValue(quest.Id, out IQuest current) || !ReferenceEquals(current, quest))
+                return false;
+
+            return quests.Remove(quest.Id);
         }
 
         public void Update(double lastTick)
@@ -426,7 +444,7 @@ namespace NexusForever.Game.Entity
                 throw new QuestException($"Player {player.CharacterId} tried to abandon quest {questId} which can't be abandoned!");
 
             // don't delete quests that have been mentioned, they may not be able to be re-collected.
-            if (!quest.PendingCreate && quest.CanDelete())
+            if (quest.CanDelete())
                 quest.EnqueueDelete(true);
             else
             {

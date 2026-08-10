@@ -1,11 +1,17 @@
+using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using Moq;
 using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract;
+using NexusForever.Game.Abstract.Achievement;
 using NexusForever.Game.Abstract.Guild;
+using NexusForever.Game.Achievement;
 using NexusForever.Game.Guild;
+using NexusForever.GameTable.Model;
+using NexusForever.Network.Internal;
+using GuildEntity = NexusForever.Game.Guild.Guild;
 
 namespace NexusForever.Game.Tests.Guild
 {
@@ -110,6 +116,62 @@ namespace NexusForever.Game.Tests.Guild
             Assert.Equal("Second", model.Note);
         }
 
+        [Fact]
+        public void GuildSave_UnacknowledgedAchievementChangeRemainsRetryable()
+        {
+            (GuildEntity guild, Achievement<GuildAchievementModel> achievement) = CreateGuildWithAchievement();
+            achievement.Data0 = 2u;
+
+            using (CharacterContext context = CreateContext())
+                guild.Save(context, new SaveCommitScope());
+
+            using CharacterContext retryContext = CreateContext();
+            guild.Save(retryContext, new SaveCommitScope());
+
+            GuildAchievementModel model = Assert.Single(
+                retryContext.ChangeTracker.Entries<GuildAchievementModel>()).Entity;
+            Assert.Equal(2u, model.Data0);
+        }
+
+        [Fact]
+        public void GuildSave_AcknowledgedAchievementChangeIsCleared()
+        {
+            (GuildEntity guild, Achievement<GuildAchievementModel> achievement) = CreateGuildWithAchievement();
+            achievement.Data0 = 2u;
+            var commitScope = new SaveCommitScope();
+
+            using (CharacterContext context = CreateContext())
+                guild.Save(context, commitScope);
+
+            commitScope.CreateAcknowledgement().Acknowledge();
+
+            using CharacterContext retryContext = CreateContext();
+            guild.Save(retryContext, new SaveCommitScope());
+
+            Assert.Empty(retryContext.ChangeTracker.Entries<GuildAchievementModel>());
+        }
+
+        [Fact]
+        public void GuildSave_AchievementMutationDuringPendingCommitRemainsDirty()
+        {
+            (GuildEntity guild, Achievement<GuildAchievementModel> achievement) = CreateGuildWithAchievement();
+            achievement.Data0 = 2u;
+            var commitScope = new SaveCommitScope();
+
+            using (CharacterContext context = CreateContext())
+                guild.Save(context, commitScope);
+
+            achievement.Data0 = 3u;
+            commitScope.CreateAcknowledgement().Acknowledge();
+
+            using CharacterContext retryContext = CreateContext();
+            guild.Save(retryContext, new SaveCommitScope());
+
+            GuildAchievementModel model = Assert.Single(
+                retryContext.ChangeTracker.Entries<GuildAchievementModel>()).Entity;
+            Assert.Equal(3u, model.Data0);
+        }
+
         private static GuildRank CreateRank()
         {
             return new GuildRank(new GuildRankModel
@@ -122,6 +184,36 @@ namespace NexusForever.Game.Tests.Guild
                 MoneyWithdrawalLimit     = 0ul,
                 RepairLimit              = 0ul
             });
+        }
+
+        private static (GuildEntity Guild, Achievement<GuildAchievementModel> Achievement) CreateGuildWithAchievement()
+        {
+            var guild = new GuildEntity(
+                new Mock<IRealmContext>().Object,
+                new Mock<IInternalMessagePublisher>().Object);
+            var manager = new GuildAchievementManager(guild);
+            var info = new Mock<IAchievementInfo>();
+            info.SetupGet(value => value.Id).Returns((ushort)100);
+            info.SetupGet(value => value.Entry).Returns(new AchievementEntry
+            {
+                Id = 100u
+            });
+            var achievement = new Achievement<GuildAchievementModel>(info.Object, new GuildAchievementModel
+            {
+                Id            = 1ul,
+                AchievementId = 100,
+                Data0         = 1u
+            });
+
+            FieldInfo achievementsField = typeof(BaseAchievementManager<GuildAchievementModel>)
+                .GetField("achievements", BindingFlags.Instance | BindingFlags.NonPublic);
+            var achievements = (Dictionary<ushort, IAchievement>)achievementsField.GetValue(manager);
+            achievements.Add(achievement.Id, achievement);
+
+            typeof(GuildEntity)
+                .GetProperty(nameof(GuildEntity.AchievementManager))
+                .SetValue(guild, manager);
+            return (guild, achievement);
         }
 
         private static CharacterContext CreateContext()

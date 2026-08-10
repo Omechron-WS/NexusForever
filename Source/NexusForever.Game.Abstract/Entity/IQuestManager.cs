@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Game.Abstract.Quest;
 using NexusForever.Game.Static.Quest;
 using NexusForever.Shared;
@@ -7,6 +8,13 @@ namespace NexusForever.Game.Abstract.Entity
 {
     public interface IQuestManager : IDisposable, IDatabaseCharacter, IUpdate
     {
+        /// <summary>
+        /// Stage quest changes and acknowledge them after the character database commits.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         void SendInitialPackets();
 
         /// <summary>

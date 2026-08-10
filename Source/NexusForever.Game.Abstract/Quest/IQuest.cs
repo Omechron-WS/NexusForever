@@ -14,6 +14,21 @@ namespace NexusForever.Game.Abstract.Quest
         uint? Timer { get; set; }
         DateTime? Reset { get; set; }
 
+        /// <summary>
+        /// Stage quest changes and acknowledge them after the character database commits.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
+        /// <summary>
+        /// Stage quest changes and register their successful-commit acknowledgements.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        /// <param name="deleteAcknowledged">Action invoked when a requested deletion commits.</param>
+        void Save(CharacterContext context, ISaveCommitScope commitScope, Action deleteAcknowledged);
+
         void InitialiseTimer();
 
         /// <summary>

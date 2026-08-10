@@ -4,6 +4,7 @@ using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Achievement;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Prerequisite;
 using NexusForever.Game.Static;
 using NexusForever.Game.Static.Achievement;
@@ -45,8 +46,18 @@ namespace NexusForever.Game.Achievement
 
         public void Save(CharacterContext context)
         {
-            foreach (Achievement<T> achievement in achievements.Values)
-                achievement.Save(context);
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage achievement changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            foreach (IAchievement achievement in achievements.Values)
+                achievement.Save(context, commitScope);
         }
 
         /// <summary>

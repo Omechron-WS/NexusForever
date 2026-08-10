@@ -1,7 +1,9 @@
 ﻿using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Achievement;
+using NexusForever.Game.Persistence;
 using AchievementNetworkModel = NexusForever.Network.World.Message.Model.Achievement.Achievement;
 
 namespace NexusForever.Game.Achievement
@@ -27,8 +29,8 @@ namespace NexusForever.Game.Achievement
             get => data0;
             set
             {
-                saveMask |= SaveMask.Data0;
                 data0 = value;
+                saveMask.Mark(SaveMask.Data0);
             }
         }
 
@@ -39,8 +41,8 @@ namespace NexusForever.Game.Achievement
             get => data1;
             set
             {
-                saveMask |= SaveMask.Data1;
                 data1 = value;
+                saveMask.Mark(SaveMask.Data1);
             }
         }
 
@@ -51,14 +53,14 @@ namespace NexusForever.Game.Achievement
             get => dateCompleted;
             set
             {
-                saveMask |= SaveMask.TimeCompleted;
                 dateCompleted = value;
+                saveMask.Mark(SaveMask.TimeCompleted);
             }
         }
 
         private DateTime? dateCompleted;
 
-        protected SaveMask saveMask;
+        protected readonly VersionedSaveMask<SaveMask> saveMask;
 
         // this can either be a characterId or guildId depending on the achievement type
         private readonly ulong ownerId;
@@ -72,7 +74,8 @@ namespace NexusForever.Game.Achievement
             Info          = info;
             data0         = model.Data0;
             data1         = model.Data1;
-            DateCompleted = model.DateCompleted;
+            dateCompleted = model.DateCompleted;
+            saveMask      = new VersionedSaveMask<SaveMask>();
         }
 
         /// <summary>
@@ -83,23 +86,39 @@ namespace NexusForever.Game.Achievement
             this.ownerId = ownerId;
             Info         = info;
 
-            saveMask |= SaveMask.Create;
+            saveMask = new VersionedSaveMask<SaveMask>(SaveMask.Create);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == SaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage achievement changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            VersionedSaveMaskSnapshot<SaveMask> snapshot = saveMask.Capture();
+            SaveMask stagedMask = snapshot.Mask;
+            if (stagedMask == SaveMask.None)
                 return;
 
-            if ((saveMask & SaveMask.Create) != 0)
+            uint stagedData0 = data0;
+            uint stagedData1 = data1;
+            DateTime? stagedDateCompleted = dateCompleted;
+
+            if ((stagedMask & SaveMask.Create) != 0)
             {
                 context.Add(new T
                 {
                     Id            = ownerId,
                     AchievementId = Id,
-                    Data0         = Data0,
-                    Data1         = Data1,
-                    DateCompleted = DateCompleted
+                    Data0         = stagedData0,
+                    Data1         = stagedData1,
+                    DateCompleted = stagedDateCompleted
                 });
             }
             else
@@ -111,24 +130,24 @@ namespace NexusForever.Game.Achievement
                 };
 
                 EntityEntry<T> entity = context.Attach(model);
-                if ((saveMask & SaveMask.Data0) != 0)
+                if ((stagedMask & SaveMask.Data0) != 0)
                 {
-                    model.Data0 = Data0;
+                    model.Data0 = stagedData0;
                     entity.Property(p => p.Data0).IsModified = true;
                 }
-                if ((saveMask & SaveMask.Data1) != 0)
+                if ((stagedMask & SaveMask.Data1) != 0)
                 {
-                    model.Data1 = Data1;
+                    model.Data1 = stagedData1;
                     entity.Property(p => p.Data1).IsModified = true;
                 }
-                if ((saveMask & SaveMask.TimeCompleted) != 0)
+                if ((stagedMask & SaveMask.TimeCompleted) != 0)
                 {
-                    model.DateCompleted = DateCompleted;
+                    model.DateCompleted = stagedDateCompleted;
                     entity.Property(p => p.DateCompleted).IsModified = true;
                 }
             }
 
-            saveMask = SaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         /// <summary>

@@ -135,7 +135,22 @@ namespace NexusForever.Game.Guild
 
             registerAcknowledgement(() => saveMask.Acknowledge(snapshot));
 
-            AchievementManager.Save(context);
+            AchievementManager.Save(context, new DelegateSaveCommitScope(registerAcknowledgement));
+        }
+
+        private sealed class DelegateSaveCommitScope : ISaveCommitScope
+        {
+            private readonly Action<Action> registerAcknowledgement;
+
+            public DelegateSaveCommitScope(Action<Action> registerAcknowledgement)
+            {
+                this.registerAcknowledgement = registerAcknowledgement;
+            }
+
+            public void Register(Action action)
+            {
+                registerAcknowledgement(action);
+            }
         }
 
         public override GuildData Build()

@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Static.Achievement;
@@ -8,6 +9,13 @@ namespace NexusForever.Game.Abstract.Achievement
     public interface IBaseAchievementManager<T> : IDatabaseCharacter where T : class, IAchievementModel, new()
     {
         uint AchievementPoints { get; }
+
+        /// <summary>
+        /// Stage achievement changes and acknowledge them after the character database commits.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
 
         /// <summary>
         /// Initialise a collection of existing achievement database models.
