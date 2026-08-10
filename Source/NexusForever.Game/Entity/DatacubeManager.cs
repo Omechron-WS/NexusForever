@@ -1,6 +1,8 @@
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Entity;
 using NexusForever.GameTable;
 using NexusForever.Network.World.Message.Model;
@@ -34,8 +36,16 @@ namespace NexusForever.Game.Entity
 
         public void Save(CharacterContext context)
         {
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage datacube changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
             foreach (IDatacube datacube in datacubes.Values)
-                datacube.Save(context);
+                datacube.Save(context, commitScope);
         }
 
         /// <summary>

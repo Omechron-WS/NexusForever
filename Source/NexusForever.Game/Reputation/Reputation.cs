@@ -1,8 +1,10 @@
 ﻿using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Reputation;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Reputation;
 
 namespace NexusForever.Game.Reputation
@@ -25,14 +27,17 @@ namespace NexusForever.Game.Reputation
             get => amount;
             set
             {
+                if (amount == value)
+                    return;
+
                 amount = value;
-                saveMask |= SaveMask.Amount;
+                saveMask.Mark(SaveMask.Amount);
             }
         }
 
         private float amount;
 
-        private SaveMask saveMask;
+        private readonly VersionedSaveMask<SaveMask> saveMask = new();
 
         private readonly IPlayer player;
 
@@ -46,7 +51,6 @@ namespace NexusForever.Game.Reputation
             Entry    = entry;
             amount   = model.Amount;
 
-            saveMask = SaveMask.None;
         }
 
         /// <summary>
@@ -59,12 +63,22 @@ namespace NexusForever.Game.Reputation
             Entry       = entry;
             this.amount = amount;
 
-            saveMask    = SaveMask.Create;
+            saveMask.Mark(SaveMask.Create);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == SaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage reputation changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<SaveMask> snapshot = saveMask.Capture();
+            SaveMask mask = snapshot.Mask;
+            if (mask == SaveMask.None)
                 return;
 
             var model = new CharacterReputation
@@ -74,19 +88,19 @@ namespace NexusForever.Game.Reputation
                 Amount    = Amount
             };
 
-            if ((saveMask & SaveMask.Create) != 0)
+            if ((mask & SaveMask.Create) != 0)
                 context.Add(model);
             else
             {
                 EntityEntry<CharacterReputation> entity = context.Attach(model);
-                if ((saveMask & SaveMask.Amount) != 0)
+                if ((mask & SaveMask.Amount) != 0)
                 {
                     model.Amount = Amount;
                     entity.Property(p => p.Amount).IsModified = true;
                 }
             }
 
-            saveMask = SaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
     }
 }

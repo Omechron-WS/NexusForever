@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Static.Guild;
@@ -8,6 +9,11 @@ namespace NexusForever.Game.Abstract.Guild
 {
     public interface IGuildManager : IDatabaseCharacter, IEnumerable<IGuildBase>
     {
+        /// <summary>
+        /// Stage player guild-affiliation changes and register acknowledgements for a successful commit.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         IGuild Guild { get; }
 
         /// <summary>

@@ -1,7 +1,9 @@
 ﻿using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
 
@@ -9,6 +11,7 @@ namespace NexusForever.Game.Entity
 {
     public class Title : ITitle
     {
+        [Flags]
         public enum TitleSaveMask
         {
             None          = 0x00,
@@ -28,8 +31,11 @@ namespace NexusForever.Game.Entity
             get => timeRemaining;
             set
             {
+                if (timeRemaining == value)
+                    return;
+
                 timeRemaining = value;
-                saveMask |= TitleSaveMask.TimeRemaining;
+                saveMask.Mark(TitleSaveMask.TimeRemaining);
             }
         }
 
@@ -40,14 +46,17 @@ namespace NexusForever.Game.Entity
             get => revoked;
             set
             {
+                if (revoked == value)
+                    return;
+
                 revoked = value;
-                saveMask |= TitleSaveMask.Revoked;
+                saveMask.Mark(TitleSaveMask.Revoked);
             }
         }
 
         private bool revoked;
 
-        private TitleSaveMask saveMask;
+        private readonly VersionedSaveMask<TitleSaveMask> saveMask = new();
 
         /// <summary>
         /// Create a new <see cref="ITitle"/> from an existing database model.
@@ -61,7 +70,6 @@ namespace NexusForever.Game.Entity
             if (Entry.LifeTimeSeconds != 0u)
                 timeRemaining = model.TimeRemaining;
 
-            saveMask = TitleSaveMask.None;
         }
 
         /// <summary>
@@ -75,7 +83,7 @@ namespace NexusForever.Game.Entity
             if (Entry.LifeTimeSeconds != 0u)
                 timeRemaining = Entry.LifeTimeSeconds;
 
-            saveMask = TitleSaveMask.Create;
+            saveMask.Mark(TitleSaveMask.Create);
         }
 
         public void Update(double lastTick)
@@ -86,17 +94,28 @@ namespace NexusForever.Game.Entity
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == TitleSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage title changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<TitleSaveMask> snapshot = saveMask.Capture();
+            TitleSaveMask mask = snapshot.Mask;
+            if (mask == TitleSaveMask.None)
                 return;
 
-            if ((saveMask & TitleSaveMask.Create) != 0)
+            if ((mask & TitleSaveMask.Create) != 0)
             {
                 // title doesn't exist in database, all infomation must be saved
                 context.Add(new CharacterTitleModel
                 {
                     Id            = CharacterId,
                     Title         = (ushort)Entry.Id,
-                    TimeRemaining = (uint)(timeRemaining ?? 0d)
+                    TimeRemaining = (uint)(timeRemaining ?? 0d),
+                    Revoked       = Convert.ToByte(Revoked)
                 });
             }
             else
@@ -109,21 +128,21 @@ namespace NexusForever.Game.Entity
                 };
 
                 EntityEntry<CharacterTitleModel> entity = context.Attach(model);
-                if ((saveMask & TitleSaveMask.TimeRemaining) != 0)
+                if ((mask & TitleSaveMask.TimeRemaining) != 0)
                 {
                     // timeRemaining should never be null here, explicit check?
                     model.TimeRemaining = (uint)(timeRemaining ?? 0d);
                     entity.Property(p => p.TimeRemaining).IsModified = true;
                 }
 
-                if ((saveMask & TitleSaveMask.Revoked) != 0)
+                if ((mask & TitleSaveMask.Revoked) != 0)
                 {
                     model.Revoked = Convert.ToByte(Revoked);
                     entity.Property(p => p.Revoked).IsModified = true;
                 }
             }
 
-            saveMask = TitleSaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
     }
 }

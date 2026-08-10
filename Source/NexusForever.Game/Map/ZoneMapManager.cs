@@ -1,9 +1,11 @@
 using System.Numerics;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Map;
 using NexusForever.Game.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Achievement;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
@@ -46,8 +48,16 @@ namespace NexusForever.Game.Map
 
         public void Save(CharacterContext context)
         {
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage zone-map discoveries and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
             foreach (IZoneMap zoneMap in zoneMaps.Values)
-                zoneMap.Save(context);
+                zoneMap.Save(context, commitScope);
         }
 
         public void SendInitialPackets()

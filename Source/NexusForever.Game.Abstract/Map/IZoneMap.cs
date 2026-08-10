@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.GameTable.Model;
 using NexusForever.Network.World.Message.Model.Map;
@@ -7,6 +8,11 @@ namespace NexusForever.Game.Abstract.Map
 {
     public interface IZoneMap : IDatabaseCharacter
     {
+        /// <summary>
+        /// Stage zone-map discoveries and register acknowledgements for a successful commit.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         /// <summary>
         /// Returns if all <see cref="MapZoneHexGroupEntry"/> in the <see cref="MapZoneEntry"/> have been discovered.
         /// </summary>

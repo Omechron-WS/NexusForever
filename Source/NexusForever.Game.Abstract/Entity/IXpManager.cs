@@ -1,10 +1,16 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Network.World.Message.Static;
 
 namespace NexusForever.Game.Abstract.Entity
 {
     public interface IXpManager : IDatabaseCharacter
     {
+        /// <summary>
+        /// Stage experience changes and register acknowledgements for a successful commit.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         uint TotalXp { get; }
         uint RestBonusXp { get; }
 

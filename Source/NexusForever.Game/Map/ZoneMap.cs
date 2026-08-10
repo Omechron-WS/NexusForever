@@ -1,7 +1,9 @@
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Map;
+using NexusForever.Game.Persistence;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
 using NexusForever.Network;
@@ -25,7 +27,7 @@ namespace NexusForever.Game.Map
         private readonly uint maxHexCount;
 
         private readonly NetworkBitArray zoneMapBits;
-        private readonly Dictionary<ushort /*ZoneMapHexGroupId*/, bool /*new*/> zoneMapHexGroups = new();
+        private readonly Dictionary<ushort, ZoneMapDiscoverySaveState> zoneMapHexGroups = new();
 
         private readonly IPlayer player;
 
@@ -53,17 +55,22 @@ namespace NexusForever.Game.Map
 
         public void Save(CharacterContext context)
         {
-            foreach ((ushort hexGroupId, bool _) in zoneMapHexGroups.Where(z => z.Value).ToList())
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage zone-map discoveries and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            foreach ((ushort hexGroupId, ZoneMapDiscoverySaveState saveState) in zoneMapHexGroups)
             {
-                var model = new CharacterZonemapHexgroupModel
+                saveState.Stage(commitScope, () => context.Add(new CharacterZonemapHexgroupModel
                 {
                     Id       = player.CharacterId,
                     ZoneMap  = (ushort)entry.Id,
                     HexGroup = hexGroupId
-                };
-
-                context.Add(model);
-                zoneMapHexGroups[hexGroupId] = false;
+                }));
             }
         }
 
@@ -94,7 +101,7 @@ namespace NexusForever.Game.Map
                 zoneMapBits.SetBit(bit, true);
             }
 
-            zoneMapHexGroups.Add(hexGroupId, sendUpdate);
+            zoneMapHexGroups.Add(hexGroupId, new ZoneMapDiscoverySaveState(sendUpdate));
             if (sendUpdate)
                 Send();
         }

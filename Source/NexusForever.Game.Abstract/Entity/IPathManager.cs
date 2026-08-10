@@ -1,10 +1,16 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Network.World.Message.Static;
 
 namespace NexusForever.Game.Abstract.Entity
 {
     public interface IPathManager : IDatabaseCharacter, IEnumerable<IPathEntry>
     {
+        /// <summary>
+        /// Stage path changes and register acknowledgements for a successful commit.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         /// <summary>
         /// Checks to see if supplied <see cref="Static.PlayerPath.Path"/> is active.
         /// </summary>

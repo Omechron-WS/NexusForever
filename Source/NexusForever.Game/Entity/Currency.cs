@@ -1,7 +1,9 @@
 ﻿using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Entity;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
@@ -33,14 +35,18 @@ namespace NexusForever.Game.Entity
             {
                 if (Entry.CapAmount > 0 && value > Entry.CapAmount)
                     throw new ArgumentOutOfRangeException();
-                saveMask |= CurrencySaveMask.Amount;
+
+                if (amount == value)
+                    return;
+
+                saveMask.Mark(CurrencySaveMask.Amount);
                 amount = value;
             }
         }
 
         private ulong amount;
 
-        private CurrencySaveMask saveMask;
+        private readonly VersionedSaveMask<CurrencySaveMask> saveMask = new();
 
         /// <summary>
         /// Create a new <see cref="ICurrency"/> from an existing database model.
@@ -49,9 +55,7 @@ namespace NexusForever.Game.Entity
         {
             CharacterId = model.Id;
             Entry       = GameTableManager.Instance.CurrencyType.GetEntry(model.CurrencyId);
-            Amount      = model.Amount;
-
-            saveMask    = CurrencySaveMask.None;
+            amount      = model.Amount;
         }
 
         /// <summary>
@@ -61,16 +65,26 @@ namespace NexusForever.Game.Entity
         {
             CharacterId = owner;
             Entry       = entry;
-
-            saveMask    = CurrencySaveMask.Create;
+            amount      = value;
+            saveMask.Mark(CurrencySaveMask.Create);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == CurrencySaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage currency changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<CurrencySaveMask> snapshot = saveMask.Capture();
+            CurrencySaveMask mask = snapshot.Mask;
+            if (mask == CurrencySaveMask.None)
                 return;
 
-            if ((saveMask & CurrencySaveMask.Create) != 0)
+            if ((mask & CurrencySaveMask.Create) != 0)
             {
                 // Currency doesn't exist in database, all information must be saved
                 context.Add(new CharacterCurrencyModel
@@ -91,14 +105,14 @@ namespace NexusForever.Game.Entity
 
                 // could probably clean this up with reflection, works for the time being
                 EntityEntry<CharacterCurrencyModel> entity = context.Attach(model);
-                if ((saveMask & CurrencySaveMask.Amount) != 0)
+                if ((mask & CurrencySaveMask.Amount) != 0)
                 {
                     model.Amount = Amount;
                     entity.Property(p => p.Amount).IsModified = true;
                 }
             }
 
-            saveMask = CurrencySaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
     }
 }

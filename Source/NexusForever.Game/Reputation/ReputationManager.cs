@@ -4,6 +4,7 @@ using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Reputation;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Reputation;
 using NexusForever.Network.World.Message.Model;
 using NexusForever.Network.World.Message.Model.Reputation;
@@ -35,8 +36,16 @@ namespace NexusForever.Game.Reputation
 
         public void Save(CharacterContext context)
         {
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage reputation changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
             foreach (IReputation reputation in reputations.Values)
-                reputation.Save(context);
+                reputation.Save(context, commitScope);
         }
 
         /// <summary>

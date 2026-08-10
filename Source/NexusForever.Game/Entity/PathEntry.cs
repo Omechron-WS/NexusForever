@@ -1,7 +1,9 @@
 ﻿using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using Path = NexusForever.Game.Static.PlayerPath.Path;
 
 namespace NexusForever.Game.Entity
@@ -32,7 +34,7 @@ namespace NexusForever.Game.Entity
                 if (value != unlocked)
                 {
                     unlocked = value;
-                    saveMask |= PathSaveMask.Unlocked;
+                    saveMask.Mark(PathSaveMask.Unlocked);
                 }
             }
         }
@@ -44,10 +46,13 @@ namespace NexusForever.Game.Entity
             set
             {
                 if (value < totalXp)
-                    throw new ArgumentException("New Level Rewarded Value must be higher, and not equal to current XP total.");
+                    throw new ArgumentException("New XP total cannot be lower than the current total.");
+
+                if (totalXp == value)
+                    return;
 
                 totalXp = value;
-                saveMask |= PathSaveMask.XPChange;
+                saveMask.Mark(PathSaveMask.XPChange);
             }
         }
         private uint totalXp;
@@ -58,15 +63,18 @@ namespace NexusForever.Game.Entity
             set
             {
                 if (value < levelRewarded)
-                    throw new ArgumentException("New Level Rewarded Value must be higher, and not equal to current XP total.");
+                    throw new ArgumentException("New rewarded level cannot be lower than the current value.");
+
+                if (levelRewarded == value)
+                    return;
 
                 levelRewarded = value;
-                saveMask |= PathSaveMask.LevelChange;
+                saveMask.Mark(PathSaveMask.LevelChange);
             }
         }
         private byte levelRewarded;
 
-        private PathSaveMask saveMask;
+        private readonly VersionedSaveMask<PathSaveMask> saveMask = new();
 
         /// <summary>
         /// Create a new <see cref="IPathEntry"/> for a <see cref="IPlayer"/> from <see cref="CharacterPathModel"/>
@@ -79,7 +87,6 @@ namespace NexusForever.Game.Entity
             totalXp       = model.TotalXp;
             levelRewarded = model.LevelRewarded;
 
-            saveMask      = PathSaveMask.None;
         }
 
         /// <summary>
@@ -91,7 +98,7 @@ namespace NexusForever.Game.Entity
             Path        = path;
             unlocked    = isUnlocked;
 
-            saveMask    = PathSaveMask.Create;
+            saveMask.Mark(PathSaveMask.Create);
         }
 
         /// <summary>
@@ -100,10 +107,20 @@ namespace NexusForever.Game.Entity
         /// <param name="context">The character context to save against</param>
         public void Save(CharacterContext context)
         {
-            if (saveMask == PathSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage path changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<PathSaveMask> snapshot = saveMask.Capture();
+            PathSaveMask mask = snapshot.Mask;
+            if (mask == PathSaveMask.None)
                 return;
 
-            if ((saveMask & PathSaveMask.Create) != 0)
+            if ((mask & PathSaveMask.Create) != 0)
             {
                 // Path doesn't exist in database, all infomation must be saved
                 context.Add(new CharacterPathModel
@@ -125,26 +142,26 @@ namespace NexusForever.Game.Entity
                 };
 
                 EntityEntry<CharacterPathModel> entity = context.Attach(model);
-                if ((saveMask & PathSaveMask.Unlocked) != 0)
+                if ((mask & PathSaveMask.Unlocked) != 0)
                 {
                     model.Unlocked = Convert.ToByte(Unlocked);
                     entity.Property(p => p.Unlocked).IsModified = true;
                 }
 
-                if ((saveMask & PathSaveMask.XPChange) != 0)
+                if ((mask & PathSaveMask.XPChange) != 0)
                 {
                     model.TotalXp = TotalXp;
                     entity.Property(p => p.TotalXp).IsModified = true;
                 }
 
-                if ((saveMask & PathSaveMask.LevelChange) != 0)
+                if ((mask & PathSaveMask.LevelChange) != 0)
                 {
                     model.LevelRewarded = LevelRewarded;
                     entity.Property(p => p.LevelRewarded).IsModified = true;
                 }
             }
 
-            saveMask = PathSaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
     }
 }

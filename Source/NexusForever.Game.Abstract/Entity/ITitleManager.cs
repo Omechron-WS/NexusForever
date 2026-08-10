@@ -1,10 +1,16 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Shared;
 
 namespace NexusForever.Game.Abstract.Entity
 {
     public interface ITitleManager : IDatabaseCharacter, IUpdate, IEnumerable<ITitle>
     {
+        /// <summary>
+        /// Stage title changes and register acknowledgements for a successful commit.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         ushort ActiveTitleId { get; set; }
 
         /// <summary>

@@ -1,10 +1,12 @@
 ﻿using System.Collections;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Guild;
 using NexusForever.Game.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Guild;
 using NexusForever.GameTable.Text.Filter;
@@ -89,13 +91,16 @@ namespace NexusForever.Game.Guild
             get => guildAffiliation;
             set
             {
+                if (ReferenceEquals(guildAffiliation, value))
+                    return;
+
                 guildAffiliation = value;
-                saveMask |= SaveMask.Affiliation;
+                saveMask.Mark(SaveMask.Affiliation);
             }
         }
         private IGuildBase guildAffiliation;
 
-        private SaveMask saveMask;
+        private readonly VersionedSaveMask<SaveMask> saveMask = new();
 
         private IPlayer owner;
 
@@ -134,27 +139,40 @@ namespace NexusForever.Game.Guild
             // check that the player is allowed to be affiliated with this guild
             // validation can fail if the player is removed from the guild or the guild is disbanded while offline
             if (model.GuildAffiliation != null)
-                GuildAffiliation = guilds.TryGetValue(model.GuildAffiliation.Value, out IGuildBase guild) ? guild : guilds.Values.FirstOrDefault();
-            else if (model.GuildAffiliation == null && guilds.Count > 0)
-                GuildAffiliation = guilds.Values.FirstOrDefault();
+                guildAffiliation = guilds.TryGetValue(model.GuildAffiliation.Value, out IGuildBase guild) ? guild : guilds.Values.FirstOrDefault();
+            else if (guilds.Count > 0)
+                guildAffiliation = guilds.Values.FirstOrDefault();
+
+            if (model.GuildAffiliation != guildAffiliation?.Id)
+                saveMask.Mark(SaveMask.Affiliation);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == SaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage player guild-affiliation changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<SaveMask> snapshot = saveMask.Capture();
+            SaveMask mask = snapshot.Mask;
+            if (mask == SaveMask.None)
                 return;
 
             // character is attached in Player::Save, this will only be local lookup
             CharacterModel character = context.Character.Find(owner.CharacterId);
             EntityEntry<CharacterModel> entity = context.Entry(character);
 
-            if ((saveMask & SaveMask.Affiliation) != 0)
+            if ((mask & SaveMask.Affiliation) != 0)
             {
                 character.GuildAffiliation = guildAffiliation?.Id;
                 entity.Property(p => p.GuildAffiliation).IsModified = true;
             }
 
-            saveMask = SaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         /// <summary>

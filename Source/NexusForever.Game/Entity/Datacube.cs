@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Entity;
 using NetworkDatacube = NexusForever.Network.World.Message.Model.Shared.Datacube;
 
@@ -25,14 +27,17 @@ namespace NexusForever.Game.Entity
             get => progress;
             set
             {
+                if (progress == value)
+                    return;
+
                 progress = value;
-                saveMask |= DatacubeSaveMask.Progress;
+                saveMask.Mark(DatacubeSaveMask.Progress);
             }
         }
 
         private uint progress;
 
-        private DatacubeSaveMask saveMask;
+        private readonly VersionedSaveMask<DatacubeSaveMask> saveMask = new();
 
         private readonly IPlayer player;
 
@@ -45,9 +50,8 @@ namespace NexusForever.Game.Entity
 
             Id       = id;
             Type     = type;
-            Progress = progress;
-
-            saveMask = DatacubeSaveMask.Create;
+            this.progress = progress;
+            saveMask.Mark(DatacubeSaveMask.Create);
         }
 
         /// <summary>
@@ -59,12 +63,22 @@ namespace NexusForever.Game.Entity
 
             Id       = model.Datacube;
             Type     = (DatacubeType)model.Type;
-            Progress = model.Progress;
+            progress = model.Progress;
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == DatacubeSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage datacube changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<DatacubeSaveMask> snapshot = saveMask.Capture();
+            DatacubeSaveMask mask = snapshot.Mask;
+            if (mask == DatacubeSaveMask.None)
                 return;
 
             var model = new CharacterDatacubeModel
@@ -75,15 +89,15 @@ namespace NexusForever.Game.Entity
                 Progress = Progress
             };
 
-            if ((saveMask & DatacubeSaveMask.Create) != 0)
+            if ((mask & DatacubeSaveMask.Create) != 0)
                 context.Add(model);
-            else if ((saveMask & DatacubeSaveMask.Progress) != 0)
+            else if ((mask & DatacubeSaveMask.Progress) != 0)
             {
                 EntityEntry<CharacterDatacubeModel> entity = context.Attach(model);
                 entity.Property(p => p.Progress).IsModified = true;
             }
 
-            saveMask = DatacubeSaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         public NetworkDatacube Build()

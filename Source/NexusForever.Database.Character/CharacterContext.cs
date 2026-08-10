@@ -1232,7 +1232,8 @@ namespace NexusForever.Database.Character
                 entity.Property(e => e.Path)
                     .HasColumnName("path")
                     .HasColumnType("tinyint(3) unsigned")
-                    .HasDefaultValue(0);
+                    .HasDefaultValue(0)
+                    .ValueGeneratedNever();
 
                 entity.Property(e => e.LevelRewarded)
                     .HasColumnName("levelRewarded")

@@ -1,8 +1,10 @@
 ﻿using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Database.World.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Entity;
 
 namespace NexusForever.Game.Entity
@@ -26,8 +28,11 @@ namespace NexusForever.Game.Entity
             get => value;
             set
             {
+                if (this.value == value)
+                    return;
+
                 this.value = value;
-                saveMask |= StatSaveMask.Value;
+                saveMask.Mark(StatSaveMask.Value);
             }
         }
 
@@ -35,15 +40,19 @@ namespace NexusForever.Game.Entity
 
         public uint Data
         {
-            get;
+            get => data;
             set
             {
-                field = value;
-                saveMask |= StatSaveMask.Data;
+                if (data == value)
+                    return;
+
+                data = value;
+                saveMask.Mark(StatSaveMask.Data);
             }
         }
+        private uint data;
 
-        private StatSaveMask saveMask;
+        private readonly VersionedSaveMask<StatSaveMask> saveMask = new();
 
         /// <summary>
         /// Create a new <see cref="IStatValue"/> from an existing database model.
@@ -52,8 +61,8 @@ namespace NexusForever.Game.Entity
         {
             Stat  = (Stat)model.Stat;
             Type  = EntityManager.Instance.GetStatAttribute(Stat).Type;
-            Value = model.Value;
-            Data  = model.Data;
+            value = model.Value;
+            data  = model.Data;
         }
 
         /// <summary>
@@ -63,7 +72,7 @@ namespace NexusForever.Game.Entity
         {
             Stat  = (Stat)model.Stat;
             Type  = EntityManager.Instance.GetStatAttribute(Stat).Type;
-            Value = model.Value;
+            value = model.Value;
         }
 
         /// <summary>
@@ -71,10 +80,10 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public StatValue(Stat stat, uint value)
         {
-            Stat     = stat;
-            Type     = StatType.Integer;
-            Value    = value;
-            saveMask = StatSaveMask.Create;
+            Stat       = stat;
+            Type       = StatType.Integer;
+            this.value = value;
+            saveMask.Mark(StatSaveMask.Create);
         }
 
         /// <summary>
@@ -82,32 +91,44 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public StatValue(Stat stat, float value)
         {
-            Stat     = stat;
-            Type     = StatType.Float;
-            Value    = value;
-            saveMask = StatSaveMask.Create;
+            Stat       = stat;
+            Type       = StatType.Float;
+            this.value = value;
+            saveMask.Mark(StatSaveMask.Create);
         }
 
         public StatValue(Stat stat, uint value, uint data)
         {
-            Stat     = stat;
-            Type     = StatType.Data;
-            Value    = value;
-            saveMask = StatSaveMask.Create;
+            Stat       = stat;
+            Type       = StatType.Data;
+            this.value = value;
+            this.data  = data;
+            saveMask.Mark(StatSaveMask.Create);
         }
 
         public void SaveCharacter(ulong characterId, CharacterContext context)
         {
-            if (saveMask == StatSaveMask.None)
+            SaveCharacter(characterId, context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage character stat changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void SaveCharacter(ulong characterId, CharacterContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<StatSaveMask> snapshot = saveMask.Capture();
+            StatSaveMask mask = snapshot.Mask;
+            if (mask == StatSaveMask.None)
                 return;
 
-            if ((saveMask & StatSaveMask.Create) != 0)
+            if ((mask & StatSaveMask.Create) != 0)
             {
                 context.Add(new CharacterStatModel
                 {
                     Id    = characterId,
                     Stat  = (byte)Stat,
-                    Value = Value
+                    Value = Value,
+                    Data  = Data
                 });
             }
             else
@@ -119,20 +140,20 @@ namespace NexusForever.Game.Entity
                 };
 
                 EntityEntry<CharacterStatModel> statEntity = context.Attach(statModel);
-                if ((saveMask & StatSaveMask.Value) != 0)
+                if ((mask & StatSaveMask.Value) != 0)
                 {
                     statModel.Value = Value;
                     statEntity.Property(p => p.Value).IsModified = true;
                 }
 
-                if ((saveMask & StatSaveMask.Data) != 0)
+                if ((mask & StatSaveMask.Data) != 0)
                 {
                     statModel.Data = Data;
                     statEntity.Property(p => p.Data).IsModified = true;
                 }
             }
 
-            saveMask = StatSaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         /*public void SaveEntity(CharacterContext context)

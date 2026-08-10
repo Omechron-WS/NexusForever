@@ -1,7 +1,9 @@
 ﻿using System.Collections;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Reward;
 using NexusForever.GameTable;
@@ -28,8 +30,16 @@ namespace NexusForever.Game.Entity
 
         public void Save(CharacterContext context)
         {
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage supply-satchel changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
             foreach (ITradeskillMaterial material in tradeskillMaterials.Values)
-                material.Save(context);
+                material.Save(context, commitScope);
         }
 
         public ushort[] BuildNetworkPacket()

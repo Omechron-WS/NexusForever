@@ -1,7 +1,9 @@
 ﻿using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.GameTable;
 using NexusForever.Network.World.Message.Model;
 using NexusForever.Network.World.Message.Static;
@@ -10,13 +12,23 @@ namespace NexusForever.Game.Entity
 {
     public class XpManager : IXpManager
     {
+        [Flags]
+        private enum XpSaveMask
+        {
+            None   = 0x00,
+            Values = 0x01
+        }
+
         public uint TotalXp
         {
             get => totalXp;
             private set
             {
+                if (totalXp == value)
+                    return;
+
                 totalXp = value;
-                isDirty = true;
+                saveMask.Mark(XpSaveMask.Values);
             }
         }
         private uint totalXp;
@@ -26,13 +38,16 @@ namespace NexusForever.Game.Entity
             get => restBonusXp;
             private set
             {
+                if (restBonusXp == value)
+                    return;
+
                 restBonusXp = value;
-                isDirty = true;
+                saveMask.Mark(XpSaveMask.Values);
             }
         }
         private uint restBonusXp;
 
-        private bool isDirty;
+        private readonly VersionedSaveMask<XpSaveMask> saveMask = new();
         private readonly IPlayer player;
 
         /// <summary>
@@ -41,14 +56,24 @@ namespace NexusForever.Game.Entity
         public XpManager(IPlayer player, CharacterModel model)
         {
             this.player = player;
-            totalXp = model.TotalXp;
+            totalXp      = model.TotalXp;
+            restBonusXp  = model.RestBonusXp;
 
             CalculateRestXpAtLogin(model);
         }
 
         public void Save(CharacterContext context)
         {
-            if (!isDirty)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage experience changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<XpSaveMask> snapshot = saveMask.Capture();
+            if (snapshot.Mask == XpSaveMask.None)
                 return;
 
             // character is attached in Player::Save, this will only be local lookup
@@ -60,7 +85,7 @@ namespace NexusForever.Game.Entity
             entity.Property(p => p.TotalXp).IsModified = true;
             entity.Property(p => p.RestBonusXp).IsModified = true;
 
-            isDirty = false;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         private void CalculateRestXpAtLogin(CharacterModel model)

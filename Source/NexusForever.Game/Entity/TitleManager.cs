@@ -1,8 +1,10 @@
 using System.Collections;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
 using NexusForever.Network;
@@ -12,6 +14,13 @@ namespace NexusForever.Game.Entity
 {
     public class TitleManager : ITitleManager
     {
+        [Flags]
+        private enum TitleManagerSaveMask
+        {
+            None        = 0x00,
+            ActiveTitle = 0x01
+        }
+
         public ushort ActiveTitleId
         {
             get => activeTitleId;
@@ -21,7 +30,7 @@ namespace NexusForever.Game.Entity
                     return;
 
                 activeTitleId = value;
-                activeSaved   = false;
+                saveMask.Mark(TitleManagerSaveMask.ActiveTitle);
 
                 player.EnqueueToVisible(new ServerTitleSet
                 {
@@ -32,7 +41,7 @@ namespace NexusForever.Game.Entity
         }
 
         private ushort activeTitleId;
-        private bool activeSaved = true;
+        private readonly VersionedSaveMask<TitleManagerSaveMask> saveMask = new();
 
         private readonly IPlayer player;
         private readonly Dictionary<ushort, ITitle> titles = new();
@@ -66,7 +75,16 @@ namespace NexusForever.Game.Entity
 
         public void Save(CharacterContext context)
         {
-            if (!activeSaved)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage title changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<TitleManagerSaveMask> snapshot = saveMask.Capture();
+            if ((snapshot.Mask & TitleManagerSaveMask.ActiveTitle) != 0)
             {
                 // character is attached in Player::Save, this will only be local lookup
                 CharacterModel character = context.Character.Find(player.CharacterId);
@@ -75,11 +93,11 @@ namespace NexusForever.Game.Entity
                 EntityEntry<CharacterModel> entity = context.Entry(character);
                 entity.Property(p => p.Title).IsModified = true;
 
-                activeSaved = true;
+                commitScope.Register(() => saveMask.Acknowledge(snapshot));
             }
 
             foreach (ITitle title in titles.Values)
-                title.Save(context);
+                title.Save(context, commitScope);
         }
 
         /// <summary>

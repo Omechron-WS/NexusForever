@@ -1,4 +1,5 @@
 ﻿using System.Numerics;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Game.Abstract.Entity;
 
@@ -6,6 +7,11 @@ namespace NexusForever.Game.Abstract.Map
 {
     public interface IZoneMapManager : IDatabaseCharacter
     {
+        /// <summary>
+        /// Stage zone-map discoveries and register acknowledgements for a successful commit.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         void SendInitialPackets();
         void SendZoneMaps();
 

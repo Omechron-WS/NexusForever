@@ -1,10 +1,16 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Game.Static.Reputation;
 
 namespace NexusForever.Game.Abstract.Reputation
 {
     public interface IReputationManager : IDatabaseCharacter, IEnumerable<IReputation>
     {
+        /// <summary>
+        /// Stage reputation changes and register acknowledgements for a successful commit.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         /// <summary>
         /// Update <see cref="IReputation"/> for supplied <see cref="Faction"/> and value.
         /// </summary>

@@ -1,7 +1,9 @@
 ﻿using System.Collections;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Prerequisite;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.PlayerPath;
@@ -256,8 +258,16 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void Save(CharacterContext context)
         {
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage path changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
             foreach (IPathEntry pathEntry in paths.Values)
-                pathEntry.Save(context);
+                pathEntry.Save(context, commitScope);
         }
 
         public void SendInitialPackets()

@@ -1,7 +1,9 @@
 ﻿using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
 
@@ -29,42 +31,54 @@ namespace NexusForever.Game.Entity
             get => amount;
             set
             {
+                if (amount == value)
+                    return;
+
                 amount = value;
-                saveMask |= TradeskillMaterialSaveMask.Amount;
+                saveMask.Mark(TradeskillMaterialSaveMask.Amount);
             }
         }
         private ushort amount;
 
-        private TradeskillMaterialSaveMask saveMask;
+        private readonly VersionedSaveMask<TradeskillMaterialSaveMask> saveMask = new();
 
         public TradeskillMaterial(CharacterTradeskillMaterialModel model)
         {
             Owner      = model.Id;
             MaterialId = model.MaterialId;
-            Amount     = model.Amount;
+            amount     = model.Amount;
 
             Entry      = GameTableManager.Instance.TradeskillMaterial.GetEntry(MaterialId);
 
-            saveMask   = TradeskillMaterialSaveMask.None;
         }
 
         public TradeskillMaterial(ulong characterId, ushort materialId)
         {
             Owner      = characterId;
             MaterialId = materialId;
-            Amount     = 0;
+            amount     = 0;
 
             Entry      = GameTableManager.Instance.TradeskillMaterial.GetEntry(MaterialId);
 
-            saveMask   = TradeskillMaterialSaveMask.Create;
+            saveMask.Mark(TradeskillMaterialSaveMask.Create);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == TradeskillMaterialSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage material changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<TradeskillMaterialSaveMask> snapshot = saveMask.Capture();
+            TradeskillMaterialSaveMask mask = snapshot.Mask;
+            if (mask == TradeskillMaterialSaveMask.None)
                 return;
 
-            if ((saveMask & TradeskillMaterialSaveMask.Create) != 0)
+            if ((mask & TradeskillMaterialSaveMask.Create) != 0)
             {
                 var model = new CharacterTradeskillMaterialModel
                 {
@@ -84,14 +98,14 @@ namespace NexusForever.Game.Entity
                 };
 
                 EntityEntry<CharacterTradeskillMaterialModel> entity = context.Attach(model);
-                if ((saveMask & TradeskillMaterialSaveMask.Amount) != 0)
+                if ((mask & TradeskillMaterialSaveMask.Amount) != 0)
                 {
                     model.Amount = amount;
                     entity.Property(p => p.Amount).IsModified = true;
                 }
             }
 
-            saveMask = TradeskillMaterialSaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
     }
 }

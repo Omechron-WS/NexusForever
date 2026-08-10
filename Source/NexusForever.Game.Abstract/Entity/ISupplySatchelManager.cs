@@ -1,9 +1,15 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 
 namespace NexusForever.Game.Abstract.Entity
 {
     public interface ISupplySatchelManager : IDatabaseCharacter, IEnumerable<ITradeskillMaterial>
     {
+        /// <summary>
+        /// Stage supply-satchel changes and register acknowledgements for a successful commit.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         ushort[] BuildNetworkPacket();
 
         /// <summary>

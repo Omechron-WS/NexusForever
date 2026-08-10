@@ -1,10 +1,16 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Game.Static.Entity;
 
 namespace NexusForever.Game.Abstract.Entity
 {
     public interface IDatacubeManager : IDatabaseCharacter
     {
+        /// <summary>
+        /// Stage datacube changes and register acknowledgements for a successful commit.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         /// <summary>
         /// Return <see cref="IDatacube"/> with supplied id and <see cref="DatacubeType"/>.
         /// </summary>

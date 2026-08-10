@@ -1203,7 +1203,6 @@ namespace NexusForever.Database.Character.Migrations
                         .HasColumnName("id");
 
                     b.Property<byte>("Path")
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("tinyint(3) unsigned")
                         .HasDefaultValue((byte)0)
                         .HasColumnName("path");
