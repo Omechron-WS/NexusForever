@@ -56,6 +56,13 @@ namespace NexusForever.Game.Abstract.Entity
         void CastSpell(uint spell4Id, ISpellParameters parameters);
 
         /// <summary>
+        /// Cast a <see cref="ISpell"/> with the supplied spell id and return the created spell, or null if no spell was created.
+        /// </summary>
+#nullable enable
+        ISpell? CastSpellTracked(uint spell4Id, ISpellParameters parameters);
+#nullable disable
+
+        /// <summary>
         /// Cast a <see cref="ISpell"/> with the supplied spell base id, tier and <see cref="ISpellParameters"/>.
         /// </summary>
         void CastSpell(uint spell4BaseId, byte tier, ISpellParameters parameters);

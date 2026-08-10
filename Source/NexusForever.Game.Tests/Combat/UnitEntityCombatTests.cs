@@ -1,14 +1,20 @@
+using System.Reflection;
+using Microsoft.Extensions.DependencyInjection;
 using NexusForever.Game.Abstract.Combat;
 using NexusForever.Game.Abstract.Entity.Movement;
+using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Entity;
 using NexusForever.Game.Static.Combat;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Network.World.Entity;
 using NexusForever.Network.World.Entity.Model;
+using NexusForever.Network.World.Message.Static;
+using NexusForever.Shared;
 using Moq;
 
 namespace NexusForever.Game.Tests.Combat
 {
+    [Collection(CombatServiceProviderCollection.Name)]
     public class UnitEntityCombatTests
     {
         [Fact]
@@ -42,6 +48,80 @@ namespace NexusForever.Game.Tests.Combat
             Assert.True(removed);
             proc.Verify(p => p.Update(0.1d), Times.Once);
             proc.Verify(p => p.Trigger(), Times.Never);
+            proc.Verify(p => p.Cancel(), Times.Once);
+        }
+
+        [Fact]
+        public void RemoveProc_CancelsOnlyExactProcAndPreservesOtherRegistrations()
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            Mock<IProcInfo> removedProc = CreateProc(entity, ProcType.BeginMoving, 123u);
+            Mock<IProcInfo> remainingProc = CreateProc(entity, ProcType.BeginMoving, 456u);
+            entity.ApplyProc(removedProc.Object);
+            entity.ApplyProc(remainingProc.Object);
+
+            entity.RemoveProc(removedProc.Object);
+            entity.FireProc(ProcType.BeginMoving);
+
+            removedProc.Verify(p => p.Cancel(), Times.Once);
+            removedProc.Verify(p => p.Trigger(), Times.Never);
+            remainingProc.Verify(p => p.Cancel(), Times.Never);
+            remainingProc.Verify(p => p.Trigger(), Times.Once);
+        }
+
+        [Fact]
+        public void Death_CancelsRegisteredProcsAndEndsPendingSpells()
+        {
+            IServiceProvider previousProvider = LegacyServiceProvider.Provider;
+            var entityManager = new EntityManager();
+            typeof(EntityManager).GetMethod(
+                    "InitialiseEntityStats",
+                    BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(entityManager, null);
+            using ServiceProvider serviceProvider = new ServiceCollection()
+                .AddSingleton(entityManager)
+                .BuildServiceProvider();
+            LegacyServiceProvider.Provider = serviceProvider;
+
+            try
+            {
+                TestUnitEntity entity = CreateEntity(1u);
+                Mock<IProcInfo> proc = CreateProc(entity, ProcType.CriticalDamage, 123u);
+                var castingSpell = new Mock<ISpell>();
+                castingSpell.Setup(s => s.IsCasting).Returns(true);
+                var executingSpell = new Mock<ISpell>();
+                AddPendingSpell(entity, castingSpell.Object);
+                AddPendingSpell(entity, executingSpell.Object);
+                entity.ApplyProc(proc.Object);
+
+                entity.Die();
+                entity.FireProc(ProcType.CriticalDamage);
+
+                proc.Verify(p => p.Cancel(), Times.Once);
+                proc.Verify(p => p.Trigger(), Times.Never);
+                castingSpell.Verify(s => s.CancelCast(CastResult.CasterCannotBeDead), Times.Once);
+                executingSpell.Verify(s => s.Finish(), Times.Once);
+            }
+            finally
+            {
+                LegacyServiceProvider.Provider = previousProvider;
+            }
+        }
+
+        [Fact]
+        public void Dispose_CancelsRegisteredProcsAndDisposesPendingSpells()
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            Mock<IProcInfo> proc = CreateProc(entity, ProcType.CriticalDamage, 123u);
+            var spell = new Mock<ISpell>();
+            AddPendingSpell(entity, spell.Object);
+            entity.ApplyProc(proc.Object);
+
+            entity.Dispose();
+
+            proc.Verify(p => p.Cancel(), Times.Once);
+            spell.Verify(s => s.Finish(), Times.Once);
+            spell.Verify(s => s.Dispose(), Times.Once);
         }
 
         [Fact]
@@ -91,6 +171,15 @@ namespace NexusForever.Game.Tests.Combat
             return proc;
         }
 
+        private static void AddPendingSpell(TestUnitEntity entity, ISpell spell)
+        {
+            FieldInfo field = typeof(UnitEntity).GetField(
+                "pendingSpells",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            var spells = (List<ISpell>)field.GetValue(entity);
+            spells.Add(spell);
+        }
+
         private sealed class TestUnitEntity : UnitEntity
         {
             public override EntityType Type => EntityType.NonPlayer;
@@ -103,6 +192,11 @@ namespace NexusForever.Game.Tests.Combat
             public void SetGuid(uint guid)
             {
                 Guid = guid;
+            }
+
+            public void Die()
+            {
+                OnDeath();
             }
 
             protected override IEntityModel BuildEntityModel()

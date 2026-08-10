@@ -1,3 +1,4 @@
+using NexusForever.Game.Abstract.Combat;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Abstract.Spell.Event;
@@ -34,6 +35,7 @@ namespace NexusForever.Game.Spell
 
         protected readonly List<ISpellTargetInfo> targets = new();
         protected readonly List<ITelegraph> telegraphs = new();
+        private readonly Dictionary<IUnitEntity, List<IProcInfo>> trackedProcs = new(ReferenceEqualityComparer.Instance);
 
         protected readonly ISpellEventManager events = new SpellEventManager();
 
@@ -55,6 +57,8 @@ namespace NexusForever.Game.Spell
 
         public void Dispose()
         {
+            RemoveAllEffects();
+
             if (scriptCollection != null)
                 ScriptManager.Instance.Unload(scriptCollection);
 
@@ -74,6 +78,7 @@ namespace NexusForever.Game.Spell
         {
             if (CanFinish())
             {
+                RemoveAllEffects();
                 status = SpellStatus.Finished;
                 log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} has finished.");
             }
@@ -228,7 +233,7 @@ namespace NexusForever.Game.Spell
         /// </summary>
         public virtual void CancelCast(CastResult result)
         {
-            if (status != SpellStatus.Casting)
+            if (!IsCasting)
                 throw new InvalidOperationException();
 
             if (Caster is IPlayer player && !player.IsLoading)
@@ -242,6 +247,7 @@ namespace NexusForever.Game.Spell
             }
 
             events.CancelEvents();
+            RemoveAllEffects();
             status = SpellStatus.Executing;
 
             log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} cast was cancelled.");
@@ -252,11 +258,59 @@ namespace NexusForever.Game.Spell
         /// </summary>
         public virtual void Finish()
         {
-            if (status == SpellStatus.Finished)
+            if (status is SpellStatus.Finished or SpellStatus.Finishing)
                 return;
 
             events.CancelEvents();
+            RemoveAllEffects();
             status = SpellStatus.Finishing;
+        }
+
+        /// <summary>
+        /// Track a proc applied by this spell so it can be removed with the spell's effects.
+        /// </summary>
+        public void TrackProc(IUnitEntity target, IProcInfo proc)
+        {
+            ArgumentNullException.ThrowIfNull(target);
+            ArgumentNullException.ThrowIfNull(proc);
+
+            if (!ReferenceEquals(target, proc.Owner))
+                throw new ArgumentException("The proc owner does not match the supplied target.", nameof(proc));
+
+            if (!trackedProcs.TryGetValue(target, out List<IProcInfo> procs))
+            {
+                procs = [];
+                trackedProcs.Add(target, procs);
+            }
+
+            if (!procs.Contains(proc))
+                procs.Add(proc);
+        }
+
+        /// <summary>
+        /// Remove effects applied to a single spell target.
+        /// </summary>
+        protected void RemoveEffects(ISpellTargetInfo target)
+        {
+            if (target?.Entity == null)
+                return;
+
+            RemoveTrackedProcs(target.Entity);
+        }
+
+        private void RemoveTrackedProcs(IUnitEntity target)
+        {
+            if (!trackedProcs.Remove(target, out List<IProcInfo> procs))
+                return;
+
+            foreach (IProcInfo proc in procs)
+                target.RemoveProc(proc);
+        }
+
+        private void RemoveAllEffects()
+        {
+            foreach (IUnitEntity target in trackedProcs.Keys.ToArray())
+                RemoveTrackedProcs(target);
         }
 
         protected virtual void Execute()

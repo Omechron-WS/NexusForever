@@ -91,7 +91,10 @@ namespace NexusForever.Game.Spell.SpellType
             for (int i = targets.Count - 1; i >= 0; i--)
             {
                 if (targets[i].TargetSelectionState == TargetSelectionState.Old)
+                {
+                    RemoveEffects(targets[i]);
                     targets.RemoveAt(i);
+                }
             }
 
             // Handle effect retrigger timers — fire ticking effects when their timer expires

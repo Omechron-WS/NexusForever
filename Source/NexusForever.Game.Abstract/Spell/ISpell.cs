@@ -1,3 +1,4 @@
+using NexusForever.Game.Abstract.Combat;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Network.World.Message.Static;
 using NexusForever.Shared;
@@ -29,6 +30,11 @@ namespace NexusForever.Game.Abstract.Spell
         /// Force-end the spell and all its effects.
         /// </summary>
         void Finish();
+
+        /// <summary>
+        /// Track a proc applied by this spell so it can be removed with the spell's effects.
+        /// </summary>
+        void TrackProc(IUnitEntity target, IProcInfo proc);
 
         /// <summary>
         /// Post-tick update for state transitions and cleanup.

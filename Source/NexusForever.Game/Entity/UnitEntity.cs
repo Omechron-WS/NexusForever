@@ -95,12 +95,16 @@ namespace NexusForever.Game.Entity
 
         public override void Dispose()
         {
-            base.Dispose();
+            ClearProcs();
 
-            foreach (ISpell spell in pendingSpells)
+            foreach (ISpell spell in pendingSpells.ToArray())
+            {
+                spell.Finish();
                 spell.Dispose();
+            }
 
-            procs.Clear();
+            pendingSpells.Clear();
+            base.Dispose();
         }
 
         private void InitialiseHitRadius()
@@ -257,6 +261,15 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void CastSpell(uint spell4Id, ISpellParameters parameters)
         {
+            CastSpellTracked(spell4Id, parameters);
+        }
+
+        /// <summary>
+        /// Cast a <see cref="ISpell"/> with the supplied spell id and return the created spell, or null if no spell was created.
+        /// </summary>
+#nullable enable
+        public ISpell? CastSpellTracked(uint spell4Id, ISpellParameters parameters)
+        {
             if (parameters == null)
                 throw new ArgumentNullException();
 
@@ -264,13 +277,19 @@ namespace NexusForever.Game.Entity
             if (spell4Entry == null)
                 throw new ArgumentOutOfRangeException();
 
-            CastSpell(spell4Entry.Spell4BaseIdBaseSpell, (byte)spell4Entry.TierIndex, parameters);
+            return CastSpellInternal(spell4Entry.Spell4BaseIdBaseSpell, (byte)spell4Entry.TierIndex, parameters);
         }
+#nullable disable
 
         /// <summary>
         /// Cast a <see cref="ISpell"/> with the supplied spell base id, tier and <see cref="ISpellParameters"/>.
         /// </summary>
         public void CastSpell(uint spell4BaseId, byte tier, ISpellParameters parameters)
+        {
+            CastSpellInternal(spell4BaseId, tier, parameters);
+        }
+
+        private ISpell CastSpellInternal(uint spell4BaseId, byte tier, ISpellParameters parameters)
         {
             if (parameters == null)
                 throw new ArgumentNullException();
@@ -284,7 +303,7 @@ namespace NexusForever.Game.Entity
                 throw new ArgumentOutOfRangeException();
 
             parameters.SpellInfo = spellInfo;
-            CastSpell(parameters);
+            return CastSpellInternal(parameters);
         }
 
         /// <summary>
@@ -292,8 +311,13 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void CastSpell(ISpellParameters parameters)
         {
+            CastSpellInternal(parameters);
+        }
+
+        private ISpell CastSpellInternal(ISpellParameters parameters)
+        {
             if (!IsAlive)
-                return;
+                return null;
 
             if (parameters == null)
                 throw new ArgumentNullException();
@@ -302,14 +326,14 @@ namespace NexusForever.Game.Entity
             {
                 if (this is IPlayer player)
                     player.SendSystemMessage($"Unable to cast base spell {parameters.SpellInfo.BaseInfo.Entry.Id} because it is disabled.");
-                return;
+                return null;
             }
 
             if (DisableManager.Instance.IsDisabled(DisableType.Spell, parameters.SpellInfo.Entry.Id))
             {
                 if (this is IPlayer player)
                     player.SendSystemMessage($"Unable to cast spell {parameters.SpellInfo.Entry.Id} because it is disabled.");
-                return;
+                return null;
             }
 
             if (parameters.UserInitiatedSpellCast)
@@ -321,10 +345,11 @@ namespace NexusForever.Game.Entity
             CastMethod castMethod = (CastMethod)parameters.SpellInfo.BaseInfo.Entry.CastMethod;
             ISpell spell = GlobalSpellManager.Instance.NewSpell(castMethod, this, parameters);
             if (spell == null)
-                return;
+                return null;
 
             spell.Cast();
             pendingSpells.Add(spell);
+            return spell;
         }
 
         /// <summary>
@@ -382,7 +407,19 @@ namespace NexusForever.Game.Entity
             if (procList.Count == 0)
                 procs.Remove(proc.Type);
 
+            if (removed)
+                proc.Cancel();
+
             return removed;
+        }
+
+        private void ClearProcs()
+        {
+            IProcInfo[] activeProcs = procs.Values.SelectMany(list => list).ToArray();
+            procs.Clear();
+
+            foreach (IProcInfo proc in activeProcs)
+                proc.Cancel();
         }
 
         /// <summary>
@@ -467,11 +504,15 @@ namespace NexusForever.Game.Entity
         {
             DeathState = EntityDeathState.JustDied;
 
-            foreach (ISpell spell in pendingSpells)
+            foreach (ISpell spell in pendingSpells.ToArray())
             {
                 if (spell.IsCasting)
                     spell.CancelCast(CastResult.CasterCannotBeDead);
+                else
+                    spell.Finish();
             }
+
+            ClearProcs();
 
             GenerateRewards();
             // TODO: schedule respawn

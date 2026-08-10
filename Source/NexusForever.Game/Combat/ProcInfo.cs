@@ -1,5 +1,6 @@
 using NexusForever.Game.Abstract.Combat;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Spell;
 using NexusForever.Game.Static.Combat;
 using NexusForever.GameTable.Model;
@@ -19,10 +20,12 @@ namespace NexusForever.Game.Combat
         public uint ApplicatorSpell4Id { get; }
         public ProcType Type { get; }
         public uint TriggerSpell4Id { get; }
-        public bool CanTrigger => !triggerPending;
+        public bool CanTrigger => !cancelled && !triggerPending;
 
         private readonly UpdateTimer triggerTimer;
+        private readonly List<ISpell> triggeredSpells = [];
         private bool triggerPending;
+        private bool cancelled;
 
         /// <summary>
         /// Create a proc from a spell effect definition.
@@ -45,7 +48,9 @@ namespace NexusForever.Game.Combat
         /// </summary>
         public void Update(double lastTick)
         {
-            if (!triggerPending)
+            triggeredSpells.RemoveAll(spell => spell.IsFinished);
+
+            if (cancelled || !triggerPending)
                 return;
 
             triggerTimer.Update(lastTick);
@@ -55,10 +60,12 @@ namespace NexusForever.Game.Combat
             triggerPending = false;
             log.Trace("Proc {0} firing trigger spell {1}.", Type, TriggerSpell4Id);
 
-            Owner.CastSpell(TriggerSpell4Id, new SpellParameters
+            ISpell spell = Owner.CastSpellTracked(TriggerSpell4Id, new SpellParameters
             {
                 UserInitiatedSpellCast = false
             });
+            if (spell != null)
+                triggeredSpells.Add(spell);
         }
 
         /// <summary>
@@ -72,6 +79,27 @@ namespace NexusForever.Game.Combat
             triggerPending = true;
             triggerTimer.Reset(true);
             return true;
+        }
+
+        /// <summary>
+        /// Cancel any pending trigger and finish spells previously triggered by this proc.
+        /// </summary>
+        public void Cancel()
+        {
+            if (cancelled)
+                return;
+
+            cancelled      = true;
+            triggerPending = false;
+            triggerTimer.Reset(false);
+
+            foreach (ISpell spell in triggeredSpells)
+            {
+                if (!spell.IsFinished && !spell.IsFinishing)
+                    spell.Finish();
+            }
+
+            triggeredSpells.Clear();
         }
     }
 }

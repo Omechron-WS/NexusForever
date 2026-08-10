@@ -13,6 +13,13 @@ using Moq;
 
 namespace NexusForever.Game.Tests.Combat
 {
+    [CollectionDefinition(Name, DisableParallelization = true)]
+    public sealed class CombatServiceProviderCollection
+    {
+        public const string Name = "Combat service provider";
+    }
+
+    [Collection(CombatServiceProviderCollection.Name)]
     public class SpellEffectHandlerTests
     {
         [Fact]
@@ -51,6 +58,10 @@ namespace NexusForever.Game.Tests.Combat
                 DataBits04 = 250u
             };
             var info = new SpellTargetInfo.SpellTargetEffectInfo(1u, entry);
+            IProcInfo appliedProc = null;
+            target.Setup(t => t.ApplyProc(It.IsAny<IProcInfo>()))
+                .Callback<IProcInfo>(proc => appliedProc = proc)
+                .Returns(true);
 
             SpellHandler.HandleEffectProc(spell.Object, target.Object, info);
 
@@ -59,6 +70,27 @@ namespace NexusForever.Game.Tests.Combat
                 && proc.ApplicatorSpell4Id == 123u
                 && proc.Type == ProcType.BeginMoving
                 && proc.TriggerSpell4Id == 456u)), Times.Once);
+            spell.Verify(s => s.TrackProc(target.Object, appliedProc), Times.Once);
+        }
+
+        [Fact]
+        public void HandleEffectProc_RejectedProcIsNotTrackedBySpell()
+        {
+            var spell = new Mock<ISpell>();
+            var target = new Mock<IUnitEntity>();
+            target.Setup(t => t.ApplyProc(It.IsAny<IProcInfo>())).Returns(false);
+            var info = new SpellTargetInfo.SpellTargetEffectInfo(1u, new Spell4EffectsEntry
+            {
+                SpellId    = 123u,
+                EffectType = SpellEffectType.Proc,
+                DataBits00 = (uint)ProcType.BeginMoving,
+                DataBits01 = 456u
+            });
+
+            SpellHandler.HandleEffectProc(spell.Object, target.Object, info);
+
+            spell.Verify(s => s.TrackProc(
+                It.IsAny<IUnitEntity>(), It.IsAny<IProcInfo>()), Times.Never);
         }
 
         [Fact]
@@ -89,6 +121,49 @@ namespace NexusForever.Game.Tests.Combat
 
                 caster.Verify(c => c.FireProc(ProcType.CriticalDamage), Times.Once);
                 target.Verify(t => t.TakeDamage(caster.Object, damage.Object), Times.Once);
+            }
+            finally
+            {
+                LegacyServiceProvider.Provider = previousProvider;
+            }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void HandleEffectDamage_DroppedOrMissingDamage_DoesNotApplyDamage(bool dropEffect)
+        {
+            var calculator = new Mock<IDamageCalculator>();
+            calculator.Setup(c => c.CalculateDamage(
+                    It.IsAny<IUnitEntity>(),
+                    It.IsAny<IUnitEntity>(),
+                    It.IsAny<ISpell>(),
+                    It.IsAny<ISpellTargetEffectInfo>()))
+                .Callback<IUnitEntity, IUnitEntity, ISpell, ISpellTargetEffectInfo>(
+                    (_, _, _, info) => info.DropEffect = dropEffect);
+            var factory = new Mock<IFactory<IDamageCalculator>>();
+            factory.Setup(f => f.Resolve()).Returns(calculator.Object);
+            using ServiceProvider provider = new ServiceCollection()
+                .AddSingleton(factory.Object)
+                .BuildServiceProvider();
+            IServiceProvider previousProvider = LegacyServiceProvider.Provider;
+            LegacyServiceProvider.Provider = provider;
+
+            try
+            {
+                var caster = new Mock<IUnitEntity>();
+                var target = new Mock<IUnitEntity>();
+                target.Setup(t => t.CanAttack(caster.Object)).Returns(true);
+                var spell = new Mock<ISpell>();
+                spell.Setup(s => s.Caster).Returns(caster.Object);
+                var info = new Mock<ISpellTargetEffectInfo>();
+                info.SetupProperty(i => i.DropEffect, false);
+
+                SpellHandler.HandleEffectDamage(spell.Object, target.Object, info.Object);
+
+                caster.Verify(c => c.FireProc(It.IsAny<ProcType>()), Times.Never);
+                target.Verify(t => t.TakeDamage(
+                    It.IsAny<IUnitEntity>(), It.IsAny<IDamageDescription>()), Times.Never);
             }
             finally
             {

@@ -35,5 +35,10 @@ namespace NexusForever.Game.Abstract.Combat
         /// Schedule the proc's spell. Returns false when a trigger is already pending.
         /// </summary>
         bool Trigger();
+
+        /// <summary>
+        /// Cancel any pending trigger and finish spells previously triggered by this proc.
+        /// </summary>
+        void Cancel();
     }
 }

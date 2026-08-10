@@ -29,7 +29,10 @@ namespace NexusForever.Game.Spell
             var damageCalculator = factory.Resolve();
             damageCalculator.CalculateDamage(spell.Caster, target, spell, info);
 
-            if (info.Damage?.CombatResult == CombatResult.Critical)
+            if (info.DropEffect || info.Damage == null)
+                return;
+
+            if (info.Damage.CombatResult == CombatResult.Critical)
                 spell.Caster.FireProc(ProcType.CriticalDamage);
 
             target.TakeDamage(spell.Caster, info.Damage);
@@ -38,7 +41,9 @@ namespace NexusForever.Game.Spell
         [SpellEffectHandler(SpellEffectType.Proc)]
         public static void HandleEffectProc(ISpell spell, IUnitEntity target, ISpellTargetEffectInfo info)
         {
-            target.ApplyProc(new ProcInfo(target, info.Entry));
+            var proc = new ProcInfo(target, info.Entry);
+            if (target.ApplyProc(proc))
+                spell.TrackProc(target, proc);
         }
 
         [SpellEffectHandler(SpellEffectType.Heal)]

@@ -1,5 +1,6 @@
 using NexusForever.Game.Abstract.Combat;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Combat;
 using NexusForever.Game.Spell;
 using NexusForever.Game.Static.Combat;
@@ -52,13 +53,13 @@ namespace NexusForever.Game.Tests.Combat
 
             Assert.True(triggered);
             Assert.False(proc.CanTrigger);
-            owner.Verify(o => o.CastSpell(
+            owner.Verify(o => o.CastSpellTracked(
                 It.IsAny<uint>(), It.IsAny<SpellParameters>()), Times.Never);
 
             proc.Update(0.5d);
 
             Assert.True(proc.CanTrigger);
-            owner.Verify(o => o.CastSpell(
+            owner.Verify(o => o.CastSpellTracked(
                 456u,
                 It.Is<SpellParameters>(p => !p.UserInitiatedSpellCast)), Times.Once);
         }
@@ -75,7 +76,7 @@ namespace NexusForever.Game.Tests.Combat
 
             Assert.True(first);
             Assert.False(second);
-            owner.Verify(o => o.CastSpell(
+            owner.Verify(o => o.CastSpellTracked(
                 456u, It.IsAny<SpellParameters>()), Times.Once);
         }
 
@@ -87,13 +88,65 @@ namespace NexusForever.Game.Tests.Combat
 
             proc.Trigger();
 
-            owner.Verify(o => o.CastSpell(
+            owner.Verify(o => o.CastSpellTracked(
                 It.IsAny<uint>(), It.IsAny<SpellParameters>()), Times.Never);
 
             proc.Update(0d);
 
-            owner.Verify(o => o.CastSpell(
+            owner.Verify(o => o.CastSpellTracked(
                 456u, It.IsAny<SpellParameters>()), Times.Once);
+        }
+
+        [Fact]
+        public void Cancel_PendingTriggerPreventsCastAndCannotRetrigger()
+        {
+            var owner = new Mock<IUnitEntity>();
+            var proc = new ProcInfo(owner.Object, CreateEntry(delayMilliseconds: 1000u));
+            proc.Trigger();
+
+            proc.Cancel();
+            proc.Update(1d);
+
+            Assert.False(proc.CanTrigger);
+            Assert.False(proc.Trigger());
+            owner.Verify(o => o.CastSpellTracked(
+                It.IsAny<uint>(), It.IsAny<SpellParameters>()), Times.Never);
+        }
+
+        [Fact]
+        public void Cancel_FinishesOnlySpellCreatedByThisProcAndIsIdempotent()
+        {
+            var owner = new Mock<IUnitEntity>();
+            var triggeredSpell = new Mock<ISpell>();
+            var unrelatedSpell = new Mock<ISpell>();
+            owner.Setup(o => o.CastSpellTracked(456u, It.IsAny<SpellParameters>()))
+                .Returns(triggeredSpell.Object);
+            var proc = new ProcInfo(owner.Object, CreateEntry(delayMilliseconds: 0u));
+            proc.Trigger();
+            proc.Update(0d);
+
+            proc.Cancel();
+            proc.Cancel();
+
+            triggeredSpell.Verify(s => s.Finish(), Times.Once);
+            unrelatedSpell.Verify(s => s.Finish(), Times.Never);
+        }
+
+        [Fact]
+        public void Cancel_DoesNotFinishAlreadyFinishedTriggeredSpell()
+        {
+            var owner = new Mock<IUnitEntity>();
+            var triggeredSpell = new Mock<ISpell>();
+            triggeredSpell.Setup(s => s.IsFinished).Returns(true);
+            owner.Setup(o => o.CastSpellTracked(456u, It.IsAny<SpellParameters>()))
+                .Returns(triggeredSpell.Object);
+            var proc = new ProcInfo(owner.Object, CreateEntry(delayMilliseconds: 0u));
+            proc.Trigger();
+            proc.Update(0d);
+
+            proc.Cancel();
+
+            triggeredSpell.Verify(s => s.Finish(), Times.Never);
         }
 
         private static Spell4EffectsEntry CreateEntry(uint delayMilliseconds)
