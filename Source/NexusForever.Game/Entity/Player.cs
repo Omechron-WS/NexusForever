@@ -62,7 +62,7 @@ using Path = NexusForever.Game.Static.PlayerPath.Path;
 
 namespace NexusForever.Game.Entity
 {
-    public class Player : UnitEntity, IPlayer
+    public class Player : UnitEntity, IPlayer, IPlayerVitalRegenerationOwner
     {
         /// <summary>
         /// Determines which fields need saving for <see cref="IPlayer"/> when being saved to the database.
@@ -271,6 +271,7 @@ namespace NexusForever.Game.Entity
         private readonly IEntityFactory entityFactory;
         private readonly IMatchingManager matchingManager;
         private readonly IMatchManager matchManager;
+        private readonly PlayerVitalRegenerator vitalRegenerator;
 
         public Player(
             IMovementManager movementManager,
@@ -287,6 +288,7 @@ namespace NexusForever.Game.Entity
             this.entityFactory    = entityFactory;
             this.matchingManager  = matchingManager;
             this.matchManager     = matchManager;
+            vitalRegenerator      = new PlayerVitalRegenerator(this);
 
             // managers
             CurrencyManager  = currencyManager;
@@ -328,6 +330,7 @@ namespace NexusForever.Game.Entity
                 var statValue = new StatValue(statModel);
                 stats.Add((Stat)statModel.Stat, statValue);
             }
+            vitalRegenerator.Initialise();
 
             SetStat(Stat.Sheathed, 1u);
 
@@ -425,6 +428,7 @@ namespace NexusForever.Game.Entity
                 return;
 
             base.Update(lastTick);
+            vitalRegenerator.Update(lastTick);
 
             TitleManager.Update(lastTick);
             SpellManager.Update(lastTick);
@@ -1601,12 +1605,21 @@ namespace NexusForever.Game.Entity
         /// </summary>
         protected override void OnStatUpdate(IStatValue statValue)
         {
+            vitalRegenerator.OnStatUpdated(statValue.Stat, statValue.Value);
+
             messagePublisher.PublishAsync(new PlayerStatUpdatedMessage
             {
                 Identity = Identity.ToInternalIdentity(),
                 Stat     = statValue.Stat,
                 Value    = statValue.Value
             }).FireAndForgetAsync();
+        }
+
+        /// <inheritdoc />
+        protected override void OnCombatStateChange(bool inCombat)
+        {
+            vitalRegenerator.OnCombatStateChanged(inCombat);
+            base.OnCombatStateChange(inCombat);
         }
 
         /// <summary>
@@ -1649,6 +1662,7 @@ namespace NexusForever.Game.Entity
 
         protected override void OnDeath()
         {
+            vitalRegenerator.Reset();
             base.OnDeath();
 
             Dismount();

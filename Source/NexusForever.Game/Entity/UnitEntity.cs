@@ -206,10 +206,12 @@ namespace NexusForever.Game.Entity
             return true;
         }
 
-        /// <summary>
-        /// Initial stab at a timer to regenerate Health & Shield values.
-        /// </summary>
-        private UpdateTimer statUpdateTimer = new UpdateTimer(0.25); // TODO: Long-term this should be absorbed into individual timers for each Stat regeneration method
+        private const double RegenerationInterval = 0.5d;
+        private const int MaximumRegenerationCatchUpTicks = 20;
+
+        private double regenerationAccumulator;
+        private double healthRegenerationRemainder;
+        private double shieldRegenerationRemainder;
 
         private readonly List<ISpell> pendingSpells = new();
         private readonly Dictionary<ProcType, List<IProcInfo>> procs = new();
@@ -272,13 +274,7 @@ namespace NexusForever.Game.Entity
                 proc.Update(lastTick);
 
             CombatStateTick();
-
-            statUpdateTimer.Update(lastTick);
-            if (statUpdateTimer.HasElapsed)
-            {
-                HandleStatUpdate(lastTick);
-                statUpdateTimer.Reset();
-            }
+            UpdateRegeneration(lastTick);
         }
 
         /// <summary>
@@ -373,22 +369,76 @@ namespace NexusForever.Game.Entity
             }
         }
 
-        /// <summary>
-        /// Handles regeneration of Stat Values. Used to provide a hook into the Update method, for future implementation.
-        /// </summary>
-        private void HandleStatUpdate(double lastTick)
+        private void UpdateRegeneration(double elapsed)
         {
-            if (!IsAlive)
+            if (!double.IsFinite(elapsed) || elapsed <= 0d)
                 return;
 
-            // TODO: This should probably get moved to a Calculation Library/Manager at some point. There will be different timers on Stat refreshes, but right now the timer is hardcoded to every 0.25s.
-            // Probably worth considering an Attribute-grouped Class that allows us to run differentt regeneration methods & calculations for each stat.
+            double maximumCatchUp = RegenerationInterval * MaximumRegenerationCatchUpTicks;
+            regenerationAccumulator = Math.Min(regenerationAccumulator + elapsed, maximumCatchUp);
 
-            if (Health < MaxHealth)
-                ModifyHealth((uint)(MaxHealth / 200f), DamageType.Heal, null);
+            int ticks = Math.Min(
+                (int)Math.Floor(regenerationAccumulator / RegenerationInterval),
+                MaximumRegenerationCatchUpTicks);
+            regenerationAccumulator -= ticks * RegenerationInterval;
 
-            if (Shield < MaxShieldCapacity)
-                Shield += (uint)(MaxShieldCapacity * GetPropertyValue(Property.ShieldRegenPct) * statUpdateTimer.Duration);
+            for (int i = 0; i < ticks; i++)
+                OnRegenerationTick();
+        }
+
+        /// <summary>
+        /// Applies one fixed 0.5 second unit regeneration tick.
+        /// </summary>
+        protected virtual void OnRegenerationTick()
+        {
+            if (!IsAlive || InCombat)
+                return;
+
+            RegenerateIntegerVital(
+                Vital.Health,
+                MaxHealth / 50d,
+                Health < MaxHealth ? MaxHealth - Health : 0u,
+                ref healthRegenerationRemainder);
+
+            float shieldRegenerationPercentage = GetPropertyValue(Property.ShieldRegenPct);
+            double shieldRegeneration = float.IsFinite(shieldRegenerationPercentage)
+                ? MaxShieldCapacity * (double)shieldRegenerationPercentage * RegenerationInterval
+                : 0d;
+            RegenerateIntegerVital(
+                Vital.ShieldCapacity,
+                shieldRegeneration,
+                Shield < MaxShieldCapacity ? MaxShieldCapacity - Shield : 0u,
+                ref shieldRegenerationRemainder);
+        }
+
+        private void RegenerateIntegerVital(Vital vital, double amount, uint deficit, ref double remainder)
+        {
+            if (deficit == 0u)
+            {
+                remainder = 0d;
+                return;
+            }
+
+            if (!double.IsFinite(amount) || amount <= 0d)
+            {
+                remainder = 0d;
+                return;
+            }
+
+            double total = Math.Min(amount + remainder, deficit);
+            uint wholeAmount = (uint)Math.Floor(total);
+            remainder = total - wholeAmount;
+            if (wholeAmount == 0u)
+                return;
+
+            if (!TryModifyVital(vital, wholeAmount))
+            {
+                remainder = 0d;
+                return;
+            }
+
+            if (wholeAmount == deficit)
+                remainder = 0d;
         }
 
         /// <summary>
@@ -637,6 +687,9 @@ namespace NexusForever.Game.Entity
 
         protected virtual void OnDeath()
         {
+            regenerationAccumulator = 0d;
+            healthRegenerationRemainder = 0d;
+            shieldRegenerationRemainder = 0d;
             DeathState = EntityDeathState.JustDied;
 
             foreach (ISpell spell in pendingSpells.ToArray())
