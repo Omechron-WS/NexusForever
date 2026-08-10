@@ -8,6 +8,7 @@ namespace NexusForever.Game.Loot
     {
         public static void AddGameLoot(this IServiceCollection sc)
         {
+            sc.AddSingleton<ILootTableProvider, WorldDatabaseLootTableProvider>();
             sc.AddSingletonLegacy<IGlobalLootManager, GlobalLootManager>();
         }
     }

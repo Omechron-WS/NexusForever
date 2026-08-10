@@ -136,28 +136,36 @@ namespace NexusForever.Database.World
                 .ToImmutableList();
         }
 
+        /// <summary>
+        /// Return every creature-to-loot-group mapping.
+        /// </summary>
         public ImmutableList<EntityLootModel> GetEntityLoot()
         {
             using var context = new WorldContext(config);
             return context.EntityLoot
-                .Include(e => e.LootGroup)
-                    .ThenInclude(g => g.ChildGroup)
-                .Include(e => e.LootGroup)
-                    .ThenInclude(g => g.Item)
-                .AsSplitQuery()
                 .AsNoTracking()
                 .ToImmutableList();
         }
 
+        /// <summary>
+        /// Return every item-to-loot-group mapping.
+        /// </summary>
         public ImmutableList<ItemLootModel> GetItemLoot()
         {
             using var context = new WorldContext(config);
             return context.ItemLoot
-                .Include(e => e.LootGroup)
-                    .ThenInclude(g => g.ChildGroup)
-                .Include(e => e.LootGroup)
-                    .ThenInclude(g => g.Item)
-                .AsSplitQuery()
+                .AsNoTracking()
+                .ToImmutableList();
+        }
+
+        /// <summary>
+        /// Return every loot group and its directly-owned items for hierarchy construction.
+        /// </summary>
+        public ImmutableList<LootGroupModel> GetLootGroups()
+        {
+            using var context = new WorldContext(config);
+            return context.LootGroup
+                .Include(group => group.Item)
                 .AsNoTracking()
                 .ToImmutableList();
         }

@@ -16,7 +16,7 @@ This document records verified implementation status on the `convergence` branch
 | Phase | Status | Verified position |
 |---|---|---|
 | 0 — Static types | Conditional | Planned types are present and tested. Some downstream use is absent, and `TelegraphDamageFlag` values still require capture validation. |
-| 1 — Loot | Incomplete | Models and core logic exist, but the schema migration, startup initialisation, world ticking, recursive loading, safe delivery, and corpse ownership lifecycle are incomplete. |
+| 1 — Loot | Incomplete | The schema migration, recursive hierarchy loading, startup initialisation, and world ticking are live and tested. Safe delivery, request validation, corpse ownership/cleanup, and conditional loot remain incomplete. |
 | 2 — Spell variants | Incomplete | Factory dispatch is live. Failed-cast cleanup, cancellation semantics, phase masks, threshold input, aura cleanup, and exactly-once costs remain incomplete. |
 | 3 — Client-side interaction | Incomplete | Foundations exist, but the build-16042 start/result packet loop, client correlation ID, timeout, entity callbacks, and quest integration are not live. |
 | 4 — Combat, healing, and procs | Incomplete | Healing and immediate combat-state hooks exist. Proc collection, dispatch, cooldowns, and lifecycle cleanup are not integrated into the live combat loop. |
@@ -41,6 +41,7 @@ Completed hardening:
 - Character and Account service APIs require bounded per-service credentials; typed clients attach them without redirect forwarding, and Aspire provisions separate persisted secrets.
 - The administrative command WebSocket is disabled by default, bound to loopback in the example configuration, and no longer published by the default Aspire topology. When explicitly enabled it requires a hashed bearer credential and an exact Origin allow-list, accepts only bounded strict-UTF-8 text messages, and rejects malformed command envelopes without dispatching them.
 - Task-backed events now distinguish successful, failed, and cancelled operations. Authentication and character mutations fail closed without running success callbacks, detached task failures are logged by default, and player cleanup retains its account lock while retrying failed saves.
+- World loot tables now have an EF migration, are validated and loaded recursively at startup, and active loot expiry advances from the world tick. Invalid graph data fails startup without poisoning a later initialisation attempt.
 
 Remaining priority work:
 
@@ -56,6 +57,6 @@ SharpCompress `0.22.0` is transitively supplied by `Nexus.Archive 1.0.1` to the 
 ## Next validated slices
 
 1. Make dirty-state acknowledgement retry-safe and make cross-server publication failures observable.
-2. Repair the Phase 1 schema and live loot lifecycle, then the Phase 2 and Phase 3 blockers found by the baseline audit.
+2. Finish Phase 1 delivery validation and corpse ownership/cleanup, then repair the Phase 2 and Phase 3 blockers found by the baseline audit.
 3. Complete Phase 4 proc dispatch before starting Phase 6 implementation.
 4. Add bounded network send backpressure and continue lower-risk long-uptime hardening alongside the gameplay phases.

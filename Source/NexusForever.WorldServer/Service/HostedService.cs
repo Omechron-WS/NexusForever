@@ -10,6 +10,7 @@ using NexusForever.Database.Configuration.Model;
 using NexusForever.Game;
 using NexusForever.Game.Abstract.Chat.Format;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Abstract.Loot;
 using NexusForever.Game.Abstract.Matching.Match;
 using NexusForever.Game.Abstract.Matching.Queue;
 using NexusForever.Game.Abstract.PublicEvent;
@@ -56,6 +57,7 @@ namespace NexusForever.WorldServer.Service
         private readonly IMatchManager matchManager;
         private readonly IPublicEventTemplateManager publicEventManager;
         private readonly IChatFormatManager chatFormatManager;
+        private readonly IGlobalLootManager lootManager;
         private readonly IWorldManager worldManager;
 
         public HostedService(
@@ -69,6 +71,7 @@ namespace NexusForever.WorldServer.Service
             IMatchManager matchManager,
             IPublicEventTemplateManager publicEventManager,
             IChatFormatManager chatFormatManager,
+            IGlobalLootManager lootManager,
             IWorldManager worldManager)
         {
             this.log               = log;
@@ -83,6 +86,7 @@ namespace NexusForever.WorldServer.Service
             this.matchManager       = matchManager;
             this.publicEventManager = publicEventManager;
             this.chatFormatManager  = chatFormatManager;
+            this.lootManager        = lootManager;
             this.worldManager       = worldManager;
         }
 
@@ -129,6 +133,7 @@ namespace NexusForever.WorldServer.Service
             ItemManager.Instance.Initialise();
             GlobalSpellManager.Instance.Initialise();
             GlobalQuestManager.Instance.Initialise();
+            lootManager.Initialise();
 
             GlobalStorefrontManager.Instance.Initialise();
             ServerManager.Instance.Initialise(RealmContext.Instance.RealmId);
@@ -154,6 +159,7 @@ namespace NexusForever.WorldServer.Service
 
                 BuybackManager.Instance.Update(lastTick);
                 GlobalQuestManager.Instance.Update(lastTick);
+                lootManager.Update(lastTick);
                 GlobalGuildManager.Instance.Update(lastTick);
                 GlobalResidenceManager.Instance.Update(lastTick); // must be after guild update
 

@@ -1,9 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using NexusForever.Database;
-using NexusForever.Database.World;
 using NexusForever.Database.World.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Loot;
@@ -27,46 +27,83 @@ namespace NexusForever.Game.Loot
         private const uint OmnibitMaxAmount = 25;
         private const double UpdateInterval = 1d;
 
-        private readonly Dictionary<uint, List<ILootGroup>> creatureLoot = new();
-        private readonly Dictionary<uint, List<ILootGroup>> itemLoot = new();
+        private Dictionary<uint, List<ILootGroup>> creatureLoot = new();
+        private Dictionary<uint, List<ILootGroup>> itemLoot = new();
         private readonly List<LootInstance> activeLootInstances = new();
+        private readonly ConcurrentQueue<LootInstance> pendingLootInstances = new();
 
-        private double updateTimer;
+        private readonly ILootTableProvider lootTableProvider;
+
+        private double updateTimer = UpdateInterval;
+        private bool isInitialised;
+
+        /// <summary>
+        /// Create the global loot manager with its world database record provider.
+        /// </summary>
+        public GlobalLootManager(ILootTableProvider lootTableProvider)
+        {
+            this.lootTableProvider = lootTableProvider ?? throw new ArgumentNullException(nameof(lootTableProvider));
+        }
 
         /// <summary>
         /// Initialise loot tables from the world database.
         /// </summary>
         public void Initialise()
         {
-            WorldDatabase worldDatabase = DatabaseManager.Instance.GetDatabase<WorldDatabase>();
+            if (isInitialised)
+                throw new InvalidOperationException("The global loot manager is already initialised.");
 
-            foreach (EntityLootModel model in worldDatabase.GetEntityLoot())
+            LootTableData data = lootTableProvider.LoadLootTables()
+                ?? throw new DatabaseDataException("The loot table provider returned no data.");
+            Dictionary<ulong, LootGroupModel> lootGroupModels = BuildLootHierarchy(data.LootGroups);
+            var builtLootGroups = new Dictionary<ulong, ILootGroup>();
+
+            ILootGroup ResolveLootGroup(ulong groupId, string source)
             {
-                if (model.LootGroup == null)
-                    continue;
+                if (builtLootGroups.TryGetValue(groupId, out ILootGroup builtLootGroup))
+                    return builtLootGroup;
 
-                if (!creatureLoot.TryGetValue(model.Id, out List<ILootGroup> groups))
-                {
-                    groups = new List<ILootGroup>();
-                    creatureLoot.Add(model.Id, groups);
-                }
+                if (!lootGroupModels.TryGetValue(groupId, out LootGroupModel lootGroupModel))
+                    throw new DatabaseDataException($"{source} references missing loot group {groupId}.");
 
-                groups.Add(new LootGroup(model.LootGroup));
+                builtLootGroup = new LootGroup(lootGroupModel);
+                builtLootGroups.Add(groupId, builtLootGroup);
+                return builtLootGroup;
             }
 
-            foreach (ItemLootModel model in worldDatabase.GetItemLoot())
+            var loadedCreatureLoot = new Dictionary<uint, List<ILootGroup>>();
+            foreach (EntityLootModel model in data.EntityLoot)
             {
-                if (model.LootGroup == null)
-                    continue;
+                if (model == null)
+                    throw new DatabaseDataException("Creature loot mappings contain a null record.");
 
-                if (!itemLoot.TryGetValue(model.Id, out List<ILootGroup> groups))
+                if (!loadedCreatureLoot.TryGetValue(model.Id, out List<ILootGroup> groups))
                 {
                     groups = new List<ILootGroup>();
-                    itemLoot.Add(model.Id, groups);
+                    loadedCreatureLoot.Add(model.Id, groups);
                 }
 
-                groups.Add(new LootGroup(model.LootGroup));
+                groups.Add(ResolveLootGroup(model.LootGroupId, $"Creature loot mapping {model.Id}"));
             }
+
+            var loadedItemLoot = new Dictionary<uint, List<ILootGroup>>();
+            foreach (ItemLootModel model in data.ItemLoot)
+            {
+                if (model == null)
+                    throw new DatabaseDataException("Item loot mappings contain a null record.");
+
+                if (!loadedItemLoot.TryGetValue(model.Id, out List<ILootGroup> groups))
+                {
+                    groups = new List<ILootGroup>();
+                    loadedItemLoot.Add(model.Id, groups);
+                }
+
+                groups.Add(ResolveLootGroup(model.LootGroupId, $"Item loot mapping {model.Id}"));
+            }
+
+            creatureLoot  = loadedCreatureLoot;
+            itemLoot      = loadedItemLoot;
+            isInitialised = true;
 
             log.Info($"Loaded loot tables for {creatureLoot.Count} creatures and {itemLoot.Count} items.");
         }
@@ -76,6 +113,15 @@ namespace NexusForever.Game.Loot
         /// </summary>
         public void Update(double lastTick)
         {
+            if (!isInitialised)
+                throw new InvalidOperationException("The global loot manager must be initialised before it is updated.");
+
+            while (pendingLootInstances.TryDequeue(out LootInstance pendingLootInstance))
+                activeLootInstances.Add(pendingLootInstance);
+
+            foreach (LootInstance lootInstance in activeLootInstances)
+                lootInstance.Update(lastTick);
+
             updateTimer -= lastTick;
             if (updateTimer > 0d)
                 return;
@@ -83,11 +129,8 @@ namespace NexusForever.Game.Loot
             updateTimer = UpdateInterval;
 
             for (int i = activeLootInstances.Count - 1; i >= 0; i--)
-            {
-                activeLootInstances[i].Update(UpdateInterval);
                 if (activeLootInstances[i].HasExpired)
                     activeLootInstances.RemoveAt(i);
-            }
         }
 
         /// <summary>
@@ -115,7 +158,7 @@ namespace NexusForever.Game.Loot
                 instance.AddLootItem((uint)AccountCurrencyType.Omnibits, LootItemType.AccountCurrency, omnibitAmount);
             }
 
-            activeLootInstances.Add(instance);
+            pendingLootInstances.Enqueue(instance);
             instance.SendLootNotify(looter);
             return instance;
         }
@@ -139,7 +182,7 @@ namespace NexusForever.Game.Loot
                 return;
 
             instance.Explosion = true;
-            activeLootInstances.Add(instance);
+            pendingLootInstances.Enqueue(instance);
             instance.SendLootNotify(looter);
         }
 
@@ -259,6 +302,57 @@ namespace NexusForever.Game.Loot
         private LootInstance GetLootInstanceForItem(int itemId)
         {
             return activeLootInstances.FirstOrDefault(i => i.HasLootInstanceId(itemId));
+        }
+
+        private static Dictionary<ulong, LootGroupModel> BuildLootHierarchy(IEnumerable<LootGroupModel> models)
+        {
+            var lootGroups = new Dictionary<ulong, LootGroupModel>();
+            foreach (LootGroupModel model in models)
+            {
+                if (model == null)
+                    throw new DatabaseDataException("Loot groups contain a null record.");
+
+                if (!lootGroups.TryAdd(model.Id, model))
+                    throw new DatabaseDataException($"Loot group {model.Id} is defined more than once.");
+
+                model.Parent     = null;
+                model.ChildGroup = new HashSet<LootGroupModel>();
+                model.Item     ??= new HashSet<LootItemModel>();
+            }
+
+            foreach (LootGroupModel model in lootGroups.Values)
+            {
+                if (!model.ParentId.HasValue)
+                    continue;
+
+                if (!lootGroups.TryGetValue(model.ParentId.Value, out LootGroupModel parent))
+                    throw new DatabaseDataException($"Loot group {model.Id} references missing parent {model.ParentId.Value}.");
+
+                model.Parent = parent;
+                parent.ChildGroup.Add(model);
+            }
+
+            var visiting = new HashSet<ulong>();
+            var visited = new HashSet<ulong>();
+            foreach (LootGroupModel model in lootGroups.Values)
+                ValidateLootHierarchy(model, visiting, visited);
+
+            return lootGroups;
+        }
+
+        private static void ValidateLootHierarchy(LootGroupModel model, HashSet<ulong> visiting, HashSet<ulong> visited)
+        {
+            if (visited.Contains(model.Id))
+                return;
+
+            if (!visiting.Add(model.Id))
+                throw new DatabaseDataException($"Loot group hierarchy contains a cycle at group {model.Id}.");
+
+            foreach (LootGroupModel child in model.ChildGroup)
+                ValidateLootHierarchy(child, visiting, visited);
+
+            visiting.Remove(model.Id);
+            visited.Add(model.Id);
         }
     }
 }
