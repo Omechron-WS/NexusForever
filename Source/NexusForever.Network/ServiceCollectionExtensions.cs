@@ -1,4 +1,7 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using NexusForever.Network.Configuration;
+using NexusForever.Network.Configuration.Model;
 using NexusForever.Network.Message;
 using NexusForever.Network.Session;
 using NexusForever.Shared;
@@ -14,6 +17,7 @@ namespace NexusForever.Network
             sc.AddTransientFactory<TInterface, TImplementation>();
             sc.AddTransient<IConnectionListener<TInterface>, ConnectionListener<TInterface>>();
             sc.AddSingleton<INetworkManager<TInterface>, NetworkManager<TInterface>>();
+            sc.AddSingleton<IValidateOptions<NetworkConfig>, NetworkConfigValidator>();
         }
 
         public static void AddNetwork(this IServiceCollection sc)

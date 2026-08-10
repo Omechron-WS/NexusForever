@@ -5,6 +5,16 @@ namespace NexusForever.Network.Session.Static
     public enum DisconnectState
     {
         /// <summary>
+        /// Session is connected and accepting work.
+        /// </summary>
+        Connected,
+
+        /// <summary>
+        /// Session is draining previously queued outbound frames before disconnecting.
+        /// </summary>
+        Draining,
+
+        /// <summary>
         /// Disconnection of <see cref="NetworkSession"/> has been requested.
         /// </summary>
         Pending,

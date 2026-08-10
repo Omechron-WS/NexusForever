@@ -1,7 +1,10 @@
 {
     "Network": {
         "Host": "0.0.0.0",
-        "Port": 6600
+        "Port": 6600,
+        "MaximumPendingSendBytes": 1048576,
+        "MaximumPendingSendFrames": 1024,
+        "PendingSendDrainTimeoutSeconds": 5
     },
     "Database": {
         "Auth": {

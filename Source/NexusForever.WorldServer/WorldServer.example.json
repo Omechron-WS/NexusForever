@@ -12,6 +12,9 @@
     "Network": {
         "Host": "0.0.0.0",
         "Port": 24000,
+        "MaximumPendingSendBytes": 1048576,
+        "MaximumPendingSendFrames": 1024,
+        "PendingSendDrainTimeoutSeconds": 5,
         "Internal": {
             "Broker": "RabbitMQ",
             "ConnectionString": "amqp://nexusforever:nexusforever@localhost:5672",

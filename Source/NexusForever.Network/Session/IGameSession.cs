@@ -28,10 +28,5 @@ namespace NexusForever.Network.Session
         void EnqueueMessageEncrypted(uint opcode, string hex);
 
         void HandlePacket(ClientGamePacket packet);
-
-        /// <summary>
-        /// Flush all queued packets to the client.
-        /// </summary>
-        public void FlushPackets();
     }
 }

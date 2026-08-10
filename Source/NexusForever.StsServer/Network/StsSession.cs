@@ -1,12 +1,14 @@
 ﻿using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Xml;
+using Microsoft.Extensions.Options;
 using NexusForever.Cryptography;
 using NexusForever.Database.Auth.Model;
+using NexusForever.Network.Configuration.Model;
 using NexusForever.Network.Session;
 using NexusForever.Network.Sts;
 using NexusForever.Network.Sts.Model;
@@ -25,11 +27,10 @@ namespace NexusForever.StsServer.Network
 
         private Arc4Provider clientEncryption;
         private Arc4Provider serverEncryption;
-        private Arc4Provider serverNewEncryption;
 
         private FragmentedStsPacket onDeck;
         private readonly ConcurrentQueue<ClientStsPacket> incomingPackets = new();
-        private readonly Queue<ServerStsPacket> outgoingPackets = new();
+        private readonly object outgoingGate = new();
 
         private uint sequence;
 
@@ -38,7 +39,18 @@ namespace NexusForever.StsServer.Network
         private readonly IMessageManager messageManager;
 
         public StsSession(
-            IMessageManager messageManager)
+            IMessageManager messageManager,
+            IOptions<NetworkConfig> networkOptions)
+            : base(networkOptions)
+        {
+            this.messageManager = messageManager;
+        }
+
+        internal StsSession(
+            IMessageManager messageManager,
+            IOptions<NetworkConfig> networkOptions,
+            ISocketSendAdapter socketSendAdapter)
+            : base(networkOptions, socketSendAdapter)
         {
             this.messageManager = messageManager;
         }
@@ -57,6 +69,9 @@ namespace NexusForever.StsServer.Network
 
         public void EnqueueMessage(uint statusCode, string status, IWritable message)
         {
+            if (IsDisconnecting)
+                return;
+
             var settings = new XmlWriterSettings
             {
                 OmitXmlDeclaration = true,
@@ -74,14 +89,38 @@ namespace NexusForever.StsServer.Network
                 writer.WriteEndDocument();
                 writer.Flush();
 
-                var packet = new ServerStsPacket(statusCode, status, stringWriter.ToString(), sequence, serverEncryption != null);
-                outgoingPackets.Enqueue(packet);
+                lock (outgoingGate)
+                {
+                    if (IsDisconnecting)
+                        return;
+
+                    var packet = new ServerStsPacket(
+                        statusCode,
+                        status,
+                        stringWriter.ToString(),
+                        sequence,
+                        serverEncryption != null);
+                    byte[] buffer = packet.BuildFrame();
+                    if (packet.Encrypt)
+                        serverEncryption.Encrypt(buffer);
+
+                    if (!TryQueueRaw(buffer))
+                    {
+                        ForceDisconnect();
+                        return;
+                    }
+
+                    log.Trace($"Sent packet response {packet.StatusCode}, {packet.Status}");
+                }
             }
         }
 
         protected override uint OnData(byte[] data)
         {
-            clientEncryption?.Decrypt(data);
+            if (IsDisconnecting)
+                return 0u;
+
+            Volatile.Read(ref clientEncryption)?.Decrypt(data);
 
             using (var stream = new MemoryStream(data))
             using (var reader = new BinaryReader(stream))
@@ -117,15 +156,10 @@ namespace NexusForever.StsServer.Network
                 {
                     log.Error(exception, $"Failed to handle STS packet for session {Id}.");
                     incomingPackets.Clear();
-                    outgoingPackets.Clear();
                     ForceDisconnect();
                     break;
                 }
             }
-
-            // flush pending packet queue
-            while (outgoingPackets.TryDequeue(out ServerStsPacket packet))
-                FlushPacket(packet);
 
             base.Update(lastTick);
         }
@@ -175,60 +209,35 @@ namespace NexusForever.StsServer.Network
             handlerInfo.Delegate.Invoke(this, message);
         }
 
-        private void FlushPacket(ServerStsPacket packet)
-        {
-            using (var stream = new MemoryStream())
-            using (var writer = new StreamWriter(stream))
-            {
-                writer.Write(packet.Protocol);
-                writer.Write(" ");
-                writer.Write(packet.StatusCode);
-                writer.Write(" ");
-                writer.Write(" ");
-                writer.Write(packet.Status);
-                writer.Write("\r\n");
-
-                foreach ((string name, string value) in packet.Headers)
-                {
-                    writer.Write($"{name}:{value}");
-                    writer.Write("\r\n");
-                }
-
-                writer.Write("\r\n");
-                writer.Write(packet.Body);
-                writer.Flush();
-
-                byte[] buffer = stream.ToArray();
-                if (packet.Encrypt)
-                    serverEncryption.Encrypt(buffer);
-
-                SendRaw(buffer);
-            }
-
-            if (serverNewEncryption != null)
-            {
-                serverEncryption = serverNewEncryption;
-                serverNewEncryption = null;
-            }
-
-            log.Trace($"Sent packet response {packet.StatusCode}, {packet.Status}");
-        }
-
         /// <summary>
-        /// Initialise client encryption and stage server encryption until the current response is flushed.
+        /// Initialise client and server encryption after the current response has been staged.
         /// </summary>
         public void InitialiseEncryption(byte[] key)
         {
-            clientEncryption = new Arc4Provider(key);
-            serverNewEncryption = new Arc4Provider(key);
-            log.Trace("Initialised RC4 encryption.");
+            lock (outgoingGate)
+            {
+                if (IsDisconnecting)
+                    return;
+
+                Volatile.Write(ref clientEncryption, new Arc4Provider(key));
+                serverEncryption = new Arc4Provider(key);
+                log.Trace("Initialised RC4 encryption.");
+            }
+        }
+
+        internal void DisconnectAfterPendingSends()
+        {
+            lock (outgoingGate)
+            {
+                incomingPackets.Clear();
+                RequestDisconnectAfterPendingSends();
+            }
         }
 
         internal void FailAuthentication(Exception exception)
         {
             log.Error(exception, $"Failed to authenticate STS session {Id}.");
             incomingPackets.Clear();
-            outgoingPackets.Clear();
             ForceDisconnect();
         }
     }

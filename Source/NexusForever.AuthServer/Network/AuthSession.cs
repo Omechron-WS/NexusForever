@@ -1,5 +1,7 @@
 ﻿using System.Net.Sockets;
+using Microsoft.Extensions.Options;
 using NexusForever.Network.Auth.Message.Model;
+using NexusForever.Network.Configuration.Model;
 using NexusForever.Network.Message;
 using NexusForever.Network.Message.Model;
 using NexusForever.Network.Session;
@@ -11,8 +13,9 @@ namespace NexusForever.AuthServer.Network
         #region Dependency Injection
 
         public AuthSession(
-            IMessageManager messageManager)
-            : base(messageManager)
+            IMessageManager messageManager,
+            IOptions<NetworkConfig> networkOptions)
+            : base(messageManager, networkOptions)
         {
         }
 

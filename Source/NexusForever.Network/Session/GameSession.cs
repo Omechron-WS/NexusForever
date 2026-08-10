@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.Net.Sockets;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using NexusForever.Cryptography;
+using NexusForever.Network.Configuration.Model;
 using NexusForever.Network.Message;
 using NexusForever.Network.Packet;
 using NexusForever.Shared;
@@ -29,14 +31,25 @@ namespace NexusForever.Network.Session
         private FragmentedBuffer onDeck;
         private int packetHandlingDepth;
         private readonly ConcurrentQueue<ClientGamePacket> incomingPackets = new();
-        private readonly ConcurrentQueue<ServerGamePacket> outgoingPackets = new();
+        private readonly object outgoingGate = new();
 
         #region Dependency Injection
 
         private readonly IMessageManager messageManager;
 
         public GameSession(
-            IMessageManager messageManager)
+            IMessageManager messageManager,
+            IOptions<NetworkConfig> networkOptions)
+            : base(networkOptions)
+        {
+            this.messageManager = messageManager;
+        }
+
+        internal GameSession(
+            IMessageManager messageManager,
+            IOptions<NetworkConfig> networkOptions,
+            ISocketSendAdapter socketSendAdapter)
+            : base(networkOptions, socketSendAdapter)
         {
             this.messageManager = messageManager;
         }
@@ -48,19 +61,10 @@ namespace NexusForever.Network.Session
         /// </summary>
         public void EnqueueMessage(IWritable message)
         {
-            GameMessageOpcode? opcode = messageManager.GetOpcode(message);
-            if (opcode == null)
-            {
-                log.Warn("Failed to send message with no attribute!");
-                return;
-            }
-
-            if (opcode != GameMessageOpcode.ServerAuthEncrypted
+            if (TryEnqueueMessage(message, out GameMessageOpcode? opcode)
+                && opcode != GameMessageOpcode.ServerAuthEncrypted
                 && opcode != GameMessageOpcode.ServerRealmEncrypted)
                 log.Trace($"Sent packet {opcode}(0x{opcode:X}).");
-
-            var packet = new ServerGamePacket(opcode.Value, message);
-            outgoingPackets.Enqueue(packet);
         }
 
         /// <summary>
@@ -68,6 +72,9 @@ namespace NexusForever.Network.Session
         /// </summary>
         public void EnqueueMessageEncrypted(IWritable message)
         {
+            if (!CanProcessOutgoingPackets || IsDisconnecting)
+                return;
+
             GameMessageOpcode? opcode = messageManager.GetOpcode(message);
             if (opcode == null)
             {
@@ -75,23 +82,36 @@ namespace NexusForever.Network.Session
                 return;
             }
 
+            byte[] data;
             using (var stream = new MemoryStream())
             using (var writer = new GamePacketWriter(stream))
             {
                 writer.Write(opcode.Value, 16);
                 message.Write(writer);
                 writer.FlushBits();
-
-                byte[] data = stream.ToArray();
-                byte[] encrypted = encryption.Encrypt(data, data.Length);
-                EnqueueMessage(BuildEncryptedMessage(encrypted));
+                data = stream.ToArray();
             }
 
-            log.Trace($"Sent packet {opcode}(0x{opcode:X}).");
+            bool queued;
+            lock (outgoingGate)
+            {
+                if (!CanProcessOutgoingPackets || IsDisconnecting)
+                    return;
+
+                byte[] encrypted = encryption.Encrypt(data, data.Length);
+                queued = TryEnqueueMessage(BuildEncryptedMessage(encrypted), out _);
+            }
+
+            if (queued)
+                log.Trace($"Sent packet {opcode}(0x{opcode:X}).");
         }
 
         public void EnqueueMessageEncrypted(uint opcode, string hex)
         {
+            if (!CanProcessOutgoingPackets || IsDisconnecting)
+                return;
+
+            byte[] data;
             using (var stream = new MemoryStream())
             using (var writer = new GamePacketWriter(stream))
             {
@@ -104,10 +124,16 @@ namespace NexusForever.Network.Session
                 writer.WriteBytes(body);
 
                 writer.FlushBits();
+                data = stream.ToArray();
+            }
 
-                byte[] data = stream.ToArray();
+            lock (outgoingGate)
+            {
+                if (!CanProcessOutgoingPackets || IsDisconnecting)
+                    return;
+
                 byte[] encrypted = encryption.Encrypt(data, data.Length);
-                EnqueueMessage(BuildEncryptedMessage(encrypted));
+                TryEnqueueMessage(BuildEncryptedMessage(encrypted), out _);
             }
         }
 
@@ -118,7 +144,7 @@ namespace NexusForever.Network.Session
             base.OnAccept(newSocket);
 
             ulong key = PacketCrypt.GetKeyFromAuthBuildAndMessage();
-            encryption = new PacketCrypt(key);
+            SetEncryption(new PacketCrypt(key));
         }
 
         protected override uint OnData(byte[] data)
@@ -163,13 +189,12 @@ namespace NexusForever.Network.Session
 
         protected override void OnDisconnect()
         {
-            base.OnDisconnect();
-
             // clear any pending packets and prevent any new packets from being processed
             CanProcessIncomingPackets = false;
             CanProcessOutgoingPackets = false;
             incomingPackets.Clear();
-            outgoingPackets.Clear();
+
+            base.OnDisconnect();
         }
 
         public override void Update(double lastTick)
@@ -179,9 +204,6 @@ namespace NexusForever.Network.Session
             // process pending packet queue
             while (!IsDisconnecting && CanProcessIncomingPackets && incomingPackets.TryDequeue(out ClientGamePacket packet))
                 HandlePacket(packet);
-
-            // flush pending packet queue
-            FlushPackets();
         }
 
         /// <summary>
@@ -274,7 +296,6 @@ namespace NexusForever.Network.Session
             CanProcessIncomingPackets = false;
             CanProcessOutgoingPackets = false;
             incomingPackets.Clear();
-            outgoingPackets.Clear();
             ForceDisconnect();
         }
 
@@ -283,25 +304,41 @@ namespace NexusForever.Network.Session
             return LegacyServiceProvider.Provider.CreateScope();
         }
 
-        /// <summary>
-        /// Flush all pending packets to the client.
-        /// </summary>
-        public void FlushPackets()
+        protected void SetEncryption(PacketCrypt packetCrypt)
         {
-            while (CanProcessOutgoingPackets && outgoingPackets.TryDequeue(out ServerGamePacket packet))
-                FlushPacket(packet);
+            ArgumentNullException.ThrowIfNull(packetCrypt);
+
+            lock (outgoingGate)
+                encryption = packetCrypt;
         }
 
-        private void FlushPacket(ServerGamePacket packet)
+        private bool TryEnqueueMessage(IWritable message, out GameMessageOpcode? opcode)
         {
-            using (var stream = new MemoryStream())
-            using (var writer = new GamePacketWriter(stream))
+            if (!CanProcessOutgoingPackets || IsDisconnecting)
             {
-                writer.Write(packet.Size);
-                writer.Write(packet.Opcode, 16);
-                writer.WriteBytes(packet.Data);
+                opcode = null;
+                return false;
+            }
 
-                SendRaw(stream.ToArray());
+            opcode = messageManager.GetOpcode(message);
+            if (opcode == null)
+            {
+                log.Warn("Failed to send message with no attribute!");
+                return false;
+            }
+
+            var packet = new ServerGamePacket(opcode.Value, message);
+            lock (outgoingGate)
+            {
+                if (!CanProcessOutgoingPackets || IsDisconnecting)
+                    return false;
+
+                if (TryQueueRaw(packet.BuildFrame()))
+                    return true;
+
+                CanProcessOutgoingPackets = false;
+                ForceDisconnect();
+                return false;
             }
         }
     }

@@ -33,5 +33,18 @@ namespace NexusForever.Network.Packet
 
             Size = size;
         }
+
+        /// <summary>
+        /// Build the complete build-16042 wire frame for this packet.
+        /// </summary>
+        public byte[] BuildFrame()
+        {
+            using var stream = new MemoryStream((int)Size);
+            using var writer = new GamePacketWriter(stream);
+            writer.Write(Size);
+            writer.Write(Opcode, 16);
+            writer.WriteBytes(Data);
+            return stream.ToArray();
+        }
     }
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net.Sockets;
+using Microsoft.Extensions.Options;
 using NexusForever.Cryptography;
 using NexusForever.Database.Auth.Model;
 using NexusForever.Database.Character.Model;
@@ -9,6 +10,7 @@ using NexusForever.Game.Abstract.Account;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Account;
 using NexusForever.Game.Static.Entity;
+using NexusForever.Network.Configuration.Model;
 using NexusForever.Network.Message;
 using NexusForever.Network.Message.Model;
 using NexusForever.Network.Session;
@@ -39,9 +41,10 @@ namespace NexusForever.WorldServer.Network
 
         public WorldSession(
             IMessageManager messageManager,
+            IOptions<NetworkConfig> networkOptions,
             INetworkManager<IWorldSession> networkManager,
             ILoginQueueManager loginQueueManager)
-            : base(messageManager)
+            : base(messageManager, networkOptions)
         {
             this.networkManager    = networkManager;
             this.loginQueueManager = loginQueueManager;
@@ -117,7 +120,7 @@ namespace NexusForever.WorldServer.Network
         public void SetEncryptionKey(byte[] sessionKey)
         {
             ulong key = PacketCrypt.GetKeyFromTicket(sessionKey);
-            encryption = new PacketCrypt(key);
+            SetEncryption(new PacketCrypt(key));
 
             log.Trace($"Set encryption key for session {Id}.");
         }

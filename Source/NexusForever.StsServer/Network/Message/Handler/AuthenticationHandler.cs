@@ -61,7 +61,7 @@ namespace NexusForever.StsServer.Network.Message.Handler
             if (!session.KeyExchange.VerifyClientEvidenceMessage(keyData.M1))
             {
                 session.EnqueueMessageError(new ServerErrorMessage((int)ErrorCode.InvalidAccountNameOrPassword));
-                session.ForceDisconnect();
+                session.DisconnectAfterPendingSends();
                 return;
             }
 
