@@ -148,6 +148,21 @@ namespace NexusForever.WorldServer.Tests.Web.Middleware
         }
 
         [Fact]
+        public async Task InvokeAsync_GlobalCommandQueueFull_ClosesWithPolicyViolation()
+        {
+            const string command = "status";
+            byte[] payload = Encoding.UTF8.GetBytes($"{{\"message\":\"{command}\"}}");
+            TestHarness harness = CreateHarness(CreateEnabledOptions(), ReceiveFrame.Text(payload, true));
+            harness.CommandManager.Setup(manager => manager.HandleCommandDelay(It.IsAny<ICommandContext>(), It.IsAny<string>()))
+                .Returns(false);
+
+            await harness.InvokeAsync(addCredential: true, addOrigin: true);
+
+            Assert.Equal(WebSocketCloseStatus.PolicyViolation, harness.WebSocket.SentCloseStatus);
+            harness.CommandManager.Verify(manager => manager.HandleCommandDelay(harness.CommandContext.Object, command), Times.Once);
+        }
+
+        [Fact]
         public async Task InvokeAsync_BinaryMessage_ClosesWithInvalidMessageType()
         {
             TestHarness harness = CreateHarness(CreateEnabledOptions(), ReceiveFrame.Binary([1, 2, 3]));
@@ -231,7 +246,9 @@ namespace NexusForever.WorldServer.Tests.Web.Middleware
                 HttpContext.Request.Path = "/ws/commands";
 
                 var commandContextFactory = new Mock<IWebSocketCommandContextFactory>();
-                commandContextFactory.Setup(factory => factory.Create(WebSocket)).Returns(CommandContext.Object);
+                commandContextFactory.Setup(factory => factory.Create(It.IsAny<IWebSocketResponseQueue>())).Returns(CommandContext.Object);
+                CommandManager.Setup(manager => manager.HandleCommandDelay(It.IsAny<ICommandContext>(), It.IsAny<string>()))
+                    .Returns(true);
 
                 middleware = new WebSocketMiddleware(
                     _ => Task.CompletedTask,

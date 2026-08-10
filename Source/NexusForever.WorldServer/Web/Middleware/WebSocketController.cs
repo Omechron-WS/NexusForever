@@ -34,6 +34,9 @@ namespace NexusForever.WorldServer.Web.Middleware
         private readonly ILogger<WebSocketMiddleware> log;
         private readonly bool enabled;
         private readonly int maximumMessageSize;
+        private readonly int maximumPendingResponseBytes;
+        private readonly int maximumPendingResponses;
+        private readonly TimeSpan responseShutdownTimeout;
         private readonly byte[] credentialHash;
         private readonly HashSet<string> allowedOrigins = new(StringComparer.OrdinalIgnoreCase);
 
@@ -59,9 +62,12 @@ namespace NexusForever.WorldServer.Web.Middleware
             this.log                   = log;
 
             WebSocketCommandOptions value = options.Value;
-            enabled            = value.Enabled;
-            maximumMessageSize = value.MaximumMessageSize;
-            credentialHash     = value.HasValidCredentialHash()
+            enabled                     = value.Enabled;
+            maximumMessageSize          = value.MaximumMessageSize;
+            maximumPendingResponseBytes = value.MaximumPendingResponseBytes;
+            maximumPendingResponses     = value.MaximumPendingResponses;
+            responseShutdownTimeout     = TimeSpan.FromSeconds(value.ResponseShutdownTimeoutSeconds);
+            credentialHash              = value.HasValidCredentialHash()
                 ? Convert.FromHexString(value.CredentialSha256)
                 : new byte[SHA256.HashSizeInBytes];
 
@@ -111,9 +117,15 @@ namespace NexusForever.WorldServer.Web.Middleware
             WebSocket webSocket = await context.WebSockets.AcceptWebSocketAsync();
             using (webSocket)
             {
+                var responseQueue = new WebSocketResponseQueue(
+                    webSocket,
+                    maximumPendingResponseBytes,
+                    maximumPendingResponses,
+                    responseShutdownTimeout,
+                    log);
                 try
                 {
-                    await ProcessMessagesAsync(webSocket, context.RequestAborted);
+                    await ProcessMessagesAsync(webSocket, responseQueue, context.RequestAborted);
                 }
                 catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
                 {
@@ -127,17 +139,29 @@ namespace NexusForever.WorldServer.Web.Middleware
                 catch (Exception exception)
                 {
                     log.LogError(exception, "Command WebSocket connection failed.");
-                    await CloseSocketAsync(webSocket, WebSocketCloseStatus.InternalServerError, "Command processing failed.", CancellationToken.None);
+                    await StopAndCloseSocketAsync(
+                        webSocket,
+                        responseQueue,
+                        WebSocketCloseStatus.InternalServerError,
+                        "Command processing failed.",
+                        CancellationToken.None);
+                }
+                finally
+                {
+                    await responseQueue.StopAsync();
                 }
             }
         }
 
-        private async Task ProcessMessagesAsync(WebSocket webSocket, CancellationToken cancellationToken)
+        private async Task ProcessMessagesAsync(
+            WebSocket webSocket,
+            WebSocketResponseQueue responseQueue,
+            CancellationToken cancellationToken)
         {
-            ICommandContext commandContext = commandContextFactory.Create(webSocket);
+            ICommandContext commandContext = commandContextFactory.Create(responseQueue);
             while (webSocket.State == WebSocketState.Open)
             {
-                string json = await ReceiveTextMessageAsync(webSocket, cancellationToken);
+                string json = await ReceiveTextMessageAsync(webSocket, responseQueue, cancellationToken);
                 if (json == null)
                     return;
 
@@ -148,21 +172,43 @@ namespace NexusForever.WorldServer.Web.Middleware
                 }
                 catch (JsonException)
                 {
-                    await CloseSocketAsync(webSocket, WebSocketCloseStatus.InvalidPayloadData, "Invalid command message.", cancellationToken);
+                    await StopAndCloseSocketAsync(
+                        webSocket,
+                        responseQueue,
+                        WebSocketCloseStatus.InvalidPayloadData,
+                        "Invalid command message.",
+                        cancellationToken);
                     return;
                 }
 
                 if (string.IsNullOrWhiteSpace(clientMessage?.Message))
                 {
-                    await CloseSocketAsync(webSocket, WebSocketCloseStatus.InvalidPayloadData, "Invalid command message.", cancellationToken);
+                    await StopAndCloseSocketAsync(
+                        webSocket,
+                        responseQueue,
+                        WebSocketCloseStatus.InvalidPayloadData,
+                        "Invalid command message.",
+                        cancellationToken);
                     return;
                 }
 
-                commandManager.HandleCommandDelay(commandContext, clientMessage.Message);
+                if (!commandManager.HandleCommandDelay(commandContext, clientMessage.Message))
+                {
+                    await StopAndCloseSocketAsync(
+                        webSocket,
+                        responseQueue,
+                        WebSocketCloseStatus.PolicyViolation,
+                        "Command queue is full.",
+                        cancellationToken);
+                    return;
+                }
             }
         }
 
-        private async Task<string> ReceiveTextMessageAsync(WebSocket webSocket, CancellationToken cancellationToken)
+        private async Task<string> ReceiveTextMessageAsync(
+            WebSocket webSocket,
+            WebSocketResponseQueue responseQueue,
+            CancellationToken cancellationToken)
         {
             var buffer = new byte[4096];
             using var message = new MemoryStream(Math.Min(maximumMessageSize, buffer.Length));
@@ -172,20 +218,34 @@ namespace NexusForever.WorldServer.Web.Middleware
                 WebSocketReceiveResult result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    await CloseSocketAsync(webSocket, result.CloseStatus ?? WebSocketCloseStatus.NormalClosure,
-                        result.CloseStatusDescription, cancellationToken);
+                    await StopAndCloseSocketAsync(
+                        webSocket,
+                        responseQueue,
+                        result.CloseStatus ?? WebSocketCloseStatus.NormalClosure,
+                        result.CloseStatusDescription,
+                        cancellationToken);
                     return null;
                 }
 
                 if (result.MessageType != WebSocketMessageType.Text)
                 {
-                    await CloseSocketAsync(webSocket, WebSocketCloseStatus.InvalidMessageType, "Text messages are required.", cancellationToken);
+                    await StopAndCloseSocketAsync(
+                        webSocket,
+                        responseQueue,
+                        WebSocketCloseStatus.InvalidMessageType,
+                        "Text messages are required.",
+                        cancellationToken);
                     return null;
                 }
 
                 if (message.Length + result.Count > maximumMessageSize)
                 {
-                    await CloseSocketAsync(webSocket, WebSocketCloseStatus.MessageTooBig, "Command message is too large.", cancellationToken);
+                    await StopAndCloseSocketAsync(
+                        webSocket,
+                        responseQueue,
+                        WebSocketCloseStatus.MessageTooBig,
+                        "Command message is too large.",
+                        cancellationToken);
                     return null;
                 }
 
@@ -200,7 +260,12 @@ namespace NexusForever.WorldServer.Web.Middleware
             }
             catch (DecoderFallbackException)
             {
-                await CloseSocketAsync(webSocket, WebSocketCloseStatus.InvalidPayloadData, "Command message is not valid UTF-8.", cancellationToken);
+                await StopAndCloseSocketAsync(
+                    webSocket,
+                    responseQueue,
+                    WebSocketCloseStatus.InvalidPayloadData,
+                    "Command message is not valid UTF-8.",
+                    cancellationToken);
                 return null;
             }
         }
@@ -226,7 +291,21 @@ namespace NexusForever.WorldServer.Web.Middleware
                 && allowedOrigins.Contains(normalisedOrigin);
         }
 
-        private async Task CloseSocketAsync(WebSocket webSocket, WebSocketCloseStatus status, string description,
+        private async Task StopAndCloseSocketAsync(
+            WebSocket webSocket,
+            WebSocketResponseQueue responseQueue,
+            WebSocketCloseStatus status,
+            string description,
+            CancellationToken cancellationToken)
+        {
+            await responseQueue.StopAsync();
+            await CloseSocketAsync(webSocket, status, description, cancellationToken);
+        }
+
+        private async Task CloseSocketAsync(
+            WebSocket webSocket,
+            WebSocketCloseStatus status,
+            string description,
             CancellationToken cancellationToken)
         {
             if (webSocket.State != WebSocketState.Open && webSocket.State != WebSocketState.CloseReceived)

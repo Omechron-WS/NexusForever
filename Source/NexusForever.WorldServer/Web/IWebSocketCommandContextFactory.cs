@@ -1,5 +1,9 @@
-using System.Net.WebSockets;
+using System;
+using System.Collections.Immutable;
+using Microsoft.Extensions.Options;
+using NexusForever.Game.Static.RBAC;
 using NexusForever.WorldServer.Command.Context;
+using NexusForever.WorldServer.Web.Configuration;
 
 namespace NexusForever.WorldServer.Web
 {
@@ -9,20 +13,33 @@ namespace NexusForever.WorldServer.Web
     public interface IWebSocketCommandContextFactory
     {
         /// <summary>
-        /// Create a command context for the supplied WebSocket.
+        /// Create a command context for the supplied response queue.
         /// </summary>
-        ICommandContext Create(WebSocket webSocket);
+        ICommandContext Create(IWebSocketResponseQueue responseQueue);
     }
 
     /// <summary>
-    /// Creates the default role-based WebSocket command context.
+    /// Creates command WebSocket contexts from the configured permission allowlist.
     /// </summary>
     public sealed class WebSocketCommandContextFactory : IWebSocketCommandContextFactory
     {
-        /// <inheritdoc />
-        public ICommandContext Create(WebSocket webSocket)
+        private readonly ImmutableHashSet<Permission> permissions;
+
+        /// <summary>
+        /// Create a command-context factory from the configured permission allowlist.
+        /// </summary>
+        public WebSocketCommandContextFactory(IOptions<WebSocketCommandOptions> options)
         {
-            return new WebSocketCommandContext(webSocket);
+            ArgumentNullException.ThrowIfNull(options);
+            WebSocketCommandOptions value = options.Value;
+            ArgumentNullException.ThrowIfNull(value);
+            permissions = (value.AllowedPermissions ?? []).ToImmutableHashSet();
+        }
+
+        /// <inheritdoc />
+        public ICommandContext Create(IWebSocketResponseQueue responseQueue)
+        {
+            return new WebSocketCommandContext(responseQueue, permissions);
         }
     }
 }

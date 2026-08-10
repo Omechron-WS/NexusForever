@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Linq.Expressions;
@@ -8,10 +7,12 @@ using System.Text;
 using System.Threading;
 using Microsoft.Extensions.Hosting.Systemd;
 using Microsoft.Extensions.Hosting.WindowsServices;
+using Microsoft.Extensions.Options;
 using NexusForever.Shared;
 using NexusForever.WorldServer.Command.Context;
 using NexusForever.WorldServer.Command.Convert;
 using NexusForever.WorldServer.Command.Static;
+using NexusForever.WorldServer.Web.Configuration;
 using NLog;
 
 namespace NexusForever.WorldServer.Command
@@ -26,12 +27,23 @@ namespace NexusForever.WorldServer.Command
 
         private ImmutableDictionary<string, ICommandHandler> handlers;
 
-        private readonly ConcurrentQueue<PendingCommand> pendingCommands = new();
+        private readonly BoundedPendingCommandQueue pendingCommands;
 
         private Thread commandThread;
         private readonly ManualResetEventSlim waitHandle = new();
 
         private volatile CancellationTokenSource cancellationToken;
+
+        /// <summary>
+        /// Create a command manager with a bounded delayed-command queue.
+        /// </summary>
+        public CommandManager(IOptions<WebSocketCommandOptions> options)
+        {
+            ArgumentNullException.ThrowIfNull(options);
+            WebSocketCommandOptions value = options.Value;
+            ArgumentNullException.ThrowIfNull(value);
+            pendingCommands = new BoundedPendingCommandQueue(value.MaximumPendingCommands);
+        }
 
         /// <summary>
         /// Initialise <see cref="ICommandManager"/> and any related resources.
@@ -189,7 +201,8 @@ namespace NexusForever.WorldServer.Command
 
                 }
 
-                HandleCommandDelay(new ConsoleCommandContext(), sb.ToString());
+                if (!HandleCommandDelay(new ConsoleCommandContext(), sb.ToString()))
+                    log.Warn("Unable to queue console command because the delayed-command queue is full.");
             }
 
             log.Info("Stopped command thread.");
@@ -201,6 +214,8 @@ namespace NexusForever.WorldServer.Command
         public void Shutdown()
         {
             log.Info("Shutting down command manager...");
+
+            pendingCommands.Complete();
 
             // if server is running as a service the command thread is not started
             // in this case there is no thread to shutdown, just return
@@ -218,7 +233,8 @@ namespace NexusForever.WorldServer.Command
         public void Update(double lastTick)
         {
             // handle any delayed commands on the world thread
-            while (pendingCommands.TryDequeue(out PendingCommand command))
+            int commandsToProcess = pendingCommands.Count;
+            for (int i = 0; i < commandsToProcess && pendingCommands.TryDequeue(out PendingCommand command); i++)
                 HandleCommand(command.Context, command.CommandText);
         }
 
@@ -286,9 +302,11 @@ namespace NexusForever.WorldServer.Command
         /// This will queue the command to be invoked on the world thread at the end of an update.
         /// This is useful when a command isn't invoked from the world thread in the first place (console, websocket, ect...) and needs to be thread safe.
         /// </remarks>
-        public void HandleCommandDelay(ICommandContext context, string commandText)
+        public bool HandleCommandDelay(ICommandContext context, string commandText)
         {
-            pendingCommands.Enqueue(new PendingCommand(context, commandText));
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commandText);
+            return pendingCommands.TryEnqueue(new PendingCommand(context, commandText));
         }
 
         /// <summary>

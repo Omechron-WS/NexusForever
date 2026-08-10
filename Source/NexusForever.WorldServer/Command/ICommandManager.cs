@@ -39,7 +39,8 @@ namespace NexusForever.WorldServer.Command
         /// This will queue the command to be invoked on the world thread at the end of an update.
         /// This is useful when a command isn't invoked from the world thread in the first place (console, websocket, ect...) and needs to be thread safe.
         /// </remarks>
-        void HandleCommandDelay(ICommandContext context, string commandText);
+        /// <returns><see langword="true"/> when the command was admitted; otherwise, <see langword="false"/>.</returns>
+        bool HandleCommandDelay(ICommandContext context, string commandText);
 
         /// <summary>
         /// Handle command with supplied <see cref="ICommandContext"/>.

@@ -7,7 +7,12 @@
             "http://127.0.0.1:5000",
             "http://localhost:5000"
         ],
-        "MaximumMessageSize": 16384
+        "AllowedPermissions": [],
+        "MaximumMessageSize": 16384,
+        "MaximumPendingCommands": 1024,
+        "MaximumPendingResponseBytes": 262144,
+        "MaximumPendingResponses": 128,
+        "ResponseShutdownTimeoutSeconds": 2
     },
     "Network": {
         "Host": "0.0.0.0",
