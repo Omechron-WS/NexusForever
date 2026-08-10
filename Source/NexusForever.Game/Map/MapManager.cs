@@ -34,11 +34,14 @@ namespace NexusForever.Game.Map
         #region Dependency Injection
 
         private readonly IMapFactory mapFactory;
+        private readonly MapUpdater mapUpdater;
 
         public MapManager(
-            IMapFactory mapFactory)
+            IMapFactory mapFactory,
+            MapUpdater mapUpdater)
         {
             this.mapFactory = mapFactory;
+            this.mapUpdater = mapUpdater;
         }
 
         #endregion
@@ -92,26 +95,7 @@ namespace NexusForever.Game.Map
 
             var sw = Stopwatch.StartNew();
 
-            try
-            {
-                if (SharedConfiguration.Instance.Get<MapConfig>().SynchronousUpdate)
-                {
-                    foreach (IMap map in maps.Values)
-                        map.Update(lastTick);
-                }
-                else
-                {
-                    var tasks = new List<Task>();
-                    foreach (IMap map in maps.Values)
-                        tasks.Add(Task.Run(() => { map.Update(lastTick); }));
-
-                    Task.WaitAll(tasks.ToArray());
-                }
-            }
-            catch
-            {
-                // ignored.
-            }
+            mapUpdater.Update(maps.Values, lastTick, SharedConfiguration.Instance.Get<MapConfig>().SynchronousUpdate);
 
             sw.Stop();
             if (sw.ElapsedMilliseconds > 10)

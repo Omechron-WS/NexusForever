@@ -19,6 +19,7 @@ namespace NexusForever.Game.Map
 
             sc.AddSingletonLegacy<IEntityCacheManager, EntityCacheManager>();
             sc.AddSingletonLegacy<IMapIOManager, MapIOManager>();
+            sc.AddSingleton<MapUpdater>();
             sc.AddSingletonLegacy<IMapManager, MapManager>();
 
             sc.AddTransient<IMapFactory, MapFactory>();

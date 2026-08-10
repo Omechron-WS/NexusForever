@@ -152,7 +152,15 @@ namespace NexusForever.Game.Map.Instance
             var unloadedInstances = new List<IMapInstance>();
             foreach (T map in instances.Values)
             {
-                map.Update(lastTick);
+                try
+                {
+                    map.Update(lastTick);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to update instance {map.InstanceId} for map {Entry.Id}.");
+                    continue;
+                }
 
                 if (map.UnloadStatus == MapUnloadStatus.Complete)
                     unloadedInstances.Add(map);
