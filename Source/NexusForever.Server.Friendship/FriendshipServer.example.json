@@ -14,10 +14,12 @@
     },
     "API": {
         "Account": {
-            "Host": "http://localhost:4001"
+            "Host": "http://localhost:4001",
+            "Credential": ""
         },
         "Character": {
-            "Host": "http://localhost:4000"
+            "Host": "http://localhost:4000",
+            "Credential": ""
         }
     },
     "GameTable": {

@@ -35,9 +35,17 @@ namespace NexusForever.Aspire.AppHost
             return builder;
         }
 
-        public static IResourceBuilder<T> WithNexusForeverApi<T>(this IResourceBuilder<T> builder, string api, IResourceWithServiceDiscovery resource) where T : IResourceWithEnvironment
+        /// <summary>
+        /// Adds an authenticated NexusForever API reference to a service resource.
+        /// </summary>
+        public static IResourceBuilder<T> WithNexusForeverApi<T>(
+            this IResourceBuilder<T> builder,
+            string api,
+            IResourceWithServiceDiscovery resource,
+            IResourceBuilder<ParameterResource> credential) where T : IResourceWithEnvironment
         {
             builder.WithReferenceRelationship(resource);
+            builder.WithEnvironment($"API:{api}:Credential", credential);
 
             builder.WithEnvironment(c =>
             {

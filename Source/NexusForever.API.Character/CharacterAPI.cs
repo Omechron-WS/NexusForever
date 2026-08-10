@@ -4,6 +4,7 @@ using NexusForever.API.Character.Configuration.Model;
 using NexusForever.API.Character.Database;
 using NexusForever.API.Character.Endpoint;
 using NexusForever.API.Character.Server;
+using NexusForever.API.Server.Authentication;
 using NexusForever.Database;
 using NexusForever.Database.Auth;
 using NexusForever.Database.Character;
@@ -49,6 +50,7 @@ namespace NexusForever.API.Character
 
             WebApplication app = builder.Build();
 
+            app.UseServiceAuthentication();
             app.MapGetCharacterEndpoint();
 
             app.Run();

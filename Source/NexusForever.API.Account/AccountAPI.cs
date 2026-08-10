@@ -1,6 +1,7 @@
 using System.Reflection;
 using NexusForever.API.Account.Account;
 using NexusForever.API.Account.Endpoint;
+using NexusForever.API.Server.Authentication;
 using NexusForever.Database.Auth;
 using NexusForever.Database.Configuration.Model;
 using NLog.Extensions.Logging;
@@ -37,6 +38,7 @@ namespace NexusForever.API.Account
 
             WebApplication app = builder.Build();
 
+            app.UseServiceAuthentication();
             app.MapGetAccountEndpoint();
 
             app.Run();

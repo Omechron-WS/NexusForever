@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\NexusForever.API\NexusForever.API.csproj" />
+    <ProjectReference Include="..\NexusForever.API.Server\NexusForever.API.Server.csproj" />
     <ProjectReference Include="..\NexusForever.Database.Auth\NexusForever.Database.Auth.csproj" />
     <ProjectReference Include="..\NexusForever.Database.Character\NexusForever.Database.Character.csproj" />
   </ItemGroup>

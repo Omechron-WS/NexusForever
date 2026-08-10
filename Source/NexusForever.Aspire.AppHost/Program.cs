@@ -11,6 +11,31 @@ internal class Program
 
         //builder.AddDockerComposeEnvironment("nexus-forever");
 
+        IResourceBuilder<ParameterResource> accountApiCredential = builder.AddParameter(
+            "account-api-credential",
+            new GenerateParameterDefault
+            {
+                MinLength = 64,
+                Lower     = true,
+                Upper     = true,
+                Numeric   = true,
+                Special   = false
+            },
+            secret: true,
+            persist: true);
+        IResourceBuilder<ParameterResource> characterApiCredential = builder.AddParameter(
+            "character-api-credential",
+            new GenerateParameterDefault
+            {
+                MinLength = 64,
+                Lower     = true,
+                Upper     = true,
+                Numeric   = true,
+                Special   = false
+            },
+            secret: true,
+            persist: true);
+
         var rmq = builder.AddRabbitMQ("rmq")
             .WithManagementPlugin();
 
@@ -86,6 +111,7 @@ internal class Program
         IResourceBuilder<ProjectResource> accountApi = builder.AddProject<Projects.NexusForever_API_Account>("account-api")
             .WithNexusForeverHttp(4001)
             .WithNexusForeverDatabase("Auth", DatabaseProvider.MySql, authdb.Resource)
+            .WithEnvironment("Authentication:Credential", accountApiCredential)
             .WaitFor(authdb)
             .WaitForCompletion(dbMigration);
 
@@ -94,6 +120,7 @@ internal class Program
             .WithNexusForeverDatabase("Auth", DatabaseProvider.MySql, authdb.Resource)
             .WithNexusForeverDatabase("Character:0", DatabaseProvider.MySql, characterdb.Resource)
             .WithEnvironment("Database:Character:0:RealmId", "1")
+            .WithEnvironment("Authentication:Credential", characterApiCredential)
             .WaitFor(authdb)
             .WaitFor(characterdb)
             .WaitForCompletion(dbMigration);
@@ -101,7 +128,7 @@ internal class Program
         builder.AddProject<Projects.NexusForever_Server_GroupServer>("group-server")
             .WithNexusForeverDatabase("Group", DatabaseProvider.MySql, groupdb.Resource)
             .WithNexusForeverMessageBroker("GroupServer", BrokerProvider.RabbitMQ, rmq.Resource)
-            .WithNexusForeverApi("Character", characterApi.Resource)
+            .WithNexusForeverApi("Character", characterApi.Resource, characterApiCredential)
             .WaitFor(rmq)
             .WaitFor(groupdb)
             .WaitForCompletion(dbMigration)
@@ -110,7 +137,7 @@ internal class Program
         builder.AddProject<Projects.NexusForever_Server_ChatServer>("chat-server")
             .WithNexusForeverDatabase("Chat", DatabaseProvider.MySql, chatdb.Resource)
             .WithNexusForeverMessageBroker("ChatServer", BrokerProvider.RabbitMQ, rmq.Resource)
-            .WithNexusForeverApi("Character", characterApi.Resource)
+            .WithNexusForeverApi("Character", characterApi.Resource, characterApiCredential)
             .WaitFor(rmq)
             .WaitFor(chatdb)
             .WaitForCompletion(dbMigration)
@@ -119,8 +146,8 @@ internal class Program
         builder.AddProject<Projects.NexusForever_Server_Friendship>("friendship-server")
             .WithNexusForeverDatabase("Friendship", DatabaseProvider.MySql, friendshipdb.Resource)
             .WithNexusForeverMessageBroker("FriendshipServer", BrokerProvider.RabbitMQ, rmq.Resource)
-            .WithNexusForeverApi("Account", accountApi.Resource)
-            .WithNexusForeverApi("Character", characterApi.Resource)
+            .WithNexusForeverApi("Account", accountApi.Resource, accountApiCredential)
+            .WithNexusForeverApi("Character", characterApi.Resource, characterApiCredential)
             .WaitFor(rmq)
             .WaitFor(friendshipdb)
             .WaitForCompletion(dbMigration)
@@ -130,7 +157,7 @@ internal class Program
         builder.AddProject<Projects.NexusForever_Server_Character>("character-server")
             .WithNexusForeverDatabase("Query", DatabaseProvider.MySql, querydb.Resource)
             .WithNexusForeverMessageBroker("CharacterServer", BrokerProvider.RabbitMQ, rmq.Resource)
-            .WithNexusForeverApi("Character", characterApi.Resource)
+            .WithNexusForeverApi("Character", characterApi.Resource, characterApiCredential)
             .WaitFor(rmq)
             .WaitFor(querydb)
             .WaitFor(characterApi);
