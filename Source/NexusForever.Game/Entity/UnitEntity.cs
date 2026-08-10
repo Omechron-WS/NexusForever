@@ -6,6 +6,7 @@ using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Combat;
 using NexusForever.Game.Spell;
 using NexusForever.Game.Static;
+using NexusForever.Game.Static.Combat;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Quest;
 using NexusForever.Game.Static.Reputation;
@@ -16,6 +17,7 @@ using NexusForever.Network.World.Message.Model;
 using NexusForever.Network.World.Message.Static;
 using NexusForever.Script.Template;
 using NexusForever.Shared.Game;
+using CombatStateType = NexusForever.Game.Static.Combat.CombatState;
 
 namespace NexusForever.Game.Entity
 {
@@ -58,25 +60,14 @@ namespace NexusForever.Game.Entity
         /// <summary>
         /// Determines whether or not this <see cref="IUnitEntity"/> is in combat.
         /// </summary>
-        public bool InCombat
-        {
-            get => inCombat;
-            private set
-            {
-                if (inCombat == value)
-                    return;
+        public bool InCombat => CombatState != CombatStateType.Free;
 
-                inCombat = value;
+        /// <summary>
+        /// Current combat lifecycle state.
+        /// </summary>
+        public CombatStateType CombatState { get; private set; }
 
-                EnqueueToVisible(new ServerUnitEnteredCombat
-                {
-                    UnitId   = Guid,
-                    InCombat = value
-                }, true);
-            }
-        }
-
-        private bool inCombat;
+        private bool reportedInCombat;
 
         public IThreatManager ThreatManager { get; private set; }
 
@@ -86,6 +77,7 @@ namespace NexusForever.Game.Entity
         private UpdateTimer statUpdateTimer = new UpdateTimer(0.25); // TODO: Long-term this should be absorbed into individual timers for each Stat regeneration method
 
         private readonly List<ISpell> pendingSpells = new();
+        private readonly Dictionary<ProcType, List<IProcInfo>> procs = new();
 
         private Dictionary<Property, Dictionary</*spell4Id*/uint, ISpellPropertyModifier>> spellProperties = new();
 
@@ -107,6 +99,8 @@ namespace NexusForever.Game.Entity
 
             foreach (ISpell spell in pendingSpells)
                 spell.Dispose();
+
+            procs.Clear();
         }
 
         private void InitialiseHitRadius()
@@ -134,6 +128,11 @@ namespace NexusForever.Game.Entity
                     pendingSpells.Remove(spell);
                 }
             }
+
+            foreach (IProcInfo proc in procs.Values.SelectMany(list => list).ToArray())
+                proc.Update(lastTick);
+
+            CombatStateTick();
 
             statUpdateTimer.Update(lastTick);
             if (statUpdateTimer.HasElapsed)
@@ -349,6 +348,56 @@ namespace NexusForever.Game.Entity
         }
 
         /// <summary>
+        /// Register a proc on this entity, rejecting a duplicate applicator for the same event type.
+        /// </summary>
+        public bool ApplyProc(IProcInfo proc)
+        {
+            ArgumentNullException.ThrowIfNull(proc);
+
+            if (!ReferenceEquals(proc.Owner, this))
+                throw new ArgumentException("The proc owner does not match this entity.", nameof(proc));
+
+            if (!procs.TryGetValue(proc.Type, out List<IProcInfo> procList))
+            {
+                procList = [];
+                procs.Add(proc.Type, procList);
+            }
+
+            if (procList.Any(existing => existing.ApplicatorSpell4Id == proc.ApplicatorSpell4Id))
+                return false;
+
+            procList.Add(proc);
+            return true;
+        }
+
+        /// <summary>
+        /// Remove a proc from this entity.
+        /// </summary>
+        public bool RemoveProc(IProcInfo proc)
+        {
+            if (proc == null || !procs.TryGetValue(proc.Type, out List<IProcInfo> procList))
+                return false;
+
+            bool removed = procList.Remove(proc);
+            if (procList.Count == 0)
+                procs.Remove(proc.Type);
+
+            return removed;
+        }
+
+        /// <summary>
+        /// Dispatch a proc event to all matching procs on this entity.
+        /// </summary>
+        public void FireProc(ProcType type)
+        {
+            if (!procs.TryGetValue(type, out List<IProcInfo> procList))
+                return;
+
+            foreach (IProcInfo proc in procList.ToArray())
+                proc.Trigger();
+        }
+
+        /// <summary>
         /// Returns an active <see cref="ISpell"/> that is affecting this <see cref="IUnitEntity"/>
         /// </summary>
         public ISpell GetActiveSpell(Func<ISpell, bool> func)
@@ -521,13 +570,50 @@ namespace NexusForever.Game.Entity
 
         private void UpdateCombatState()
         {
-            // ensure conditions for combat state change are met
-            if (ThreatManager.IsThreatened == InCombat)
+            if (ThreatManager.IsThreatened)
+            {
+                CombatState = CombatStateType.Engaged;
+                return;
+            }
+
+            if (CombatState == CombatStateType.Engaged)
+                CombatState = CombatStateType.Exiting;
+        }
+
+        /// <summary>
+        /// Advance delayed combat exit and publish state changes at tick boundaries.
+        /// </summary>
+        private void CombatStateTick()
+        {
+            CombatState = CombatState switch
+            {
+                CombatStateType.Exiting => CombatStateType.Exited,
+                CombatStateType.Exited  => CombatStateType.Free,
+                _                       => CombatState
+            };
+
+            if (reportedInCombat == InCombat)
                 return;
 
-            InCombat   = ThreatManager.IsThreatened;
-            Sheathed   = !inCombat;
+            reportedInCombat = InCombat;
+            OnCombatStateChange(InCombat);
+        }
+
+        /// <summary>
+        /// Publish an entered or exited combat transition.
+        /// </summary>
+        protected virtual void OnCombatStateChange(bool inCombat)
+        {
+            Sheathed = !inCombat;
             SetStandState(inCombat ? StandState.Stand : StandState.State0);
+
+            EnqueueToVisible(new ServerUnitEnteredCombat
+            {
+                UnitId   = Guid,
+                InCombat = inCombat
+            }, true);
+
+            scriptCollection?.Invoke<IUnitScript>(script => script.OnCombatStateChange(inCombat));
         }
     }
 }

@@ -1,3 +1,4 @@
+using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Static.Combat;
 using NexusForever.Shared;
 
@@ -5,6 +6,11 @@ namespace NexusForever.Game.Abstract.Combat
 {
     public interface IProcInfo : IUpdate
     {
+        /// <summary>
+        /// Entity that owns this proc.
+        /// </summary>
+        IUnitEntity Owner { get; }
+
         /// <summary>
         /// The spell that applied this proc.
         /// </summary>
@@ -21,7 +27,12 @@ namespace NexusForever.Game.Abstract.Combat
         uint TriggerSpell4Id { get; }
 
         /// <summary>
-        /// Attempt to trigger the proc. Returns false if on cooldown.
+        /// Returns whether the proc can currently be triggered.
+        /// </summary>
+        bool CanTrigger { get; }
+
+        /// <summary>
+        /// Schedule the proc's spell. Returns false when a trigger is already pending.
         /// </summary>
         bool Trigger();
     }

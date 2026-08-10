@@ -14,6 +14,7 @@ using NexusForever.Game.Abstract.Entity.Movement.Command.Time;
 using NexusForever.Game.Abstract.Entity.Movement.Command.Velocity;
 using NexusForever.Game.Abstract.Entity.Movement.Generator;
 using NexusForever.Game.Entity.Movement.Generator;
+using NexusForever.Game.Static.Combat;
 using NexusForever.Game.Static.Entity.Movement.Command.Mode;
 using NexusForever.Game.Static.Entity.Movement.Command.State;
 using NexusForever.Game.Static.Entity.Movement.Spline;
@@ -68,6 +69,7 @@ namespace NexusForever.Game.Entity.Movement
         }
 
         private bool serverControl = true;
+        private bool isMoving;
 
         #region Dependency Injection
 
@@ -431,6 +433,7 @@ namespace NexusForever.Game.Entity.Movement
         public void SetVelocity(Vector3 velocity, bool blend)
         {
             velocityCommandGroup.SetVelocity(velocity, blend);
+            UpdateMovementProcState(velocity != Vector3.Zero);
         }
 
         /// <summary>
@@ -450,6 +453,17 @@ namespace NexusForever.Game.Entity.Movement
                 return;
 
             velocityCommandGroup.SetVelocityDefaults();
+            UpdateMovementProcState(false);
+        }
+
+        private void UpdateMovementProcState(bool moving)
+        {
+            if (isMoving == moving)
+                return;
+
+            isMoving = moving;
+            if (Owner is IUnitEntity unit)
+                unit.FireProc(moving ? ProcType.BeginMoving : ProcType.StopsMoving);
         }
 
         /// <summary>

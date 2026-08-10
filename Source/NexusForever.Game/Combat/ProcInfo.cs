@@ -8,64 +8,69 @@ using NLog;
 
 namespace NexusForever.Game.Combat
 {
-    // TODO: Wire ProcInfo into the game loop:
-    // - Add HandleEffectProc to SpellEffectHandler that calls IUnitEntity.ApplyProc()
-    // - Add proc collection + FireProc(ProcType) + Update loop to IUnitEntity/UnitEntity
-    // - Fire ProcType.CriticalDamage from HandleEffectDamage on crit result
-
+    /// <summary>
+    /// Delayed spell trigger registered against a unit combat event.
+    /// </summary>
     public class ProcInfo : IProcInfo
     {
-        // NLog used here because ProcInfo is constructed per-entity, not via DI container.
-        // TODO: Consider ILogger<ProcInfo> if proc management moves to a DI-managed service.
         private static readonly ILogger log = LogManager.GetCurrentClassLogger();
 
+        public IUnitEntity Owner { get; }
         public uint ApplicatorSpell4Id { get; }
         public ProcType Type { get; }
         public uint TriggerSpell4Id { get; }
+        public bool CanTrigger => !triggerPending;
 
-        private readonly IUnitEntity owner;
-        private readonly UpdateTimer cooldownTimer;
-        private bool onCooldown;
+        private readonly UpdateTimer triggerTimer;
+        private bool triggerPending;
 
+        /// <summary>
+        /// Create a proc from a spell effect definition.
+        /// </summary>
         public ProcInfo(IUnitEntity owner, Spell4EffectsEntry entry)
         {
-            this.owner         = owner;
+            Owner              = owner ?? throw new ArgumentNullException(nameof(owner));
+            ArgumentNullException.ThrowIfNull(entry);
+
             ApplicatorSpell4Id = entry.SpellId;
             Type               = (ProcType)entry.DataBits00;
             TriggerSpell4Id    = entry.DataBits01;
 
-            double cooldown = entry.DataBits04 > 0 ? entry.DataBits04 / 1000d : 0d;
-            cooldownTimer = new UpdateTimer(cooldown, false);
-        }
-
-        public void Update(double lastTick)
-        {
-            if (!onCooldown)
-                return;
-
-            cooldownTimer.Update(lastTick);
-            if (cooldownTimer.HasElapsed)
-                onCooldown = false;
+            double triggerDelay = entry.DataBits04 / 1000d;
+            triggerTimer        = new UpdateTimer(triggerDelay, false);
         }
 
         /// <summary>
-        /// Attempt to trigger the proc. Fires the trigger spell immediately
-        /// and starts the internal cooldown. Returns false if on cooldown.
+        /// Advance a pending trigger and cast its spell when the delay elapses.
         /// </summary>
-        public bool Trigger()
+        public void Update(double lastTick)
         {
-            if (onCooldown)
-                return false;
+            if (!triggerPending)
+                return;
 
+            triggerTimer.Update(lastTick);
+            if (!triggerTimer.HasElapsed)
+                return;
+
+            triggerPending = false;
             log.Trace("Proc {0} firing trigger spell {1}.", Type, TriggerSpell4Id);
 
-            owner.CastSpell(TriggerSpell4Id, new SpellParameters
+            Owner.CastSpell(TriggerSpell4Id, new SpellParameters
             {
                 UserInitiatedSpellCast = false
             });
+        }
 
-            onCooldown = true;
-            cooldownTimer.Reset(true);
+        /// <summary>
+        /// Schedule the proc's trigger spell after its configured delay.
+        /// </summary>
+        public bool Trigger()
+        {
+            if (!CanTrigger)
+                return false;
+
+            triggerPending = true;
+            triggerTimer.Reset(true);
             return true;
         }
     }

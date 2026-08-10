@@ -6,6 +6,7 @@ using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Combat;
 using NexusForever.Game.Entity;
 using NexusForever.Game.Map;
+using NexusForever.Game.Static.Combat;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Spell;
 using NexusForever.GameTable;
@@ -28,7 +29,16 @@ namespace NexusForever.Game.Spell
             var damageCalculator = factory.Resolve();
             damageCalculator.CalculateDamage(spell.Caster, target, spell, info);
 
+            if (info.Damage?.CombatResult == CombatResult.Critical)
+                spell.Caster.FireProc(ProcType.CriticalDamage);
+
             target.TakeDamage(spell.Caster, info.Damage);
+        }
+
+        [SpellEffectHandler(SpellEffectType.Proc)]
+        public static void HandleEffectProc(ISpell spell, IUnitEntity target, ISpellTargetEffectInfo info)
+        {
+            target.ApplyProc(new ProcInfo(target, info.Entry));
         }
 
         [SpellEffectHandler(SpellEffectType.Heal)]
@@ -68,7 +78,7 @@ namespace NexusForever.Game.Spell
                 AdjustedDamage = healing,
                 CombatResult   = CombatResult.Hit
             });
-            target.Shield += healing; // setter clamps to MaxShieldCapacity
+            target.Shield = (uint)Math.Min((ulong)target.Shield + healing, target.MaxShieldCapacity);
         }
 
         [SpellEffectHandler(SpellEffectType.Resurrect)]

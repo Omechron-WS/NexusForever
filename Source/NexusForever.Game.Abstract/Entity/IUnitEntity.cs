@@ -1,5 +1,6 @@
 ﻿using NexusForever.Game.Abstract.Combat;
 using NexusForever.Game.Abstract.Spell;
+using NexusForever.Game.Static.Combat;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Spell;
 
@@ -26,6 +27,11 @@ namespace NexusForever.Game.Abstract.Entity
         /// Determines whether or not this <see cref="IUnitEntity"/> is in combat.
         /// </summary>
         bool InCombat { get; }
+
+        /// <summary>
+        /// Current combat lifecycle state.
+        /// </summary>
+        CombatState CombatState { get; }
 
         public IThreatManager ThreatManager { get; }
 
@@ -92,6 +98,21 @@ namespace NexusForever.Game.Abstract.Entity
         /// If the <see cref="DamageType"/> is <see cref="DamageType.Heal"/> amount is added to current health otherwise subtracted.
         /// </remarks>
         void ModifyHealth(uint amount, DamageType type, IUnitEntity source);
+
+        /// <summary>
+        /// Register a proc on this entity, rejecting a duplicate applicator for the same event type.
+        /// </summary>
+        bool ApplyProc(IProcInfo proc);
+
+        /// <summary>
+        /// Remove a proc from this entity.
+        /// </summary>
+        bool RemoveProc(IProcInfo proc);
+
+        /// <summary>
+        /// Dispatch a proc event to all matching procs on this entity.
+        /// </summary>
+        void FireProc(ProcType type);
 
         /// <summary>
         /// Set target to supplied target guid.

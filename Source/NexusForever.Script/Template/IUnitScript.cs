@@ -5,6 +5,13 @@ namespace NexusForever.Script.Template
     public interface IUnitScript : IWorldEntityScript
     {
         /// <summary>
+        /// Invoked when the unit enters or fully exits combat.
+        /// </summary>
+        void OnCombatStateChange(bool inCombat)
+        {
+        }
+
+        /// <summary>
         /// Invoked when a new <see cref="IHostileEntity"/> is added to the threat list.
         /// </summary>
         void OnThreatAddTarget(IHostileEntity hostile)
