@@ -1,5 +1,14 @@
 {
-    "Urls": "http://0.0.0.0:5000",
+    "Urls": "http://127.0.0.1:5000",
+    "WebSocketCommands": {
+        "Enabled": false,
+        "CredentialSha256": "",
+        "AllowedOrigins": [
+            "http://127.0.0.1:5000",
+            "http://localhost:5000"
+        ],
+        "MaximumMessageSize": 16384
+    },
     "Network": {
         "Host": "0.0.0.0",
         "Port": 24000,

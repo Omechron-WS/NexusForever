@@ -79,9 +79,8 @@ internal class Program
             .WaitFor(authdb)
             .WaitForCompletion(dbMigration);
 
-        IResourceBuilder<ProjectResource> worldServer = builder.AddProject<Projects.NexusForever_WorldServer>("world-server")
+        builder.AddProject<Projects.NexusForever_WorldServer>("world-server")
             .WithNexusForeverTcp(IPAddress.Any, 24000)
-            .WithNexusForeverHttp(5000)
             .WithNexusForeverDatabase("Auth", DatabaseProvider.MySql, authdb.Resource)
             .WithNexusForeverDatabase("Character", DatabaseProvider.MySql, characterdb.Resource)
             .WithNexusForeverDatabase("World", DatabaseProvider.MySql, worlddb.Resource)
@@ -92,21 +91,6 @@ internal class Program
             .WaitFor(worlddb)
             .WaitFor(rmq)
             .WaitForCompletion(dbMigration);
-
-        worldServer.WithEnvironment(c =>
-        {
-            if (c.Resource.TryGetUrls(out var urls))
-            {
-                foreach (ResourceUrlAnnotation url in urls)
-                {
-                    if (url.Endpoint?.Scheme != "http")
-                        continue;
-
-                    url.DisplayText = "Web Console";
-                    url.Url = new UriBuilder(url.Url) { Path = "console.html" }.ToString();
-                }
-            }
-        });
 
         IResourceBuilder<ProjectResource> accountApi = builder.AddProject<Projects.NexusForever_API_Account>("account-api")
             .WithNexusForeverHttp(4001)

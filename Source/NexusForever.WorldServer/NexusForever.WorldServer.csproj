@@ -17,16 +17,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Remove="wwwroot\console.html" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Content Include="wwwroot\console.html">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
-
-  <ItemGroup>
 	<FrameworkReference Include="Microsoft.AspNetCore.App" />
 	<PackageReference Include="Microsoft.EntityFrameworkCore.Design">
       <PrivateAssets>all</PrivateAssets>

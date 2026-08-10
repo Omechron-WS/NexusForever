@@ -39,13 +39,14 @@ Completed hardening:
 - World shutdown awaits every player save, attempts both databases and every connected player after individual failures, and reports aggregate failure before declaring shutdown complete.
 - Map updates isolate and report individual top-level map and instance failures in both synchronous and worker-task modes, allowing healthy siblings to keep ticking.
 - Character and Account service APIs require bounded per-service credentials; typed clients attach them without redirect forwarding, and Aspire provisions separate persisted secrets.
+- The administrative command WebSocket is disabled by default, bound to loopback in the example configuration, and no longer published by the default Aspire topology. When explicitly enabled it requires a hashed bearer credential and an exact Origin allow-list, accepts only bounded strict-UTF-8 text messages, and rejects malformed command envelopes without dispatching them.
 
 Remaining priority work:
 
-- Authenticate and bound `/ws/commands`; enforce an origin policy and disable broad external exposure by default.
 - Make persistence dirty-state acknowledgement retry-safe after a database commit fails.
 - Make cross-server lifecycle publication failures observable and retryable.
 - Add bounded, non-blocking network send backpressure so a stalled client cannot stop the world update thread.
+- Replace the command WebSocket role's effectively unrestricted permission set, bound its pending command queue, and serialise/bound outbound responses before restoring a browser console in Phase 11.
 
 RC4 remains required by the build-16042 STS protocol. It is treated as a compatibility exception and contained through SRP state enforcement, bounded inputs, secret redaction, and deployment isolation.
 
@@ -53,7 +54,7 @@ SharpCompress `0.22.0` is transitively supplied by `Nexus.Archive 1.0.1` to the 
 
 ## Next validated slices
 
-1. Complete the externally exposed WebSocket and service-API perimeter fixes.
-2. Correct shutdown persistence and map-update fault isolation.
-3. Repair the Phase 1 schema and live loot lifecycle, then the Phase 2 and Phase 3 blockers found by the baseline audit.
-4. Complete Phase 4 proc dispatch before starting Phase 6 implementation.
+1. Make dirty-state acknowledgement retry-safe and make cross-server publication failures observable.
+2. Repair the Phase 1 schema and live loot lifecycle, then the Phase 2 and Phase 3 blockers found by the baseline audit.
+3. Complete Phase 4 proc dispatch before starting Phase 6 implementation.
+4. Add bounded network send backpressure and continue lower-risk long-uptime hardening alongside the gameplay phases.

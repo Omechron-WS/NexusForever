@@ -3,6 +3,7 @@ using NexusForever.Game.Configuration.Model;
 using NexusForever.GameTable.Configuration.Model;
 using NexusForever.Network.Configuration.Model;
 using NexusForever.Script.Configuration.Model;
+using NexusForever.WorldServer.Web.Configuration;
 
 namespace NexusForever.WorldServer
 {
@@ -13,5 +14,6 @@ namespace NexusForever.WorldServer
         public GameTableConfig GameTable { get; set; }
         public RealmConfig Realm { get; set; }
         public ScriptConfig Script { get; set; }
+        public WebSocketCommandOptions WebSocketCommands { get; set; }
     }
 }
