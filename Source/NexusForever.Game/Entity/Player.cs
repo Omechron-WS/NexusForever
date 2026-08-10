@@ -329,15 +329,11 @@ namespace NexusForever.Game.Entity
                 stats.Add((Stat)statModel.Stat, statValue);
             }
 
-            //SetStat(Stat.Health, 1);
             SetStat(Stat.Sheathed, 1u);
-            // temp
-            SetStat(Stat.Dash, 200F);
-            // sprint
-            SetStat(Stat.Resource0, 500f);
 
             CalculateDefaultProperties();
             SetBaseCharacterProperties();
+            InitialiseMissingVitalStats();
 
             scriptCollection = ScriptManager.Instance.InitialiseEntityScripts<IPlayer>(this);
 
@@ -386,6 +382,38 @@ namespace NexusForever.Game.Entity
 
             foreach (IPropertyModifier propertyValue in baseProperties.Concat(classProperties))
                 SetBaseProperty(propertyValue.Property, propertyValue.GetValue(Level));
+        }
+
+        /// <summary>
+        /// Initialises missing resource stats once their maximum properties are available.
+        /// </summary>
+        /// <remarks>
+        /// Existing stat records, including explicit zero values, are preserved. Endurance, Focus and Dash
+        /// start full, while class builder resources start empty and are populated by their gameplay systems.
+        /// </remarks>
+        internal void InitialiseMissingVitalStats()
+        {
+            InitialiseMissingVitalStat(Stat.Resource0, Property.ResourceMax0, true);
+            InitialiseMissingVitalStat(Stat.Focus, Property.BaseFocusPool, true);
+            InitialiseMissingVitalStat(Stat.Resource1, Property.ResourceMax1, false);
+            InitialiseMissingVitalStat(Stat.Resource2, Property.ResourceMax2, false);
+            InitialiseMissingVitalStat(Stat.Resource3, Property.ResourceMax3, false);
+            InitialiseMissingVitalStat(Stat.Resource4, Property.ResourceMax4, false);
+            InitialiseMissingVitalStat(Stat.Resource5, Property.ResourceMax5, false);
+            InitialiseMissingVitalStat(Stat.Resource6, Property.ResourceMax6, false);
+            InitialiseMissingVitalStat(Stat.Dash, Property.ResourceMax7, true);
+        }
+
+        private void InitialiseMissingVitalStat(Stat stat, Property maximumProperty, bool startAtMaximum)
+        {
+            if (stats.ContainsKey(stat))
+                return;
+
+            float maximum = GetPropertyValue(maximumProperty);
+            if (!float.IsFinite(maximum) || maximum <= 0f)
+                return;
+
+            SetStat(stat, startAtMaximum ? maximum : 0f);
         }
 
         public override void Update(double lastTick)
