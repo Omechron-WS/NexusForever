@@ -1,5 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
@@ -42,7 +43,7 @@ namespace NexusForever.Game.Entity
             set
             {
                 characterId = value;
-                saveMask |= ItemSaveMask.CharacterId;
+                saveMask.Mark(ItemSaveMask.CharacterId);
             }
         }
 
@@ -54,7 +55,7 @@ namespace NexusForever.Game.Entity
             set
             {
                 location = value;
-                saveMask |= ItemSaveMask.Location;
+                saveMask.Mark(ItemSaveMask.Location);
             }
         }
 
@@ -68,7 +69,7 @@ namespace NexusForever.Game.Entity
             set
             {
                 bagIndex = value;
-                saveMask |= ItemSaveMask.BagIndex;
+                saveMask.Mark(ItemSaveMask.BagIndex);
             }
         }
 
@@ -85,7 +86,7 @@ namespace NexusForever.Game.Entity
                     throw new ArgumentOutOfRangeException();
 
                 stackCount = value;
-                saveMask |= ItemSaveMask.StackCount;
+                saveMask.Mark(ItemSaveMask.StackCount);
             }
         }
 
@@ -100,7 +101,7 @@ namespace NexusForever.Game.Entity
                     throw new ArgumentOutOfRangeException();
 
                 charges = value;
-                saveMask |= ItemSaveMask.Charges;
+                saveMask.Mark(ItemSaveMask.Charges);
             }
         }
 
@@ -115,7 +116,7 @@ namespace NexusForever.Game.Entity
                     throw new ArgumentOutOfRangeException();
 
                 durability = value;
-                saveMask |= ItemSaveMask.Durability;
+                saveMask.Mark(ItemSaveMask.Durability);
             }
         }
 
@@ -127,7 +128,7 @@ namespace NexusForever.Game.Entity
             set
             {
                 expirationTimeLeft = value;
-                saveMask |= ItemSaveMask.ExpirationTimeLeft;
+                saveMask.Mark(ItemSaveMask.ExpirationTimeLeft);
             }
         }
 
@@ -136,11 +137,11 @@ namespace NexusForever.Game.Entity
         /// <summary>
         /// Returns if <see cref="IItem"/> is enqueued to be saved to the database.
         /// </summary>
-        public bool PendingCreate => (saveMask & ItemSaveMask.Create) != 0;
+        public bool PendingCreate => (saveMask.Current & ItemSaveMask.Create) != 0;
 
-        public bool PendingDelete => (saveMask & ItemSaveMask.Delete) != 0;
+        public bool PendingDelete => (saveMask.Current & ItemSaveMask.Delete) != 0;
 
-        private ItemSaveMask saveMask;
+        private readonly VersionedSaveMask<ItemSaveMask> saveMask;
 
         public Dictionary<Property, float> InnateProperties { get; private set; } = new Dictionary<Property, float>();
 
@@ -164,7 +165,7 @@ namespace NexusForever.Game.Entity
             else
                 SpellEntry = GameTableManager.Instance.Spell4Base.GetEntry(model.ItemId);
 
-            saveMask = ItemSaveMask.None;
+            saveMask = new VersionedSaveMask<ItemSaveMask>();
         }
 
         /// <summary>
@@ -182,7 +183,7 @@ namespace NexusForever.Game.Entity
             durability       = 1.0f;
             Info             = info;
 
-            saveMask         = ItemSaveMask.Create;
+            saveMask         = new VersionedSaveMask<ItemSaveMask>(ItemSaveMask.Create);
         }
 
         /// <summary>
@@ -201,7 +202,7 @@ namespace NexusForever.Game.Entity
             durability       = 0.0f;
             SpellEntry       = entry;
 
-            saveMask         = ItemSaveMask.Create;
+            saveMask         = new VersionedSaveMask<ItemSaveMask>(ItemSaveMask.Create);
         }
 
         /// <summary>
@@ -209,15 +210,43 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void EnqueueDelete(bool state)
         {
-            saveMask = ItemSaveMask.Delete;
+            if (state)
+                saveMask.Mark(ItemSaveMask.Delete);
+            else
+                saveMask.Clear(ItemSaveMask.Delete);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == ItemSaveMask.None)
+            VersionedSaveMaskSnapshot<ItemSaveMask> snapshot = saveMask.Capture();
+            StageSave(context, snapshot.Mask);
+            saveMask.Acknowledge(snapshot);
+        }
+
+        /// <summary>
+        /// Stage item changes and defer clearing their dirty state until the database commit is acknowledged.
+        /// </summary>
+        /// <param name="context">Character database context receiving the staged changes.</param>
+        /// <param name="commitScope">Scope that acknowledges the staged changes after a successful commit.</param>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            VersionedSaveMaskSnapshot<ItemSaveMask> snapshot = saveMask.Capture();
+            if (snapshot.Mask == ItemSaveMask.None)
                 return;
 
-            if ((saveMask & ItemSaveMask.Create) != 0)
+            StageSave(context, snapshot.Mask);
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
+        }
+
+        private void StageSave(CharacterContext context, ItemSaveMask stagedMask)
+        {
+            if (stagedMask == ItemSaveMask.None)
+                return;
+
+            if ((stagedMask & ItemSaveMask.Create) != 0)
             {
                 // item doesn't exist in database, all information must be saved
                 context.Add(new ItemModel
@@ -233,7 +262,7 @@ namespace NexusForever.Game.Entity
                     ExpirationTimeLeft = ExpirationTimeLeft
                 });
             }
-            else if ((saveMask & ItemSaveMask.Delete) != 0)
+            else if ((stagedMask & ItemSaveMask.Delete) != 0)
             {
                 var model = new ItemModel
                 {
@@ -252,44 +281,42 @@ namespace NexusForever.Game.Entity
 
                 // could probably clean this up with reflection, works for the time being
                 EntityEntry<ItemModel> entity = context.Attach(model);
-                if ((saveMask & ItemSaveMask.CharacterId) != 0)
+                if ((stagedMask & ItemSaveMask.CharacterId) != 0)
                 {
                     model.OwnerId = CharacterId;
                     entity.Property(p => p.OwnerId).IsModified = true;
                 }
-                if ((saveMask & ItemSaveMask.Location) != 0)
+                if ((stagedMask & ItemSaveMask.Location) != 0)
                 {
                     model.Location = (ushort)Location;
                     entity.Property(p => p.Location).IsModified = true;
                 }
-                if ((saveMask & ItemSaveMask.BagIndex) != 0)
+                if ((stagedMask & ItemSaveMask.BagIndex) != 0)
                 {
                     model.BagIndex = BagIndex;
                     entity.Property(p => p.BagIndex).IsModified = true;
                 }
-                if ((saveMask & ItemSaveMask.StackCount) != 0)
+                if ((stagedMask & ItemSaveMask.StackCount) != 0)
                 {
                     model.StackCount = StackCount;
                     entity.Property(p => p.StackCount).IsModified = true;
                 }
-                if ((saveMask & ItemSaveMask.Charges) != 0)
+                if ((stagedMask & ItemSaveMask.Charges) != 0)
                 {
                     model.Charges = Charges;
                     entity.Property(p => p.Charges).IsModified = true;
                 }
-                if ((saveMask & ItemSaveMask.Durability) != 0)
+                if ((stagedMask & ItemSaveMask.Durability) != 0)
                 {
                     model.Durability = Durability;
                     entity.Property(p => p.Durability).IsModified = true;
                 }
-                if ((saveMask & ItemSaveMask.ExpirationTimeLeft) != 0)
+                if ((stagedMask & ItemSaveMask.ExpirationTimeLeft) != 0)
                 {
                     model.ExpirationTimeLeft = ExpirationTimeLeft;
                     entity.Property(p => p.ExpirationTimeLeft).IsModified = true;
                 }
             }
-
-            saveMask = ItemSaveMask.None;
         }
 
         /// <summary>

@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Game.Abstract.Mail;
 using NexusForever.Game.Static.Mail;
 using NexusForever.Network.World.Message.Model.Mail;
@@ -8,6 +9,13 @@ namespace NexusForever.Game.Abstract.Entity
 {
     public interface IMailManager : IUpdate, IDatabaseCharacter
     {
+        /// <summary>
+        /// Stage mail changes and defer queue, tombstone, and dirty-state acknowledgement until the database commit succeeds.
+        /// </summary>
+        /// <param name="context">Character database context receiving the staged changes.</param>
+        /// <param name="commitScope">Scope that acknowledges the staged changes after a successful commit.</param>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         void SendInitialPackets();
 
         /// <summary>

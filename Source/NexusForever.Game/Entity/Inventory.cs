@@ -1,5 +1,6 @@
 ﻿using System.Collections;
 using System.Diagnostics;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
@@ -83,6 +84,33 @@ namespace NexusForever.Game.Entity
 
             foreach (IBag bag in bags.Values.Where(b => b.Location != InventoryLocation.Ability))
                 bag.Save(context);
+        }
+
+        /// <summary>
+        /// Stage inventory changes and defer clearing their dirty state until the database commit is acknowledged.
+        /// </summary>
+        /// <param name="context">Character database context receiving the staged changes.</param>
+        /// <param name="commitScope">Scope that acknowledges the staged changes after a successful commit.</param>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            IItem[] stagedDeletedItems = deletedItems.ToArray();
+            foreach (IItem item in stagedDeletedItems)
+                item.Save(context, commitScope);
+
+            foreach (IBag bag in bags.Values.Where(b => b.Location != InventoryLocation.Ability))
+                bag.Save(context, commitScope);
+
+            if (stagedDeletedItems.Length != 0)
+            {
+                commitScope.Register(() =>
+                {
+                    foreach (IItem item in stagedDeletedItems)
+                        deletedItems.Remove(item);
+                });
+            }
         }
 
         /// <summary>
@@ -301,6 +329,84 @@ namespace NexusForever.Game.Entity
 
                 count -= item.StackCount;
             }
+        }
+
+        /// <summary>
+        /// Create the complete requested item count only when it fits without a partial inventory mutation.
+        /// </summary>
+        /// <param name="location">Inventory location that will receive the items.</param>
+        /// <param name="itemId">Static item identifier.</param>
+        /// <param name="count">Requested item count.</param>
+        /// <param name="remaining">Shortfall when the complete count does not fit; otherwise zero.</param>
+        /// <param name="reason">Reason reported for successful item additions.</param>
+        /// <param name="charges">Initial charges assigned to newly created item stacks.</param>
+        /// <returns><see langword="true"/> when the complete count was created; otherwise <see langword="false"/>.</returns>
+        public bool TryItemCreate(InventoryLocation location, uint itemId, uint count, out uint remaining,
+            ItemUpdateReason reason = ItemUpdateReason.NoReason, uint charges = 0)
+        {
+            IItemInfo info = ItemManager.Instance.GetItemInfo(itemId);
+            if (info == null)
+                throw new ArgumentNullException(nameof(itemId));
+
+            return TryItemCreate(location, info, count, out remaining, reason, charges);
+        }
+
+        /// <summary>
+        /// Create the complete requested item count only when it fits without a partial inventory mutation.
+        /// </summary>
+        /// <param name="location">Inventory location that will receive the items.</param>
+        /// <param name="info">Item template.</param>
+        /// <param name="count">Requested item count.</param>
+        /// <param name="remaining">Shortfall when the complete count does not fit; otherwise zero.</param>
+        /// <param name="reason">Reason reported for successful item additions.</param>
+        /// <param name="charges">Initial charges assigned to newly created item stacks.</param>
+        /// <returns><see langword="true"/> when the complete count was created; otherwise <see langword="false"/>.</returns>
+        public bool TryItemCreate(InventoryLocation location, IItemInfo info, uint count, out uint remaining,
+            ItemUpdateReason reason = ItemUpdateReason.NoReason, uint charges = 0)
+        {
+            ArgumentNullException.ThrowIfNull(info);
+
+            IBag bag = GetBag(location);
+            if (bag == null)
+                throw new ArgumentException("Unknown inventory location.", nameof(location));
+
+            ulong capacity = GetItemCreateCapacity(bag, location, info);
+            if (capacity < count)
+            {
+                remaining = count - (uint)capacity;
+                return false;
+            }
+
+            ItemCreate(location, info, count, reason, charges);
+            remaining = 0u;
+            return true;
+        }
+
+        private static ulong GetItemCreateCapacity(IBag bag, InventoryLocation location, IItemInfo info)
+        {
+            ulong capacity = 0ul;
+            if (info.IsStackable())
+            {
+                foreach (IItem item in bag.Where(item => item.Info?.Id == info.Id))
+                {
+                    if (item.StackCount < info.Entry.MaxStackCount)
+                        capacity += info.Entry.MaxStackCount - item.StackCount;
+                }
+            }
+
+            uint availableSlots;
+            if (location == InventoryLocation.Equipped)
+            {
+                availableSlots = (uint)ItemManager.Instance
+                    .GetEquippedBagIndexes((ItemSlot)info.SlotEntry.Id)
+                    .Count(index => bag.GetItem((uint)index) == null);
+            }
+            else
+                availableSlots = bag.SlotsRemaining;
+
+            uint stackCapacity = info.IsStackable() ? info.Entry.MaxStackCount : 1u;
+            capacity += (ulong)availableSlots * stackCapacity;
+            return capacity;
         }
 
         /// <summary>

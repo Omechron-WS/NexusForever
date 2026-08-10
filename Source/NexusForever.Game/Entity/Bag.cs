@@ -1,4 +1,5 @@
 ﻿using System.Collections;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Static.Entity;
@@ -41,6 +42,31 @@ namespace NexusForever.Game.Entity
                 }
 
                 items[i].Save(context);
+            }
+        }
+
+        /// <summary>
+        /// Stage contained item changes and defer clearing their dirty state until the database commit is acknowledged.
+        /// </summary>
+        /// <param name="context">Character database context receiving the staged changes.</param>
+        /// <param name="commitScope">Scope that acknowledges the staged changes after a successful commit.</param>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            for (uint i = 0; i < items.Length; ++i)
+            {
+                if (items[i] == null)
+                    continue;
+
+                if (i != items[i].BagIndex)
+                {
+                    log.Warn($"Item with guid: 0x{items[i].Guid:X16} has incorrect slot: {items[i].BagIndex}, setting to slot: {i}");
+                    items[i].BagIndex = i;
+                }
+
+                items[i].Save(context, commitScope);
             }
         }
 

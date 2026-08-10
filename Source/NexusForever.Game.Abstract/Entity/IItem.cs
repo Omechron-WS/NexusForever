@@ -23,6 +23,13 @@ namespace NexusForever.Game.Abstract.Entity
         float Durability { get; set; }
         uint ExpirationTimeLeft { get; set; }
 
+        /// <summary>
+        /// Stage item changes and defer clearing their dirty state until the database commit is acknowledged.
+        /// </summary>
+        /// <param name="context">Character database context receiving the staged changes.</param>
+        /// <param name="commitScope">Scope that acknowledges the staged changes after a successful commit.</param>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         // <summary>
         /// Returns the <see cref="CurrencyType"/> this <see cref="IItem"/> sells for at a vendor.
         /// </summary>

@@ -31,6 +31,13 @@ namespace NexusForever.Game.Abstract.Mail
         float ExpiryTime { get; }
 
         /// <summary>
+        /// Stage mail and attachment changes and defer clearing their dirty state until the database commit is acknowledged.
+        /// </summary>
+        /// <param name="context">Character database context receiving the staged changes.</param>
+        /// <param name="commitScope">Scope that acknowledges the staged changes after a successful commit.</param>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
+        /// <summary>
         /// Returns the specific <see cref="IMailAttachment"/> based on its index.
         /// </summary>
         IMailAttachment GetAttachment(uint index);

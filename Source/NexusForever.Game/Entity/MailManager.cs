@@ -1,4 +1,6 @@
-﻿using System.Numerics;
+﻿using System.Collections.Concurrent;
+using System.Numerics;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Character;
@@ -14,25 +16,43 @@ using NexusForever.Network.World.Message.Model;
 using NexusForever.Network.World.Message.Model.Mail;
 using NexusForever.Network.World.Message.Static;
 using NexusForever.Shared.Game;
+using NLog;
 
 namespace NexusForever.Game.Entity
 {
     public class MailManager : IMailManager
     {
+        private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+
         private readonly IPlayer player;
+        private readonly IPlayerManager playerManager;
+        private readonly object outgoingMailSyncRoot = new();
         private readonly Queue<IMailItem> outgoingMail = new();
+        private readonly ConcurrentQueue<IMailItem> incomingMail = new();
         private readonly List<IMailItem> pendingMail = new();
         private readonly Dictionary<ulong, IMailItem> availableMail = new();
 
-        // timer to check pending mail ever second
-        private readonly UpdateTimer mailTimer = new(1000d);
+        // timer to check pending mail every second
+        private readonly UpdateTimer mailTimer = new(TimeSpan.FromSeconds(1));
 
         /// <summary>
         /// Create a new <see cref="IMailManager"/> from existing <see cref="CharacterModel"/> database model.
         /// </summary>
         public MailManager(IPlayer owner, CharacterModel model)
+            : this(owner, model, null)
         {
-            player = owner;
+        }
+
+        /// <summary>
+        /// Create a new <see cref="IMailManager"/> with an explicit online-player resolver.
+        /// </summary>
+        /// <param name="owner">Player that owns this mail manager.</param>
+        /// <param name="model">Character database model containing existing mail.</param>
+        /// <param name="playerManager">Online-player resolver used for post-commit delivery.</param>
+        public MailManager(IPlayer owner, CharacterModel model, IPlayerManager playerManager)
+        {
+            player             = owner;
+            this.playerManager = playerManager;
             foreach (CharacterMailModel mailModel in model.Mail)
             {
                 var mail = new MailItem(mailModel);
@@ -45,42 +65,57 @@ namespace NexusForever.Game.Entity
 
         public void Update(double lastTick)
         {
+            bool sendAvailableMail = DrainIncomingMail();
+
             mailTimer.Update(lastTick);
             if (mailTimer.HasElapsed)
             {
-                bool sendAvailableMail = false;
-                foreach (IMailItem mail in pendingMail)
+                foreach (IMailItem mail in pendingMail.ToArray())
                 {
                     if (!mail.IsReadyToDeliver())
                         continue;
 
-                    availableMail.Add(mail.Id, mail);
-                    sendAvailableMail = true;
+                    pendingMail.Remove(mail);
+                    if (availableMail.TryAdd(mail.Id, mail))
+                        sendAvailableMail = true;
                 }
-
-                // prevent sending multiple mail packets
-                if (sendAvailableMail)
-                    SendAvailableMail();
 
                 // TODO: remove expired mail
 
                 mailTimer.Reset();
             }
+
+            // prevent sending multiple mail packets in one update
+            if (sendAvailableMail)
+                SendAvailableMail();
+        }
+
+        private bool DrainIncomingMail()
+        {
+            bool sendAvailableMail = false;
+            while (incomingMail.TryDequeue(out IMailItem mail))
+            {
+                if (availableMail.ContainsKey(mail.Id) || pendingMail.Any(pending => pending.Id == mail.Id))
+                    continue;
+
+                if (mail.IsReadyToDeliver())
+                {
+                    availableMail.Add(mail.Id, mail);
+                    sendAvailableMail = true;
+                }
+                else
+                    pendingMail.Add(mail);
+            }
+
+            return sendAvailableMail;
         }
 
         public void Save(CharacterContext context)
         {
-            while (outgoingMail.TryDequeue(out IMailItem mail))
+            lock (outgoingMailSyncRoot)
             {
-                mail.Save(context);
-
-                if (mail.RecipientId == player.CharacterId)
-                    player.MailManager.EnqueueMail(mail);
-                else
-                {
-                    IPlayer player = PlayerManager.Instance.GetPlayer(mail.RecipientId);
-                    player?.MailManager.EnqueueMail(mail);
-                }
+                while (outgoingMail.TryDequeue(out IMailItem mail))
+                    mail.Save(context);
             }
 
             foreach (IMailItem mail in availableMail.Values.ToList())
@@ -89,6 +124,89 @@ namespace NexusForever.Game.Entity
                     availableMail.Remove(mail.Id);
 
                 mail.Save(context);
+            }
+        }
+
+        /// <summary>
+        /// Stage mail changes and defer queue, tombstone, and dirty-state acknowledgement until the database commit succeeds.
+        /// </summary>
+        /// <param name="context">Character database context receiving the staged changes.</param>
+        /// <param name="commitScope">Scope that acknowledges the staged changes after a successful commit.</param>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            IMailItem[] stagedOutgoingMail;
+            lock (outgoingMailSyncRoot)
+                stagedOutgoingMail = outgoingMail.ToArray();
+
+            foreach (IMailItem mail in stagedOutgoingMail)
+                mail.Save(context, commitScope);
+
+            IMailItem[] stagedAvailableMail = availableMail.Values.ToArray();
+            IMailItem[] stagedDeletedMail = stagedAvailableMail
+                .Where(mail => mail.PendingDelete)
+                .ToArray();
+            foreach (IMailItem mail in stagedAvailableMail)
+                mail.Save(context, commitScope);
+
+            if (stagedOutgoingMail.Length == 0 && stagedDeletedMail.Length == 0)
+                return;
+
+            commitScope.Register(() =>
+            {
+                IReadOnlyList<IMailItem> committedOutgoingMail = RemoveCommittedOutgoingMail(stagedOutgoingMail);
+                foreach (IMailItem mail in stagedDeletedMail)
+                {
+                    if (availableMail.TryGetValue(mail.Id, out IMailItem current) && ReferenceEquals(current, mail))
+                        availableMail.Remove(mail.Id);
+                }
+
+                foreach (IMailItem mail in committedOutgoingMail)
+                    DeliverCommittedMail(mail);
+            });
+        }
+
+        private IReadOnlyList<IMailItem> RemoveCommittedOutgoingMail(IReadOnlyList<IMailItem> stagedMail)
+        {
+            var committedMail = new List<IMailItem>(stagedMail.Count);
+            lock (outgoingMailSyncRoot)
+            {
+                foreach (IMailItem expected in stagedMail)
+                {
+                    if (!outgoingMail.TryPeek(out IMailItem current) || !ReferenceEquals(current, expected))
+                    {
+                        log.Error("Outgoing mail queue changed before commit acknowledgement.");
+                        break;
+                    }
+
+                    outgoingMail.Dequeue();
+                    committedMail.Add(expected);
+                }
+            }
+
+            return committedMail;
+        }
+
+        private void DeliverCommittedMail(IMailItem mail)
+        {
+            try
+            {
+                if (mail.RecipientId == player.CharacterId)
+                {
+                    EnqueueMail(mail);
+                    return;
+                }
+
+                IPlayer recipient = playerManager?.GetPlayer(mail.RecipientId)
+                    ?? (playerManager == null ? PlayerManager.Instance.GetPlayer(mail.RecipientId) : null);
+                recipient?.MailManager.EnqueueMail(mail);
+            }
+            catch (Exception exception)
+            {
+                // Persistence is authoritative. A missed online notification is recovered on the next login.
+                log.Error(exception, $"Failed to notify online recipient {mail.RecipientId} about committed mail {mail.Id}.");
             }
         }
 
@@ -118,10 +236,8 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void EnqueueMail(IMailItem mail)
         {
-            if (mail.IsReadyToDeliver())
-                availableMail.Add(mail.Id, mail);
-            else
-                pendingMail.Add(mail);
+            ArgumentNullException.ThrowIfNull(mail);
+            incomingMail.Enqueue(mail);
         }
 
         /// <summary>
@@ -265,7 +381,8 @@ namespace NexusForever.Game.Entity
 
             // NOTE: outgoing mail is flushed on character save to prevent any issues,
             // this means that instant mail could take up to 60 seconds (by default) to actually arrive
-            outgoingMail.Enqueue(mail);
+            lock (outgoingMailSyncRoot)
+                outgoingMail.Enqueue(mail);
         }
 
         private uint CalculateMailCost(DeliverySpeed time, List<IItem> items)
@@ -412,7 +529,8 @@ namespace NexusForever.Game.Entity
                 mailItem.ReturnMail();
 
                 availableMail.Remove(mailItem.Id);
-                outgoingMail.Enqueue(mailItem);
+                lock (outgoingMailSyncRoot)
+                    outgoingMail.Enqueue(mailItem);
 
                 player.Session.EnqueueMessageEncrypted(new ServerMailUnavailable
                 {

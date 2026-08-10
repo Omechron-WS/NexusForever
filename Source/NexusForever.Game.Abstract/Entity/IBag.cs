@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Game.Static.Entity;
 
 namespace NexusForever.Game.Abstract.Entity
@@ -8,6 +9,13 @@ namespace NexusForever.Game.Abstract.Entity
         InventoryLocation Location { get; }
         uint Slots { get; }
         uint SlotsRemaining { get; }
+
+        /// <summary>
+        /// Stage contained item changes and defer clearing their dirty state until the database commit is acknowledged.
+        /// </summary>
+        /// <param name="context">Character database context receiving the staged changes.</param>
+        /// <param name="commitScope">Scope that acknowledges the staged changes after a successful commit.</param>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
 
         /// <summary>
         /// Returns <see cref="IItem"/> with the supplied guid.

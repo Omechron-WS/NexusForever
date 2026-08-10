@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Game.Static.Entity;
 using NexusForever.GameTable.Model;
 using NexusForever.Network.World.Message.Model.Shared;
@@ -9,6 +10,13 @@ namespace NexusForever.Game.Abstract.Entity
 {
     public interface IInventory : IDatabaseCharacter, IUpdate, IEnumerable<IBag>
     {
+        /// <summary>
+        /// Stage inventory changes and defer clearing their dirty state until the database commit is acknowledged.
+        /// </summary>
+        /// <param name="context">Character database context receiving the staged changes.</param>
+        /// <param name="commitScope">Scope that acknowledges the staged changes after a successful commit.</param>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         /// <summary>
         /// Returns if <see cref="InventoryLocation"/> and bag index is a visible item slot.
         /// </summary>
@@ -73,6 +81,32 @@ namespace NexusForever.Game.Abstract.Entity
         /// Create a new <see cref="IItem"/> in the first available inventory bag index or stack.
         /// </summary>
         void ItemCreate(InventoryLocation location, IItemInfo info, uint count, ItemUpdateReason reason = ItemUpdateReason.NoReason, uint charges = 0);
+
+        /// <summary>
+        /// Create the complete requested item count only when it fits without a partial inventory mutation.
+        /// </summary>
+        /// <param name="location">Inventory location that will receive the items.</param>
+        /// <param name="itemId">Static item identifier.</param>
+        /// <param name="count">Requested item count.</param>
+        /// <param name="remaining">Shortfall when the complete count does not fit; otherwise zero.</param>
+        /// <param name="reason">Reason reported for successful item additions.</param>
+        /// <param name="charges">Initial charges assigned to newly created item stacks.</param>
+        /// <returns><see langword="true"/> when the complete count was created; otherwise <see langword="false"/>.</returns>
+        bool TryItemCreate(InventoryLocation location, uint itemId, uint count, out uint remaining,
+            ItemUpdateReason reason = ItemUpdateReason.NoReason, uint charges = 0);
+
+        /// <summary>
+        /// Create the complete requested item count only when it fits without a partial inventory mutation.
+        /// </summary>
+        /// <param name="location">Inventory location that will receive the items.</param>
+        /// <param name="info">Item template.</param>
+        /// <param name="count">Requested item count.</param>
+        /// <param name="remaining">Shortfall when the complete count does not fit; otherwise zero.</param>
+        /// <param name="reason">Reason reported for successful item additions.</param>
+        /// <param name="charges">Initial charges assigned to newly created item stacks.</param>
+        /// <returns><see langword="true"/> when the complete count was created; otherwise <see langword="false"/>.</returns>
+        bool TryItemCreate(InventoryLocation location, IItemInfo info, uint count, out uint remaining,
+            ItemUpdateReason reason = ItemUpdateReason.NoReason, uint charges = 0);
 
         /// <summary>
         /// Returns if <see cref="IItem"/> can be moved to supplied <see cref="ItemLocation"/>.
