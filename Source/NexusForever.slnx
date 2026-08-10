@@ -60,6 +60,7 @@
   </Folder>
   <Folder Name="/Tests/">
     <Project Path="NexusForever.Game.Tests/NexusForever.Game.Tests.csproj" />
+    <Project Path="NexusForever.Network.Tests/NexusForever.Network.Tests.csproj" />
   </Folder>
   <Project Path="NexusForever.Aspire.AppHost/NexusForever.Aspire.AppHost.csproj" />
   <Project Path="NexusForever.Aspire.Database.Migrations/NexusForever.Aspire.Database.Migrations.csproj" />

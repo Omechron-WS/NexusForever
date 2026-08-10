@@ -7,12 +7,18 @@ namespace NexusForever.StsServer.Network.Message
     public class MessageHandlerAttribute : Attribute
     {
         public string Uri { get; }
-        public SessionState State { get; }
+        public SessionState[] States { get; }
 
-        public MessageHandlerAttribute(string uri, SessionState state)
+        /// <summary>
+        /// Initialise a handler for the supplied URI and optional permitted session states.
+        /// </summary>
+        /// <remarks>
+        /// Omitting <paramref name="states"/> makes the handler state-agnostic.
+        /// </remarks>
+        public MessageHandlerAttribute(string uri, params SessionState[] states)
         {
-            Uri   = uri;
-            State = state;
+            Uri    = uri;
+            States = states;
         }
     }
 }

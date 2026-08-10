@@ -1,16 +1,20 @@
-﻿using NexusForever.Network.Sts;
+﻿using System.Collections.Generic;
+using NexusForever.Network.Sts;
 
 namespace NexusForever.StsServer.Network.Message
 {
     public class MessageHandlerInfo
     {
         public MessageHandlerDelegate Delegate { get; }
-        public SessionState? State { get; }
+        public IReadOnlyList<SessionState> States { get; }
 
-        public MessageHandlerInfo(MessageHandlerDelegate @delegate, SessionState? state = null)
+        /// <summary>
+        /// Initialise handler metadata with its delegate and permitted session states.
+        /// </summary>
+        public MessageHandlerInfo(MessageHandlerDelegate @delegate, params SessionState[] states)
         {
             Delegate = @delegate;
-            State    = state;
+            States   = states;
         }
     }
 }

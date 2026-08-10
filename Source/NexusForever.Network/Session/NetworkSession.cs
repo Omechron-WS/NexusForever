@@ -35,6 +35,11 @@ namespace NexusForever.Network.Session
         private DisconnectState? disconnectState;
 
         /// <summary>
+        /// Returns whether disconnection has been requested or is in progress.
+        /// </summary>
+        protected bool IsDisconnecting => disconnectState.HasValue;
+
+        /// <summary>
         /// Initialise <see cref="NetworkSession"/> with new <see cref="Socket"/> and begin listening for data.
         /// </summary>
         public virtual void OnAccept(Socket newSocket)

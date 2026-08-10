@@ -33,7 +33,7 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Authentication
                 account =>
             {
                 if (account == null)
-                    throw new InvalidPacketValueException($"Failed to find account, Id:{helloRealm.AccountId}, Email:{helloRealm.AccountString}, SessionKey:{sessionKey}!");
+                    throw new InvalidPacketValueException($"Failed to find account for realm authentication, Id:{helloRealm.AccountId}!");
 
                 session.Initialise(account);
                 session.SetEncryptionKey(helloRealm.SessionKey);

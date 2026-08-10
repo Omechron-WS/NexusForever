@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Globalization;
 using System.IO;
 using NexusForever.Shared;
 
@@ -6,60 +7,78 @@ namespace NexusForever.StsServer.Network.Packet
 {
     public class FragmentedStsPacket
     {
+        private const int MaximumHeaderLength = 8192;
+        private const uint MaximumBodyLength = ushort.MaxValue;
+
         public bool HasHeader => packet != null;
         public bool HasBody => packet?.Body != null;
 
-        private readonly byte[] buffer = new byte[2048];
-        private uint position;
+        private readonly byte[] headerBuffer = new byte[MaximumHeaderLength];
+        private byte[] bodyBuffer;
+        private int position;
 
         private ClientStsPacket packet;
         private uint dataLength;
 
+        /// <summary>
+        /// Populate the packet with as much data as is available from the supplied reader.
+        /// </summary>
         public void Populate(BinaryReader reader)
         {
-            if (HasHeader)
-            {
-                uint remaining = reader.BaseStream.Remaining();
-                if (remaining < dataLength)
-                {
-                    // don't have enough data, push entire frame into packet
-                    byte[] data = reader.ReadBytes((int)remaining);
-                    Buffer.BlockCopy(data, 0, buffer, (int)position, (int)remaining);
-                }
-                else
-                {
-                    // enough data, push required frame data into packet
-                    byte[] data = reader.ReadBytes((int)dataLength);
-                    Buffer.BlockCopy(data, 0, buffer, (int)position, (int)dataLength);
-
-                    packet.SetBody(buffer, dataLength);
-                }
-
-                position += remaining;
-            }
-            else
+            if (!HasHeader)
             {
                 while (reader.BaseStream.Remaining() != 0)
                 {
-                    buffer[position++] = reader.ReadByte();
-                    if (position < 4)
+                    if (position >= headerBuffer.Length)
+                        throw new InvalidDataException($"STS packet header exceeds {MaximumHeaderLength} bytes.");
+
+                    headerBuffer[position++] = reader.ReadByte();
+                    if (position < sizeof(uint))
                         continue;
 
                     // end of header is marked by \r\n\r\n
-                    if (BitConverter.ToUInt32(buffer, (int)position - 4) == 0x0A0D0A0Du)
-                    {
-                        packet     = new ClientStsPacket(buffer);
-                        position   = 0;
-                        dataLength = uint.Parse(packet.Headers["l"]);
-                        if (dataLength == 0)
-                            packet.SetBody(buffer, 0);
+                    if (BitConverter.ToUInt32(headerBuffer, position - sizeof(uint)) != 0x0A0D0A0Du)
+                        continue;
 
-                        break;
-                    }
+                    packet   = new ClientStsPacket(headerBuffer[..position]);
+                    position = 0;
+
+                    if (!uint.TryParse(packet.Headers["l"], NumberStyles.None, CultureInfo.InvariantCulture, out dataLength))
+                        throw new InvalidDataException("STS packet contains an invalid length header.");
+
+                    if (dataLength > MaximumBodyLength)
+                        throw new InvalidDataException($"STS packet body exceeds {MaximumBodyLength} bytes.");
+
+                    bodyBuffer = new byte[dataLength];
+                    if (dataLength == 0)
+                        packet.SetBody(bodyBuffer, 0);
+
+                    break;
                 }
+
+                if (!HasHeader && position == headerBuffer.Length)
+                    throw new InvalidDataException($"STS packet header exceeds {MaximumHeaderLength} bytes.");
             }
+
+            if (!HasHeader || HasBody || reader.BaseStream.Remaining() == 0)
+                return;
+
+            uint remainingBody = dataLength - (uint)position;
+            int readLength = (int)Math.Min(reader.BaseStream.Remaining(), remainingBody);
+            byte[] data = reader.ReadBytes(readLength);
+            if (data.Length != readLength)
+                throw new EndOfStreamException("Unexpected end of STS packet body.");
+
+            Buffer.BlockCopy(data, 0, bodyBuffer, position, readLength);
+            position += readLength;
+
+            if (position == dataLength)
+                packet.SetBody(bodyBuffer, dataLength);
         }
 
+        /// <summary>
+        /// Return the partially or fully populated client packet.
+        /// </summary>
         public ClientStsPacket GetPacket()
         {
             return packet;

@@ -77,7 +77,7 @@ namespace NexusForever.StsServer.Network.Message
                     Expression<MessageHandlerDelegate> lambda =
                         Expression.Lambda<MessageHandlerDelegate>(call, sessionParameter, messageParameter);
 
-                    messageHandlers.Add(attribute.Uri, new MessageHandlerInfo(lambda.Compile(), attribute.State));
+                    messageHandlers.Add(attribute.Uri, new MessageHandlerInfo(lambda.Compile(), attribute.States));
                 }
             }
 

@@ -12,14 +12,17 @@ namespace NexusForever.StsServer.Network.Message.Handler
 {
     public static class AuthenticationHandler
     {
-        [MessageHandler("/Auth/LoginStart", SessionState.Connected)]
+        [MessageHandler("/Auth/LoginStart", SessionState.Connected, SessionState.Authenticated)]
         public static void HandleLoginStart(StsSession session, ClientLoginStartMessage loginStart)
         {
+            session.State = SessionState.LoginStartPending;
+
             session.Events.EnqueueEvent(new TaskGenericEvent<AccountModel>(DatabaseManager.Instance.GetDatabase<AuthDatabase>().GetAccountByEmailAsync(loginStart.LoginName),
                 account =>
             {
                 if (account == null)
                 {
+                    session.State = SessionState.Connected;
                     session.EnqueueMessageError(new ServerErrorMessage((int)ErrorCode.InvalidAccountNameOrPassword));
                     return;
                 }
@@ -46,7 +49,7 @@ namespace NexusForever.StsServer.Network.Message.Handler
                 }
 
                 session.State = SessionState.LoginStart;
-            }));
+            }, session.FailAuthentication));
         }
 
         [MessageHandler("/Auth/KeyData", SessionState.LoginStart)]
@@ -58,6 +61,7 @@ namespace NexusForever.StsServer.Network.Message.Handler
             if (!session.KeyExchange.VerifyClientEvidenceMessage(keyData.M1))
             {
                 session.EnqueueMessageError(new ServerErrorMessage((int)ErrorCode.InvalidAccountNameOrPassword));
+                session.ForceDisconnect();
                 return;
             }
 
@@ -77,9 +81,10 @@ namespace NexusForever.StsServer.Network.Message.Handler
 
             // enqueue new key to be set after next packet flush
             session.InitialiseEncryption(key);
+            session.State = SessionState.KeyData;
         }
 
-        [MessageHandler("/Auth/LoginFinish", SessionState.None)]
+        [MessageHandler("/Auth/LoginFinish", SessionState.KeyData)]
         public static void HandleLoginFinish(StsSession session, ClientLoginFinishMessage loginFinish)
         {
             session.EnqueueMessageOk(new ServerLoginFinishMessage
@@ -90,9 +95,11 @@ namespace NexusForever.StsServer.Network.Message.Handler
                 UserName   = "",
                 AccessMask = 1L
             });
+
+            session.State = SessionState.Authenticated;
         }
 
-        [MessageHandler("/Auth/RequestGameToken", SessionState.None)]
+        [MessageHandler("/Auth/RequestGameToken", SessionState.Authenticated)]
         public static void HandleRequestGameToken(StsSession session, RequestGameTokenMessage requestGameToken)
         {
             Guid guid = RandomProvider.GetGuid();

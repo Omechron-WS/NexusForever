@@ -5,7 +5,7 @@ namespace NexusForever.StsServer.Network.Message.Handler
 {
     public static class GameAccountHandler
     {
-        [MessageHandler("/GameAccount/ListMyAccounts", SessionState.None)]
+        [MessageHandler("/GameAccount/ListMyAccounts", SessionState.Authenticated)]
         public static void HandleListMyAccounts(StsSession session, ListMyAccountsMessage listMyAccounts)
         {
             session.EnqueueMessageOk(new ListMyAccountsResponse

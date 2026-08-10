@@ -47,7 +47,11 @@ namespace NexusForever.Network
             if (currentBitPosition > 7)
             {
                 currentBitPosition = 0;
-                currentBitValue = (byte)stream.ReadByte();
+                int value = stream.ReadByte();
+                if (value == -1)
+                    throw new InvalidPacketValueException("Attempted to read beyond the end of a game packet.");
+
+                currentBitValue = (byte)value;
             }
 
             return ((currentBitValue >> currentBitPosition) & 1) != 0;
@@ -145,8 +149,14 @@ namespace NexusForever.Network
             return (T)Enum.ToObject(typeof(T), ReadBits(bits));
         }
 
+        /// <summary>
+        /// Read the supplied number of bytes without advancing beyond the packet boundary.
+        /// </summary>
         public byte[] ReadBytes(uint length)
         {
+            if (length > BytesRemaining)
+                throw new InvalidPacketValueException($"Attempted to read {length} bytes with only {BytesRemaining} remaining in the game packet.");
+
             byte[] data = new byte[length];
             for (uint i = 0u; i < length; i++)
                 data[i] = ReadByte();

@@ -119,7 +119,7 @@ namespace NexusForever.WorldServer.Network
             ulong key = PacketCrypt.GetKeyFromTicket(sessionKey);
             encryption = new PacketCrypt(key);
 
-            log.Trace($"Set encryption key {Convert.ToHexString(sessionKey)} for session {Id}.");
+            log.Trace($"Set encryption key for session {Id}.");
         }
     }
 }

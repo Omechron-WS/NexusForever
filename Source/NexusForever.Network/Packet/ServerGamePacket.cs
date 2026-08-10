@@ -13,6 +13,9 @@ namespace NexusForever.Network.Packet
         public GameMessageOpcode Opcode { get; protected set; }
         public byte[] Data { get; protected set; }
 
+        /// <summary>
+        /// Build a bounded server game packet for the supplied opcode and message.
+        /// </summary>
         public ServerGamePacket(GameMessageOpcode opcode, IWritable message)
         {
             using (var stream = new MemoryStream())
@@ -24,7 +27,11 @@ namespace NexusForever.Network.Packet
             }
 
             Opcode = opcode;
-            Size   = (ushort)(HeaderSize + Data.Length);
+            uint size = HeaderSize + (uint)Data.Length;
+            if (size > ushort.MaxValue)
+                throw new InvalidDataException($"Server game packet size {size} exceeds {ushort.MaxValue} bytes.");
+
+            Size = size;
         }
     }
 }

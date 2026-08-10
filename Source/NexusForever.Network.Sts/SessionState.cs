@@ -4,7 +4,9 @@
     {
         None,
         Connected,
+        LoginStartPending,
         LoginStart,
-        KeyData
+        KeyData,
+        Authenticated
     }
 }

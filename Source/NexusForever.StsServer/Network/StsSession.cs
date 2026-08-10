@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Xml;
 using NexusForever.Cryptography;
@@ -106,8 +107,21 @@ namespace NexusForever.StsServer.Network
         public override void Update(double lastTick)
         {
             // process pending packet queue
-            while (incomingPackets.TryDequeue(out ClientStsPacket packet))
-                HandlePacket(packet);
+            while (!IsDisconnecting && incomingPackets.TryDequeue(out ClientStsPacket packet))
+            {
+                try
+                {
+                    HandlePacket(packet);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to handle STS packet for session {Id}.");
+                    incomingPackets.Clear();
+                    outgoingPackets.Clear();
+                    ForceDisconnect();
+                    break;
+                }
+            }
 
             // flush pending packet queue
             while (outgoingPackets.TryDequeue(out ServerStsPacket packet))
@@ -132,11 +146,8 @@ namespace NexusForever.StsServer.Network
                 return;
             }
 
-            /*if (State != handlerInfo.State)
-            {
-                log.Info($"Received packet with invalid session state {packet.Uri}");
-                return;
-            }*/
+            if (handlerInfo.States.Count != 0 && !handlerInfo.States.Contains(State))
+                throw new InvalidDataException($"Received STS packet {packet.Uri} in invalid session state {State}.");
 
             if (packet.Headers.TryGetValue("s", out string sequenceString))
                 uint.TryParse(sequenceString, out sequence);
@@ -145,8 +156,19 @@ namespace NexusForever.StsServer.Network
 
             if (packet.Body != "")
             {
-                var doc = new XmlDocument();
-                doc.LoadXml(packet.Body);
+                var settings = new XmlReaderSettings
+                {
+                    DtdProcessing            = DtdProcessing.Prohibit,
+                    MaxCharactersInDocument = ushort.MaxValue,
+                    XmlResolver             = null
+                };
+                using var stringReader = new StringReader(packet.Body);
+                using XmlReader xmlReader = XmlReader.Create(stringReader, settings);
+                var doc = new XmlDocument
+                {
+                    XmlResolver = null
+                };
+                doc.Load(xmlReader);
                 message.Read(doc);
             }
 
@@ -192,11 +214,22 @@ namespace NexusForever.StsServer.Network
             log.Trace($"Sent packet response {packet.StatusCode}, {packet.Status}");
         }
 
+        /// <summary>
+        /// Initialise client encryption and stage server encryption until the current response is flushed.
+        /// </summary>
         public void InitialiseEncryption(byte[] key)
         {
             clientEncryption = new Arc4Provider(key);
             serverNewEncryption = new Arc4Provider(key);
-            log.Trace($"Initialised RC4, Key: {BitConverter.ToString(key).Replace("-", "")}");
+            log.Trace("Initialised RC4 encryption.");
+        }
+
+        internal void FailAuthentication(Exception exception)
+        {
+            log.Error(exception, $"Failed to authenticate STS session {Id}.");
+            incomingPackets.Clear();
+            outgoingPackets.Clear();
+            ForceDisconnect();
         }
     }
 }

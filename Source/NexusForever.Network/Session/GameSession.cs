@@ -10,6 +10,10 @@ namespace NexusForever.Network.Session
 {
     public abstract class GameSession : NetworkSession, IGameSession
     {
+        private const uint MinimumPacketSize = sizeof(uint) + sizeof(ushort);
+        private const uint MaximumPacketSize = ushort.MaxValue;
+        private const int MaximumPacketNestingDepth = 4;
+
         /// <summary>
         /// Determines if queued incoming packets can be processed during a world update.
         /// </summary>
@@ -23,6 +27,7 @@ namespace NexusForever.Network.Session
         protected PacketCrypt encryption;
 
         private FragmentedBuffer onDeck;
+        private int packetHandlingDepth;
         private readonly ConcurrentQueue<ClientGamePacket> incomingPackets = new();
         private readonly ConcurrentQueue<ServerGamePacket> outgoingPackets = new();
 
@@ -134,6 +139,9 @@ namespace NexusForever.Network.Session
                         }
 
                         uint size = reader.ReadUInt();
+                        if (size < MinimumPacketSize || size > MaximumPacketSize)
+                            throw new InvalidDataException($"Invalid game packet size {size}.");
+
                         onDeck = new FragmentedBuffer(size - sizeof(uint));
                     }
 
@@ -169,15 +177,28 @@ namespace NexusForever.Network.Session
             base.Update(lastTick);
 
             // process pending packet queue
-            while (CanProcessIncomingPackets && incomingPackets.TryDequeue(out ClientGamePacket packet))
+            while (!IsDisconnecting && CanProcessIncomingPackets && incomingPackets.TryDequeue(out ClientGamePacket packet))
                 HandlePacket(packet);
 
             // flush pending packet queue
             FlushPackets();
         }
 
+        /// <summary>
+        /// Parse and dispatch a client packet while enforcing the nested-packet limit.
+        /// </summary>
         public void HandlePacket(ClientGamePacket packet)
         {
+            if (IsDisconnecting || !CanProcessIncomingPackets)
+                return;
+
+            if (packetHandlingDepth >= MaximumPacketNestingDepth)
+            {
+                FailPacket(new InvalidPacketValueException($"Client packet nesting exceeds {MaximumPacketNestingDepth} levels."));
+                return;
+            }
+
+            packetHandlingDepth++;
             try
             {
                 //using IServiceScope serviceScope = CreateHandlePacketScope();
@@ -235,13 +256,26 @@ namespace NexusForever.Network.Session
             }
             catch (InvalidPacketValueException exception)
             {
-                log.Error(exception);
-                ForceDisconnect();
+                FailPacket(exception);
             }
             catch (Exception exception)
             {
-                log.Error(exception);
+                FailPacket(exception);
             }
+            finally
+            {
+                packetHandlingDepth--;
+            }
+        }
+
+        private void FailPacket(Exception exception)
+        {
+            log.Error(exception);
+            CanProcessIncomingPackets = false;
+            CanProcessOutgoingPackets = false;
+            incomingPackets.Clear();
+            outgoingPackets.Clear();
+            ForceDisconnect();
         }
 
         protected virtual IServiceScope CreateHandlePacketScope()
