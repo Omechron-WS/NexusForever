@@ -29,7 +29,7 @@ namespace NexusForever.Game.Loot
             || lootItems.Values.All(i => i.Delivered);
 
         private readonly Dictionary<ulong, uint> looterGuids = new();
-        private readonly Dictionary<int, LootInstanceItem> lootItems = new();
+        private readonly Dictionary<uint, LootInstanceItem> lootItems = new();
         private double expiryTimer = ExpiryDuration;
 
         public LootInstance(uint guid, LootEntityType entityType, LooterType looterType, Vector3 position)
@@ -71,21 +71,37 @@ namespace NexusForever.Game.Loot
         /// </summary>
         public void SendLootNotify(IPlayer player)
         {
+            ArgumentNullException.ThrowIfNull(player);
+
+            if (!HasLooter(player.CharacterId))
+                return;
+
             var lootItemList = new List<NetworkLootItem>();
+            bool deliverImmediately = LootEntityType == LootEntityType.Item
+                && LooterType == LooterType.Player;
 
             foreach (LootInstanceItem item in lootItems.Values)
             {
-                if (item.Delivered)
-                    continue;
+                item.SetWinner(player.CharacterId, player.Guid);
+
+                if (deliverImmediately)
+                    item.DeliverItem(player, false);
 
                 if (item.Type == LootItemType.AccountCurrency)
                 {
-                    lootItemList.AddRange(item.BuildForAccountCurrency());
-                    item.DeliverItem(player, false);
+                    if (!item.Delivered)
+                        item.DeliverItem(player, false);
+
+                    if (item.Delivered)
+                        lootItemList.AddRange(item.BuildForAccountCurrency());
+                    else
+                        lootItemList.Add(item.Build());
                 }
                 else
                 {
-                    lootItemList.Add(item.Build());
+                    NetworkLootItem networkItem = item.Build();
+                    networkItem.Explosion = deliverImmediately;
+                    lootItemList.Add(networkItem);
                 }
             }
 
@@ -104,7 +120,7 @@ namespace NexusForever.Game.Loot
         /// <summary>
         /// Returns whether a loot instance item with the given id exists.
         /// </summary>
-        public bool HasLootInstanceId(int id)
+        public bool HasLootInstanceId(uint id)
         {
             return lootItems.ContainsKey(id);
         }
@@ -120,7 +136,7 @@ namespace NexusForever.Game.Loot
         /// <summary>
         /// Get a loot instance item by its unique id.
         /// </summary>
-        public LootInstanceItem GetItem(int id)
+        public LootInstanceItem GetItem(uint id)
         {
             return lootItems.GetValueOrDefault(id);
         }

@@ -21,7 +21,10 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Loot
 
         public void HandleMessage(IWorldSession session, ClientLootItem message)
         {
-            lootManager.GiveLoot(session.Player, (int)message.LootUnitId);
+            if (message.Request)
+                return;
+
+            lootManager.GiveLoot(session.Player, message.OwnerUnitId, message.LootUnitId);
         }
     }
 }

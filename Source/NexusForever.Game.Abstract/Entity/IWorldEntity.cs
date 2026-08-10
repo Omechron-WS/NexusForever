@@ -1,6 +1,7 @@
 using System.Numerics;
 using NexusForever.Database.World.Model;
 using NexusForever.Game.Abstract.Chat;
+using NexusForever.Game.Abstract.Loot;
 using NexusForever.Game.Abstract.Entity.Movement;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Reputation;
@@ -46,6 +47,11 @@ namespace NexusForever.Game.Abstract.Entity
         uint Level { get; set; }
         uint InterruptArmor { get; set; }
         bool Sheathed { get; set; }
+
+        /// <summary>
+        /// Snapshot of loot instances currently attached to this entity.
+        /// </summary>
+        IReadOnlyCollection<ILootInstance> Loot { get; }
 
         /// <summary>
         /// The current stand state for the <see cref="IWorldEntity"/>.
@@ -101,6 +107,16 @@ namespace NexusForever.Game.Abstract.Entity
         /// Invoked when a client-side interaction on this entity fails.
         /// </summary>
         void OnActivateFail(IPlayer activator);
+
+        /// <summary>
+        /// Attach a loot instance to this entity.
+        /// </summary>
+        void AddLoot(ILootInstance lootInstance);
+
+        /// <summary>
+        /// Detach a completed or expired loot instance from this entity.
+        /// </summary>
+        void RemoveLoot(ILootInstance lootInstance);
 
         /// <summary>
         /// Return a collection of <see cref="IItemVisual"/> for <see cref="IWorldEntity"/>.

@@ -11,6 +11,7 @@ using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Entity.Movement;
 using NexusForever.Game.Abstract.Guild;
 using NexusForever.Game.Abstract.Housing;
+using NexusForever.Game.Abstract.Loot;
 using NexusForever.Game.Abstract.Map;
 using NexusForever.Game.Abstract.Map.Instance;
 using NexusForever.Game.Abstract.Map.Lock;
@@ -984,6 +985,12 @@ namespace NexusForever.Game.Entity
                     UnitId = unitEntity.Guid,
                     InCombat = unitEntity.InCombat
                 });
+            }
+
+            if (entity is IWorldEntity lootOwner)
+            {
+                foreach (ILootInstance lootInstance in lootOwner.Loot)
+                    lootInstance.SendLootNotify(this);
             }
         }
 

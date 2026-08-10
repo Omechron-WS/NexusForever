@@ -3,8 +3,12 @@ using NexusForever.Game.Abstract.Account.Currency;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Loot;
 using NexusForever.Game.Loot;
+using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Loot;
+using NexusForever.Network.Message;
 using NexusForever.Network.Session;
+using NexusForever.Network.World.Message.Model.Loot;
+using NexusForever.Network.World.Message.Static;
 using Moq;
 
 namespace NexusForever.Game.Tests.Loot
@@ -88,6 +92,7 @@ namespace NexusForever.Game.Tests.Loot
 
             var player = CreateMockPlayer(1uL, 1u);
             var items = instance.ToList();
+            items[0].SetWinner(player.CharacterId, player.Guid);
             items[0].DeliverItem(player);
 
             Assert.True(instance.HasExpired);
@@ -106,7 +111,100 @@ namespace NexusForever.Game.Tests.Loot
             Assert.All(items, i => Assert.False(i.Delivered));
         }
 
+        [Fact]
+        public void SendLootNotify_CreatureLoot_UsesOwnerAndClaimableItemIdentifiers()
+        {
+            var instance = new LootInstance(42u, LootEntityType.Creature, LooterType.Player, System.Numerics.Vector3.Zero);
+            instance.AddLootItem(100u, LootItemType.StaticItem, 1u);
+            instance.AddLooter(1ul, 1u);
+            (IPlayer player, Mock<IGameSession> session, _) = CreateMockPlayerState();
+            uint lootItemId = instance.Single().Id;
+
+            instance.SendLootNotify(player);
+
+            session.Verify(s => s.EnqueueMessageEncrypted(It.Is<ServerLootNotify>(message =>
+                message.OwnerUnitId == 42u
+                && !message.Explosion
+                && message.LootItems.Count == 1
+                && message.LootItems[0].LootUnitId == lootItemId
+                && message.LootItems[0].CanLoot
+                && !message.LootItems[0].Explosion)), Times.Once);
+        }
+
+        [Fact]
+        public void SendLootNotify_UnauthorisedPlayer_DoesNotSendPacket()
+        {
+            var instance = new LootInstance(42u, LootEntityType.Creature, LooterType.Player, System.Numerics.Vector3.Zero);
+            instance.AddLootItem(100u, LootItemType.StaticItem, 1u);
+            instance.AddLooter(2ul, 2u);
+            (IPlayer player, Mock<IGameSession> session, _) = CreateMockPlayerState();
+
+            instance.SendLootNotify(player);
+
+            session.Verify(s => s.EnqueueMessageEncrypted(It.IsAny<IWritable>()), Times.Never);
+            Assert.False(instance.Single().Delivered);
+        }
+
+        [Fact]
+        public void SendLootNotify_LootBagWithCapacity_GrantsExplodingItemImmediately()
+        {
+            var instance = new LootInstance(1u, LootEntityType.Item, LooterType.Player, System.Numerics.Vector3.Zero)
+            {
+                Explosion = true
+            };
+            instance.AddLootItem(100u, LootItemType.StaticItem, 1u);
+            instance.AddLooter(1ul, 1u);
+            (IPlayer player, Mock<IGameSession> session, Mock<IInventory> inventory) = CreateMockPlayerState();
+
+            instance.SendLootNotify(player);
+
+            Assert.True(instance.HasExpired);
+            inventory.Verify(i => i.TryItemCreate(
+                InventoryLocation.Inventory,
+                100u,
+                1u,
+                out It.Ref<uint>.IsAny,
+                ItemUpdateReason.Loot,
+                0u), Times.Once);
+            session.Verify(s => s.EnqueueMessageEncrypted(It.Is<ServerLootNotify>(message =>
+                message.OwnerUnitId == 1u
+                && message.Explosion
+                && message.LootItems.Count == 1
+                && !message.LootItems[0].CanLoot
+                && message.LootItems[0].Explosion)), Times.Once);
+        }
+
+        [Fact]
+        public void SendLootNotify_LootBagWithoutCapacity_RemainsClaimable()
+        {
+            var instance = new LootInstance(1u, LootEntityType.Item, LooterType.Player, System.Numerics.Vector3.Zero)
+            {
+                Explosion = true
+            };
+            instance.AddLootItem(100u, LootItemType.StaticItem, 1u);
+            instance.AddLooter(1ul, 1u);
+            (IPlayer player, Mock<IGameSession> session, _) = CreateMockPlayerState(inventoryHasCapacity: false);
+
+            instance.SendLootNotify(player);
+
+            Assert.False(instance.HasExpired);
+            session.Verify(s => s.EnqueueMessageEncrypted(It.Is<ServerLootNotify>(message =>
+                message.OwnerUnitId == 1u
+                && message.Explosion
+                && message.LootItems.Count == 1
+                && message.LootItems[0].CanLoot
+                && message.LootItems[0].Explosion)), Times.Once);
+        }
+
         private static IPlayer CreateMockPlayer(ulong characterId = 1, uint guid = 1)
+        {
+            return CreateMockPlayerState(characterId: characterId, guid: guid).Player;
+        }
+
+        private static (IPlayer Player, Mock<IGameSession> Session, Mock<IInventory> Inventory) CreateMockPlayerState(
+            bool inventoryHasCapacity = true,
+            ulong characterId = 1ul,
+            uint guid = 1u)
         {
             var mockSession = new Mock<IGameSession>();
             var mockInventory = new Mock<IInventory>();
@@ -116,6 +214,14 @@ namespace NexusForever.Game.Tests.Loot
             var mockAccountCurrency = new Mock<IAccountCurrencyManager>();
 
             mockAccount.Setup(a => a.CurrencyManager).Returns(mockAccountCurrency.Object);
+            mockInventory.Setup(i => i.TryItemCreate(
+                    It.IsAny<InventoryLocation>(),
+                    It.IsAny<uint>(),
+                    It.IsAny<uint>(),
+                    out It.Ref<uint>.IsAny,
+                    It.IsAny<ItemUpdateReason>(),
+                    It.IsAny<uint>()))
+                .Returns(inventoryHasCapacity);
 
             var mockPlayer = new Mock<IPlayer>();
             mockPlayer.Setup(p => p.CharacterId).Returns(characterId);
@@ -126,7 +232,7 @@ namespace NexusForever.Game.Tests.Loot
             mockPlayer.Setup(p => p.QuestManager).Returns(mockQuest.Object);
             mockPlayer.Setup(p => p.Account).Returns(mockAccount.Object);
 
-            return mockPlayer.Object;
+            return (mockPlayer.Object, mockSession, mockInventory);
         }
     }
 }

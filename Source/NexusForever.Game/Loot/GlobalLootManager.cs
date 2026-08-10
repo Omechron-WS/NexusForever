@@ -7,6 +7,7 @@ using NexusForever.Database;
 using NexusForever.Database.World.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Loot;
+using NexusForever.Game.Abstract.Map;
 using NexusForever.Game.Static.AccountInventory;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Loot;
@@ -31,6 +32,9 @@ namespace NexusForever.Game.Loot
         private Dictionary<uint, List<ILootGroup>> itemLoot = new();
         private readonly List<LootInstance> activeLootInstances = new();
         private readonly ConcurrentQueue<LootInstance> pendingLootInstances = new();
+        private readonly ConcurrentDictionary<uint, LootInstance> lootInstancesByItemId = new();
+        private readonly ConcurrentDictionary<LootInstance, IBaseMap> lootMaps = new();
+        private readonly ConcurrentDictionary<LootInstance, IWorldEntity> lootOwners = new();
 
         private readonly ILootTableProvider lootTableProvider;
 
@@ -117,7 +121,15 @@ namespace NexusForever.Game.Loot
                 throw new InvalidOperationException("The global loot manager must be initialised before it is updated.");
 
             while (pendingLootInstances.TryDequeue(out LootInstance pendingLootInstance))
+            {
+                if (pendingLootInstance.HasExpired || !IsLootSourceActive(pendingLootInstance))
+                {
+                    RemoveLootInstance(pendingLootInstance);
+                    continue;
+                }
+
                 activeLootInstances.Add(pendingLootInstance);
+            }
 
             foreach (LootInstance lootInstance in activeLootInstances)
                 lootInstance.Update(lastTick);
@@ -129,8 +141,13 @@ namespace NexusForever.Game.Loot
             updateTimer = UpdateInterval;
 
             for (int i = activeLootInstances.Count - 1; i >= 0; i--)
-                if (activeLootInstances[i].HasExpired)
-                    activeLootInstances.RemoveAt(i);
+            {
+                if (!activeLootInstances[i].HasExpired && IsLootSourceActive(activeLootInstances[i]))
+                    continue;
+
+                RemoveLootInstance(activeLootInstances[i]);
+                activeLootInstances.RemoveAt(i);
+            }
         }
 
         /// <summary>
@@ -138,6 +155,15 @@ namespace NexusForever.Game.Loot
         /// </summary>
         public ILootInstance DropLoot(IPlayer looter, IWorldEntity lootedEntity)
         {
+            ArgumentNullException.ThrowIfNull(looter);
+            ArgumentNullException.ThrowIfNull(lootedEntity);
+
+            if (lootedEntity is IPetEntity)
+                return null;
+
+            if (looter.Map == null || !ReferenceEquals(looter.Map, lootedEntity.Map))
+                return null;
+
             if (!creatureLoot.TryGetValue(lootedEntity.CreatureId, out List<ILootGroup> groups))
                 return null;
 
@@ -158,8 +184,17 @@ namespace NexusForever.Game.Loot
                 instance.AddLootItem((uint)AccountCurrencyType.Omnibits, LootItemType.AccountCurrency, omnibitAmount);
             }
 
-            pendingLootInstances.Enqueue(instance);
-            instance.SendLootNotify(looter);
+            RegisterLootInstance(instance, looter.Map, lootedEntity);
+            try
+            {
+                instance.SendLootNotify(looter);
+            }
+            finally
+            {
+                if (instance.HasExpired)
+                    RemoveLootInstance(instance);
+            }
+
             return instance;
         }
 
@@ -168,7 +203,13 @@ namespace NexusForever.Game.Loot
         /// </summary>
         public void DropLoot(IPlayer looter, IItem lootedItem)
         {
+            ArgumentNullException.ThrowIfNull(looter);
+            ArgumentNullException.ThrowIfNull(lootedItem);
+
             if (!itemLoot.TryGetValue(lootedItem.Info.Entry.Id, out List<ILootGroup> groups))
+                return;
+
+            if (looter.Map == null)
                 return;
 
             LootInstance instance = GenerateLootInstance(
@@ -182,34 +223,74 @@ namespace NexusForever.Game.Loot
                 return;
 
             instance.Explosion = true;
-            pendingLootInstances.Enqueue(instance);
-            instance.SendLootNotify(looter);
+            RegisterLootInstance(instance, looter.Map);
+            try
+            {
+                instance.SendLootNotify(looter);
+            }
+            finally
+            {
+                if (instance.HasExpired)
+                    RemoveLootInstance(instance);
+            }
         }
 
         /// <summary>
-        /// Award a specific loot instance item to the player.
+        /// Returns whether the supplied item has a configured loot table.
         /// </summary>
-        public void GiveLoot(IPlayer looter, int lootInstanceItemId)
+        public bool HasLootTable(IItem lootedItem)
         {
+            return lootedItem?.Info?.Entry != null
+                && itemLoot.ContainsKey(lootedItem.Info.Entry.Id);
+        }
+
+        /// <summary>
+        /// Attempt to award a specific loot instance item to the player.
+        /// </summary>
+        public bool GiveLoot(IPlayer looter, uint ownerUnitId, uint lootInstanceItemId)
+        {
+            if (looter == null)
+                return false;
+
             LootInstance lootInstance = GetLootInstanceForItem(lootInstanceItemId);
             if (lootInstance == null)
-                return;
+                return false;
+
+            if (lootInstance.Guid != ownerUnitId)
+                return false;
 
             if (!lootInstance.HasLooter(looter.CharacterId))
-                return;
+                return false;
 
             if (lootInstance.HasExpired)
-                return;
+            {
+                RemoveLootInstance(lootInstance);
+                return false;
+            }
+
+            if (!IsLootSourceActive(lootInstance))
+            {
+                RemoveLootInstance(lootInstance);
+                return false;
+            }
+
+            if (!IsLootInRange(looter, lootInstance))
+                return false;
 
             LootInstanceItem item = lootInstance.GetItem(lootInstanceItemId);
             if (item == null || item.Delivered)
-                return;
+                return false;
 
-            float distance = Vector3.Distance(looter.Position, lootInstance.Position);
-            if (distance > LootRange)
-                return;
-
-            item.DeliverItem(looter);
+            try
+            {
+                item.SetWinner(looter.CharacterId, looter.Guid);
+                return item.DeliverItem(looter);
+            }
+            finally
+            {
+                if (lootInstance.HasExpired)
+                    RemoveLootInstance(lootInstance);
+            }
         }
 
         /// <summary>
@@ -217,7 +298,10 @@ namespace NexusForever.Game.Loot
         /// </summary>
         public void GiveAllLootInRange(IPlayer looter)
         {
-            foreach (LootInstance instance in activeLootInstances)
+            if (looter == null)
+                return;
+
+            foreach (LootInstance instance in lootInstancesByItemId.Values.Distinct().ToList())
             {
                 if (!instance.HasLooter(looter.CharacterId))
                     continue;
@@ -225,13 +309,18 @@ namespace NexusForever.Game.Loot
                 if (instance.HasExpired)
                     continue;
 
-                float distance = Vector3.Distance(looter.Position, instance.Position);
-                if (distance > LootRange)
+                if (!IsLootSourceActive(instance))
+                {
+                    RemoveLootInstance(instance);
+                    continue;
+                }
+
+                if (!IsLootInRange(looter, instance))
                     continue;
 
-                foreach (ILootInstanceItem lootItem in instance)
+                foreach (ILootInstanceItem lootItem in instance.ToList())
                     if (!lootItem.Delivered)
-                        lootItem.DeliverItem(looter);
+                        GiveLoot(looter, instance.Guid, lootItem.Id);
             }
         }
 
@@ -299,9 +388,83 @@ namespace NexusForever.Game.Loot
             return instance;
         }
 
-        private LootInstance GetLootInstanceForItem(int itemId)
+        private LootInstance GetLootInstanceForItem(uint itemId)
         {
-            return activeLootInstances.FirstOrDefault(i => i.HasLootInstanceId(itemId));
+            return lootInstancesByItemId.GetValueOrDefault(itemId);
+        }
+
+        private void RegisterLootInstance(LootInstance instance, IBaseMap map, IWorldEntity owner = null)
+        {
+            ArgumentNullException.ThrowIfNull(map);
+
+            var registeredItemIds = new List<uint>();
+            foreach (ILootInstanceItem item in instance)
+            {
+                if (!lootInstancesByItemId.TryAdd(item.Id, instance))
+                {
+                    foreach (uint registeredItemId in registeredItemIds)
+                        lootInstancesByItemId.TryRemove(registeredItemId, out _);
+
+                    throw new InvalidOperationException($"Loot item identifier {item.Id} is already active.");
+                }
+
+                registeredItemIds.Add(item.Id);
+            }
+
+            if (!lootMaps.TryAdd(instance, map))
+            {
+                foreach (uint registeredItemId in registeredItemIds)
+                    lootInstancesByItemId.TryRemove(registeredItemId, out _);
+
+                throw new InvalidOperationException("The loot instance is already registered.");
+            }
+
+            if (owner != null)
+            {
+                lootOwners.TryAdd(instance, owner);
+                owner.AddLoot(instance);
+            }
+
+            pendingLootInstances.Enqueue(instance);
+        }
+
+        private void RemoveLootInstance(LootInstance instance)
+        {
+            foreach (ILootInstanceItem item in instance)
+            {
+                if (lootInstancesByItemId.TryGetValue(item.Id, out LootInstance registeredInstance)
+                    && ReferenceEquals(registeredInstance, instance))
+                    lootInstancesByItemId.TryRemove(item.Id, out _);
+            }
+
+            lootMaps.TryRemove(instance, out _);
+
+            if (lootOwners.TryRemove(instance, out IWorldEntity owner))
+                owner.RemoveLoot(instance);
+        }
+
+        private bool IsLootSourceActive(LootInstance instance)
+        {
+            if (!lootMaps.TryGetValue(instance, out IBaseMap map))
+                return false;
+
+            if (!lootOwners.TryGetValue(instance, out IWorldEntity owner))
+                return true;
+
+            return owner.Guid == instance.Guid && ReferenceEquals(owner.Map, map);
+        }
+
+        private bool IsLootInRange(IPlayer looter, LootInstance instance)
+        {
+            if (!lootMaps.TryGetValue(instance, out IBaseMap map)
+                || !ReferenceEquals(looter.Map, map))
+                return false;
+
+            Vector3 lootPosition = instance.Position;
+            if (lootOwners.TryGetValue(instance, out IWorldEntity owner))
+                lootPosition = owner.Position;
+
+            return Vector3.Distance(looter.Position, lootPosition) <= LootRange;
         }
 
         private static Dictionary<ulong, LootGroupModel> BuildLootHierarchy(IEnumerable<LootGroupModel> models)
@@ -318,6 +481,17 @@ namespace NexusForever.Game.Loot
                 model.Parent     = null;
                 model.ChildGroup = new HashSet<LootGroupModel>();
                 model.Item     ??= new HashSet<LootItemModel>();
+
+                foreach (LootItemModel item in model.Item)
+                {
+                    if (item == null)
+                        throw new DatabaseDataException($"Loot group {model.Id} contains a null item record.");
+
+                    var itemType = (LootItemType)item.Type;
+                    if (!LootInstanceItem.CanDeliver(itemType))
+                        throw new DatabaseDataException(
+                            $"Loot item {item.Id} in group {model.Id} uses unsupported type {item.Type}.");
+                }
             }
 
             foreach (LootGroupModel model in lootGroups.Values)

@@ -16,7 +16,7 @@ This document records verified implementation status on the `convergence` branch
 | Phase | Status | Verified position |
 |---|---|---|
 | 0 — Static types | Conditional | Planned types are present and tested. Some downstream use is absent, and `TelegraphDamageFlag` values still require capture validation. |
-| 1 — Loot | Incomplete | The schema migration, recursive hierarchy loading, startup initialisation, and world ticking are live and tested. Safe delivery, request validation, corpse ownership/cleanup, and conditional loot remain incomplete. |
+| 1 — Loot | Incomplete | Schema, recursive loading, startup/ticking, owner attachment, authorised same-map collection, reconnect notification, loot bags, capacity-safe item grants, expiry, and stale-owner cleanup are live and tested. Conditional loot, group/raid allocation, and the Phase 6 `CorpseLooted` removal transition remain incomplete. |
 | 2 — Spell variants | Incomplete | Factory dispatch is live. Failed-cast cleanup, cancellation semantics, phase masks, threshold input, aura cleanup, and exactly-once costs remain incomplete. |
 | 3 — Client-side interaction | Incomplete | Foundations exist, but the build-16042 start/result packet loop, client correlation ID, timeout, entity callbacks, and quest integration are not live. |
 | 4 — Combat, healing, and procs | Incomplete | Healing and immediate combat-state hooks exist. Proc collection, dispatch, cooldowns, and lifecycle cleanup are not integrated into the live combat loop. |
@@ -42,11 +42,12 @@ Completed hardening:
 - The administrative command WebSocket is disabled by default, bound to loopback in the example configuration, and no longer published by the default Aspire topology. When explicitly enabled it requires a hashed bearer credential and an exact Origin allow-list, accepts only bounded strict-UTF-8 text messages, and rejects malformed command envelopes without dispatching them.
 - Task-backed events now distinguish successful, failed, and cancelled operations. Authentication and character mutations fail closed without running success callbacks, detached task failures are logged by default, and player cleanup retains its account lock while retrying failed saves.
 - World loot tables now have an EF migration, are validated and loaded recursively at startup, and active loot expiry advances from the world tick. Invalid graph data fails startup without poisoning a later initialisation attempt.
-- Persistence now has one-shot post-commit acknowledgements, register-only staging scopes, and per-bit versioned dirty-mask snapshots. Auth and Character databases expose additive acknowledged-save APIs; entity graphs still need conversion before failed commits are retry-safe.
+- Player saves are serialised and acknowledge Auth and Character commits independently. Player/account state, inventory, mail, keybindings, entitlements, RBAC, guilds, and housing retain dirty state and deletion tombstones until their database commit succeeds; manager shutdown retries failed saves without blocking worker threads.
+- Loot claims validate the stable character identity, client-supplied owner/item identifiers, live source entity, exact map instance, and range. Inventory-full claims remain retryable, reward-path failures use an at-most-once boundary, and unsupported loot-table item types fail startup rather than leaving permanent uncollectable drops.
 
 Remaining priority work:
 
-- Make persistence dirty-state acknowledgement retry-safe after a database commit fails.
+- Convert the remaining character child graphs (progression, loadouts, quests, and achievements) to post-commit acknowledgement; their compatibility overloads still clear dirty state while staging.
 - Make cross-server lifecycle publication failures retryable; detached failures are now observable through error logging.
 - Add bounded, non-blocking network send backpressure so a stalled client cannot stop the world update thread.
 - Replace the command WebSocket role's effectively unrestricted permission set, bound its pending command queue, and serialise/bound outbound responses before restoring a browser console in Phase 11.
@@ -57,7 +58,7 @@ SharpCompress `0.22.0` is transitively supplied by `Nexus.Archive 1.0.1` to the 
 
 ## Next validated slices
 
-1. Make dirty-state acknowledgement retry-safe and make cross-server publication failures observable.
-2. Finish Phase 1 delivery validation and corpse ownership/cleanup, then repair the Phase 2 and Phase 3 blockers found by the baseline audit.
-3. Complete Phase 4 proc dispatch before starting Phase 6 implementation.
+1. Complete Phase 4 proc dispatch and combat-state hooks, then start the Phase 6 vital/death lifecycle.
+2. Convert the remaining character child persistence graphs and make cross-server publication failures retryable.
+3. Repair the Phase 2 and Phase 3 state-machine and client-correlation blockers; implement conditional loot alongside Phase 7 quest-state queries.
 4. Add bounded network send backpressure and continue lower-risk long-uptime hardening alongside the gameplay phases.

@@ -454,7 +454,7 @@ namespace NexusForever.Game.Entity
             }
 
             // TODO: Reward XP
-            Loot.GlobalLootManager.Instance.DropLoot(player, this);
+            NexusForever.Game.Loot.GlobalLootManager.Instance.DropLoot(player, this);
             // TODO: Handle Achievements
         }
 

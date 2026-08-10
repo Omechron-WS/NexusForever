@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Numerics;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Static.Loot;
 using NexusForever.Shared;
@@ -14,6 +15,7 @@ namespace NexusForever.Game.Abstract.Loot
 
         LootEntityType LootEntityType { get; }
         LooterType LooterType { get; }
+        Vector3 Position { get; }
         bool HasExpired { get; }
         bool Explosion { get; set; }
 
@@ -30,7 +32,7 @@ namespace NexusForever.Game.Abstract.Loot
         /// <summary>
         /// Returns whether a loot instance item with the given id exists.
         /// </summary>
-        bool HasLootInstanceId(int id);
+        bool HasLootInstanceId(uint id);
 
         /// <summary>
         /// Returns whether the character is an authorised looter.

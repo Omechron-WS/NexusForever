@@ -28,7 +28,13 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Loot
             if (item == null)
                 return;
 
+            if (item.Guid != message.Guid)
+                return;
+
             if (item.Info.Entry.Item2CategoryId != LootBagCategoryId)
+                return;
+
+            if (!lootManager.HasLootTable(item))
                 return;
 
             if (session.Player.Inventory.ItemUse(item))

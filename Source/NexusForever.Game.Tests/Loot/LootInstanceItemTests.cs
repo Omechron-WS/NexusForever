@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using NexusForever.Game.Abstract.Account;
 using NexusForever.Game.Abstract.Account.Currency;
 using NexusForever.Game.Abstract.Entity;
@@ -45,6 +46,26 @@ namespace NexusForever.Game.Tests.Loot
         }
 
         [Fact]
+        public void SetWinner_SameCharacterAfterReconnect_RefreshesUnitGuid()
+        {
+            var item = new LootInstanceItem(100, LootItemType.StaticItem, 1);
+            item.SetWinner(12345ul, 99u);
+            item.SetWinner(12345ul, 100u);
+
+            Assert.Equal(12345ul, item.WinnerCharacterId);
+            Assert.Equal(100u, item.WinnerGuid);
+        }
+
+        [Fact]
+        public void SetWinner_DifferentCharacter_ThrowsInvalidOperationException()
+        {
+            var item = new LootInstanceItem(100, LootItemType.StaticItem, 1);
+            item.SetWinner(12345ul, 99u);
+
+            Assert.Throws<InvalidOperationException>(() => item.SetWinner(54321ul, 100u));
+        }
+
+        [Fact]
         public void AddToAmount_IncreasesAmount()
         {
             var item = new LootInstanceItem(100, LootItemType.StaticItem, 5);
@@ -58,13 +79,48 @@ namespace NexusForever.Game.Tests.Loot
         {
             var (player, mocks) = CreateMockPlayerWithMocks();
             var item = new LootInstanceItem(999, LootItemType.StaticItem, 3);
+            item.SetWinner(player.CharacterId, player.Guid);
 
-            item.DeliverItem(player);
+            bool delivered = item.DeliverItem(player);
 
+            Assert.True(delivered);
             mocks.Inventory.Verify(
-                i => i.ItemCreate(InventoryLocation.Inventory, 999u, 3u, ItemUpdateReason.Loot, 0u),
+                i => i.TryItemCreate(
+                    InventoryLocation.Inventory,
+                    999u,
+                    3u,
+                    out It.Ref<uint>.IsAny,
+                    ItemUpdateReason.Loot,
+                    0u),
                 Times.Once);
             Assert.True(item.Delivered);
+        }
+
+        [Fact]
+        public void DeliverItem_StaticItemWithoutCapacity_RemainsClaimable()
+        {
+            var (player, mocks) = CreateMockPlayerWithMocks();
+            var item = new LootInstanceItem(999, LootItemType.StaticItem, 3);
+            item.SetWinner(player.CharacterId, player.Guid);
+            mocks.Inventory.Setup(i => i.TryItemCreate(
+                    InventoryLocation.Inventory,
+                    999u,
+                    3u,
+                    out It.Ref<uint>.IsAny,
+                    ItemUpdateReason.Loot,
+                    0u))
+                .Returns(false);
+
+            bool delivered = item.DeliverItem(player);
+
+            Assert.False(delivered);
+            Assert.False(item.Delivered);
+            mocks.Inventory.Verify(i => i.ItemCreate(
+                It.IsAny<InventoryLocation>(),
+                It.IsAny<uint>(),
+                It.IsAny<uint>(),
+                It.IsAny<ItemUpdateReason>(),
+                It.IsAny<uint>()), Times.Never);
         }
 
         [Fact]
@@ -72,9 +128,11 @@ namespace NexusForever.Game.Tests.Loot
         {
             var (player, mocks) = CreateMockPlayerWithMocks();
             var item = new LootInstanceItem(1, LootItemType.Cash, 500);
+            item.SetWinner(player.CharacterId, player.Guid);
 
-            item.DeliverItem(player);
+            bool delivered = item.DeliverItem(player);
 
+            Assert.True(delivered);
             mocks.Currency.Verify(
                 c => c.CurrencyAddAmount((CurrencyType)1, 500u, true),
                 Times.Once);
@@ -86,9 +144,11 @@ namespace NexusForever.Game.Tests.Loot
         {
             var (player, mocks) = CreateMockPlayerWithMocks();
             var item = new LootInstanceItem(6, LootItemType.AccountCurrency, 25);
+            item.SetWinner(player.CharacterId, player.Guid);
 
-            item.DeliverItem(player);
+            bool delivered = item.DeliverItem(player);
 
+            Assert.True(delivered);
             mocks.AccountCurrency.Verify(
                 c => c.CurrencyAddAmount((AccountCurrencyType)6, 25u, 0uL),
                 Times.Once);
@@ -100,9 +160,11 @@ namespace NexusForever.Game.Tests.Loot
         {
             var (player, mocks) = CreateMockPlayerWithMocks();
             var item = new LootInstanceItem(555, LootItemType.VirtualItem, 2);
+            item.SetWinner(player.CharacterId, player.Guid);
 
-            item.DeliverItem(player);
+            bool delivered = item.DeliverItem(player);
 
+            Assert.True(delivered);
             mocks.Quest.Verify(
                 q => q.ObjectiveUpdate(QuestObjectiveType.VirtualCollect, 555u, 2u),
                 Times.Once);
@@ -114,13 +176,75 @@ namespace NexusForever.Game.Tests.Loot
         {
             var (player, mocks) = CreateMockPlayerWithMocks();
             var item = new LootInstanceItem(999, LootItemType.StaticItem, 1);
+            item.SetWinner(player.CharacterId, player.Guid);
 
-            item.DeliverItem(player);
-            item.DeliverItem(player);
+            bool first = item.DeliverItem(player);
+            bool second = item.DeliverItem(player);
 
+            Assert.True(first);
+            Assert.False(second);
             mocks.Inventory.Verify(
-                i => i.ItemCreate(It.IsAny<InventoryLocation>(), It.IsAny<uint>(), It.IsAny<uint>(), It.IsAny<ItemUpdateReason>(), It.IsAny<uint>()),
+                i => i.TryItemCreate(
+                    It.IsAny<InventoryLocation>(),
+                    It.IsAny<uint>(),
+                    It.IsAny<uint>(),
+                    out It.Ref<uint>.IsAny,
+                    It.IsAny<ItemUpdateReason>(),
+                    It.IsAny<uint>()),
                 Times.Once);
+        }
+
+        [Fact]
+        public void DeliverItem_ConcurrentClaims_DeliversOnlyOnce()
+        {
+            var (player, mocks) = CreateMockPlayerWithMocks();
+            var item = new LootInstanceItem(1, LootItemType.Cash, 500);
+            item.SetWinner(player.CharacterId, player.Guid);
+            var results = new ConcurrentBag<bool>();
+
+            Parallel.For(0, 64, _ => results.Add(item.DeliverItem(player)));
+
+            Assert.Single(results, result => result);
+            mocks.Currency.Verify(
+                c => c.CurrencyAddAmount((CurrencyType)1, 500u, true),
+                Times.Once);
+        }
+
+        [Fact]
+        public void Constructor_UnsupportedType_ThrowsArgumentOutOfRangeException()
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new LootInstanceItem(1, unchecked((LootItemType)uint.MaxValue), 1));
+        }
+
+        [Fact]
+        public void DeliverItem_RewardThrowsAfterMutation_DoesNotRetry()
+        {
+            var (player, mocks) = CreateMockPlayerWithMocks();
+            var item = new LootInstanceItem(1, LootItemType.Cash, 500);
+            item.SetWinner(player.CharacterId, player.Guid);
+            mocks.Currency.Setup(c => c.CurrencyAddAmount((CurrencyType)1, 500u, true))
+                .Throws(new InvalidOperationException("Packet enqueue failed after mutation."));
+
+            Assert.Throws<InvalidOperationException>(() => item.DeliverItem(player));
+
+            Assert.True(item.Delivered);
+            Assert.False(item.DeliverItem(player));
+            mocks.Currency.Verify(c => c.CurrencyAddAmount((CurrencyType)1, 500u, true), Times.Once);
+        }
+
+        [Fact]
+        public void DeliverItem_WrongWinner_DoesNotDeliver()
+        {
+            var (player, mocks) = CreateMockPlayerWithMocks();
+            var item = new LootInstanceItem(1, LootItemType.Cash, 500);
+            item.SetWinner(999ul, 999u);
+
+            bool delivered = item.DeliverItem(player);
+
+            Assert.False(delivered);
+            mocks.Currency.Verify(c => c.CurrencyAddAmount(
+                It.IsAny<CurrencyType>(), It.IsAny<ulong>(), It.IsAny<bool>()), Times.Never);
         }
 
         [Fact]
@@ -130,7 +254,7 @@ namespace NexusForever.Game.Tests.Loot
 
             var network = item.Build();
 
-            Assert.Equal((uint)item.Id, network.LootUnitId);
+            Assert.Equal(item.Id, network.LootUnitId);
             Assert.Equal(LootItemType.StaticItem, network.Type);
             Assert.Equal(42u, network.ItemId);
             Assert.Equal(5u, network.Amount);
@@ -142,6 +266,7 @@ namespace NexusForever.Game.Tests.Loot
         {
             var (player, _) = CreateMockPlayerWithMocks();
             var item = new LootInstanceItem(42, LootItemType.StaticItem, 5);
+            item.SetWinner(player.CharacterId, player.Guid);
 
             item.DeliverItem(player);
             var network = item.Build();
@@ -178,7 +303,9 @@ namespace NexusForever.Game.Tests.Loot
             Mock<IAccountCurrencyManager> AccountCurrency,
             Mock<IQuestManager> Quest);
 
-        private static (IPlayer Player, MockSet Mocks) CreateMockPlayerWithMocks()
+        private static (IPlayer Player, MockSet Mocks) CreateMockPlayerWithMocks(
+            ulong characterId = 1ul,
+            uint guid = 1u)
         {
             var mockSession = new Mock<IGameSession>();
             var mockInventory = new Mock<IInventory>();
@@ -188,10 +315,18 @@ namespace NexusForever.Game.Tests.Loot
             var mockAccountCurrency = new Mock<IAccountCurrencyManager>();
 
             mockAccount.Setup(a => a.CurrencyManager).Returns(mockAccountCurrency.Object);
+            mockInventory.Setup(i => i.TryItemCreate(
+                    It.IsAny<InventoryLocation>(),
+                    It.IsAny<uint>(),
+                    It.IsAny<uint>(),
+                    out It.Ref<uint>.IsAny,
+                    It.IsAny<ItemUpdateReason>(),
+                    It.IsAny<uint>()))
+                .Returns(true);
 
             var mockPlayer = new Mock<IPlayer>();
-            mockPlayer.Setup(p => p.CharacterId).Returns(1uL);
-            mockPlayer.Setup(p => p.Guid).Returns(1u);
+            mockPlayer.Setup(p => p.CharacterId).Returns(characterId);
+            mockPlayer.Setup(p => p.Guid).Returns(guid);
             mockPlayer.Setup(p => p.Session).Returns(mockSession.Object);
             mockPlayer.Setup(p => p.Inventory).Returns(mockInventory.Object);
             mockPlayer.Setup(p => p.CurrencyManager).Returns(mockCurrency.Object);

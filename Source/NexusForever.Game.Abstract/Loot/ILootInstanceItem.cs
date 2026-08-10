@@ -6,7 +6,7 @@ namespace NexusForever.Game.Abstract.Loot
 {
     public interface ILootInstanceItem
     {
-        int Id { get; }
+        uint Id { get; }
         uint StaticId { get; }
         LootItemType Type { get; }
         uint Amount { get; }
@@ -19,9 +19,9 @@ namespace NexusForever.Game.Abstract.Loot
         void SetWinner(ulong characterId, uint guid);
 
         /// <summary>
-        /// Deliver the item to the player's inventory, currency, or quest progress.
+        /// Attempt to deliver the item to the player's inventory, currency, or quest progress.
         /// </summary>
-        void DeliverItem(IPlayer player, bool sendAsGrant = true);
+        bool DeliverItem(IPlayer player, bool sendAsGrant = true);
 
         /// <summary>
         /// Build a <see cref="LootItem"/> for packet serialisation.

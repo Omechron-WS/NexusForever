@@ -23,9 +23,14 @@ namespace NexusForever.Game.Abstract.Loot
         void DropLoot(IPlayer looter, IItem lootedItem);
 
         /// <summary>
-        /// Award a specific loot instance item to the player.
+        /// Returns whether the supplied item has a configured loot table.
         /// </summary>
-        void GiveLoot(IPlayer looter, int lootInstanceItemId);
+        bool HasLootTable(IItem lootedItem);
+
+        /// <summary>
+        /// Attempt to award a specific loot instance item to the player.
+        /// </summary>
+        bool GiveLoot(IPlayer looter, uint ownerUnitId, uint lootInstanceItemId);
 
         /// <summary>
         /// Award all lootable items within range to the player.

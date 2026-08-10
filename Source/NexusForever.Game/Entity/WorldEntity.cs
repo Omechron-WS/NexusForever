@@ -1,9 +1,11 @@
+using System.Collections.Concurrent;
 using System.Numerics;
 using Newtonsoft.Json.Linq;
 using NexusForever.Database.World.Model;
 using NexusForever.Game.Abstract.Chat;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Entity.Movement;
+using NexusForever.Game.Abstract.Loot;
 using NexusForever.Game.Abstract.Map;
 using NexusForever.Game.Abstract.Reputation;
 using NexusForever.Game.Chat;
@@ -134,6 +136,13 @@ namespace NexusForever.Game.Entity
             get => Convert.ToBoolean(GetStatInteger(Stat.Sheathed) ?? 0u);
             set => SetStat(Stat.Sheathed, Convert.ToUInt32(value));
         }
+
+        /// <summary>
+        /// Snapshot of loot instances currently attached to this entity.
+        /// </summary>
+        public IReadOnlyCollection<ILootInstance> Loot => loot.Keys.ToArray();
+
+        private readonly ConcurrentDictionary<ILootInstance, byte> loot = new();
 
         /// <summary>
         /// The current stand state for the <see cref="IWorldEntity"/>.
@@ -1000,6 +1009,24 @@ namespace NexusForever.Game.Entity
         public virtual void OnUntargeted(IUnitEntity source)
         {
             targetingGuids.Remove(source.Guid);
+        }
+
+        /// <summary>
+        /// Attach a loot instance to this entity.
+        /// </summary>
+        public void AddLoot(ILootInstance lootInstance)
+        {
+            ArgumentNullException.ThrowIfNull(lootInstance);
+            loot.TryAdd(lootInstance, 0);
+        }
+
+        /// <summary>
+        /// Detach a completed or expired loot instance from this entity.
+        /// </summary>
+        public void RemoveLoot(ILootInstance lootInstance)
+        {
+            ArgumentNullException.ThrowIfNull(lootInstance);
+            loot.TryRemove(lootInstance, out _);
         }
 
         /// <summary>
