@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Network.World.Message.Model.Costume;
 using NexusForever.Shared;
@@ -9,6 +10,11 @@ namespace NexusForever.Game.Abstract.Entity
     {
         byte? CostumeIndex { get; }
         byte CostumeCap { get; }
+
+        /// <summary>
+        /// Stage costume manager changes and register their successful-commit acknowledgements.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
 
         /// <summary>
         /// Return <see cref="ICostume"/> at supplied index.

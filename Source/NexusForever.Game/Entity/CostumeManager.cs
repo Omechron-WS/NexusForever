@@ -1,7 +1,9 @@
 ﻿using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Costume;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Reward;
@@ -14,6 +16,13 @@ namespace NexusForever.Game.Entity
 {
     public class CostumeManager : ICostumeManager
     {
+        [Flags]
+        private enum CostumeManagerSaveMask
+        {
+            None         = 0x00,
+            CostumeIndex = 0x01
+        }
+
         private static readonly ILogger log = LogManager.GetCurrentClassLogger();
 
         public byte CostumeCap => (byte)(player.Account.RewardPropertyManager.GetRewardProperty(RewardPropertyType.CostumeSlots).GetValue(0) ?? 4u);
@@ -23,13 +32,16 @@ namespace NexusForever.Game.Entity
             get => costumeIndex;
             set
             {
+                if (costumeIndex == value)
+                    return;
+
                 costumeIndex = value;
-                isDirty = true;
+                saveMask.Mark(CostumeManagerSaveMask.CostumeIndex);
             }
         }
         private byte? costumeIndex;
 
-        private bool isDirty;
+        private readonly VersionedSaveMask<CostumeManagerSaveMask> saveMask = new();
 
         // hard limit, array storing costumes at client is 12 in size 
         private const byte MaxCostumes = 12;
@@ -54,10 +66,23 @@ namespace NexusForever.Game.Entity
 
         public void Save(CharacterContext context)
         {
-            foreach (ICostume costume in costumes.Values)
-                costume.Save(context);
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
 
-            if (isDirty)
+        /// <summary>
+        /// Stage costume manager changes and register their successful-commit acknowledgements.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            foreach (ICostume costume in costumes.Values)
+                costume.Save(context, commitScope);
+
+            VersionedSaveMaskSnapshot<CostumeManagerSaveMask> snapshot = saveMask.Capture();
+            CostumeManagerSaveMask mask = snapshot.Mask;
+            if ((mask & CostumeManagerSaveMask.CostumeIndex) != 0)
             {
                 // character is attached in Player::Save, this will only be local lookup
                 CharacterModel character = context.Character.Find(player.CharacterId);
@@ -66,7 +91,7 @@ namespace NexusForever.Game.Entity
                 character.ActiveCostumeIndex = (sbyte)(CostumeIndex ?? -1);
                 entity.Property(p => p.ActiveCostumeIndex).IsModified = true;
 
-                isDirty = false;
+                commitScope.Register(() => saveMask.Acknowledge(snapshot));
             }
         }
 

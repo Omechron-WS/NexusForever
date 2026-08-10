@@ -1,8 +1,10 @@
 ﻿using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Spell;
+using NexusForever.Game.Persistence;
 using NexusForever.Network.World.Message.Model;
 using NexusForever.Shared.Game;
 
@@ -28,11 +30,12 @@ namespace NexusForever.Game.Spell
             get => tier;
             set
             {
-                if (tier != value)
-                    SpellInfo = BaseInfo.GetSpellInfo(tier);
+                if (tier == value)
+                    return;
 
-                tier = value;
-                saveMask |= UnlockedSpellSaveMask.Tier;
+                SpellInfo = BaseInfo.GetSpellInfo(value) ?? throw new ArgumentOutOfRangeException(nameof(value));
+                tier      = value;
+                saveMask.Mark(UnlockedSpellSaveMask.Tier);
             }
         }
         private byte tier;
@@ -40,7 +43,7 @@ namespace NexusForever.Game.Spell
         public uint AbilityCharges { get; private set; }
         public uint MaxAbilityCharges => SpellInfo.Entry.AbilityChargeCount;
 
-        private UnlockedSpellSaveMask saveMask;
+        private VersionedSaveMask<UnlockedSpellSaveMask> saveMask = new();
 
         private UpdateTimer rechargeTimer;
 
@@ -50,10 +53,10 @@ namespace NexusForever.Game.Spell
         public CharacterSpell(IPlayer player, CharacterSpellModel model, ISpellBaseInfo baseInfo, IItem item)
         {
             Owner     = player;
-            BaseInfo  = baseInfo;
-            SpellInfo = baseInfo.GetSpellInfo(tier);
-            Item      = item;
+            BaseInfo  = baseInfo ?? throw new ArgumentNullException(nameof(baseInfo));
             tier      = model.Tier;
+            SpellInfo = baseInfo.GetSpellInfo(tier) ?? throw new ArgumentOutOfRangeException(nameof(model.Tier));
+            Item      = item;
 
             InitialiseAbilityCharges();
         }
@@ -64,14 +67,14 @@ namespace NexusForever.Game.Spell
         public CharacterSpell(IPlayer player, ISpellBaseInfo baseInfo, byte tier, IItem item)
         {
             Owner     = player;
-            BaseInfo  = baseInfo ?? throw new ArgumentNullException();
-            SpellInfo = baseInfo.GetSpellInfo(tier);
+            BaseInfo  = baseInfo ?? throw new ArgumentNullException(nameof(baseInfo));
+            SpellInfo = baseInfo.GetSpellInfo(tier) ?? throw new ArgumentOutOfRangeException(nameof(tier));
             Item      = item;
             this.tier = tier;
 
             InitialiseAbilityCharges();
 
-            saveMask = UnlockedSpellSaveMask.Create;
+            saveMask = new VersionedSaveMask<UnlockedSpellSaveMask>(UnlockedSpellSaveMask.Create);
         }
 
         private void InitialiseAbilityCharges()
@@ -100,10 +103,23 @@ namespace NexusForever.Game.Spell
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == UnlockedSpellSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage character spell changes and register their successful-commit acknowledgements.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            VersionedSaveMaskSnapshot<UnlockedSpellSaveMask> snapshot = saveMask.Capture();
+            UnlockedSpellSaveMask mask = snapshot.Mask;
+            if (mask == UnlockedSpellSaveMask.None)
                 return;
 
-            if ((saveMask & UnlockedSpellSaveMask.Create) != 0)
+            if ((mask & UnlockedSpellSaveMask.Create) != 0)
             {
                 var model = new CharacterSpellModel
                 {
@@ -123,14 +139,14 @@ namespace NexusForever.Game.Spell
                 };
 
                 EntityEntry<CharacterSpellModel> entity = context.Attach(model);
-                if ((saveMask & UnlockedSpellSaveMask.Tier) != 0)
+                if ((mask & UnlockedSpellSaveMask.Tier) != 0)
                 {
                     model.Tier = tier;
                     entity.Property(p => p.Tier).IsModified = true;
                 }
             }
 
-            saveMask = UnlockedSpellSaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         /// <summary>

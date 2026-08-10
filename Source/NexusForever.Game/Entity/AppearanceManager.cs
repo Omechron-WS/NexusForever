@@ -1,8 +1,10 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Customisation;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Customisation;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Reputation;
 using NexusForever.Network.World.Message.Model;
@@ -15,10 +17,6 @@ namespace NexusForever.Game.Entity
         private readonly Dictionary<ItemSlot, IAppearance> characterAppearances = new();
         private readonly Dictionary<byte, IBone> characterBones = new();
 
-        private readonly List<ICustomisation> deletedCharacterCustomisations = new();
-        private readonly List<IAppearance> deletedCharacterAppearances = new();
-        private readonly List<IBone> deletedCharacterBones = new();
-       
         private readonly IPlayer owner;
 
         /// <summary>
@@ -45,23 +43,45 @@ namespace NexusForever.Game.Entity
 
         public void Save(CharacterContext context)
         {
-            foreach (IAppearance characterAppearance in deletedCharacterAppearances)
-                characterAppearance.Save(context);
-            foreach (IBone characterBone in deletedCharacterBones)
-                characterBone.Save(context);
-            foreach (ICustomisation characterCustomisation in deletedCharacterCustomisations)
-                characterCustomisation.Save(context);
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
 
-            deletedCharacterAppearances.Clear();
-            deletedCharacterBones.Clear();
-            deletedCharacterCustomisations.Clear();
+        /// <summary>
+        /// Stage appearance graph changes and register their successful-commit acknowledgements.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
 
-            foreach (IAppearance characterAppearance in characterAppearances.Values)
-                characterAppearance.Save(context);
-            foreach (IBone characterBone in characterBones.Values)
-                characterBone.Save(context);
-            foreach (ICustomisation characterCustomisation in characterCustomisations.Values)
-                characterCustomisation.Save(context);
+            foreach (IAppearance appearance in characterAppearances.Values.ToArray())
+            {
+                appearance.Save(context, commitScope, () =>
+                {
+                    if (characterAppearances.TryGetValue(appearance.ItemSlot, out IAppearance current) &&
+                        ReferenceEquals(current, appearance))
+                        characterAppearances.Remove(appearance.ItemSlot);
+                });
+            }
+
+            foreach (IBone bone in characterBones.Values.ToArray())
+            {
+                bone.Save(context, commitScope, () =>
+                {
+                    if (characterBones.TryGetValue(bone.BoneIndex, out IBone current) && ReferenceEquals(current, bone))
+                        characterBones.Remove(bone.BoneIndex);
+                });
+            }
+
+            foreach (ICustomisation customisation in characterCustomisations.Values.ToArray())
+            {
+                customisation.Save(context, commitScope, () =>
+                {
+                    if (characterCustomisations.TryGetValue(customisation.Label, out ICustomisation current) &&
+                        ReferenceEquals(current, customisation))
+                        characterCustomisations.Remove(customisation.Label);
+                });
+            }
         }
 
         /// <summary>
@@ -69,7 +89,7 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public IEnumerable<ICustomisation> GetCustomisations()
         {
-            return characterCustomisations.Values;
+            return characterCustomisations.Values.Where(customisation => !customisation.PendingDelete);
         }
 
         /// <summary>
@@ -77,7 +97,7 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public IEnumerable<IAppearance> GetAppearances()
         {
-            return characterAppearances.Values;
+            return characterAppearances.Values.Where(appearance => !appearance.PendingDelete);
         }
 
         /// <summary>
@@ -85,7 +105,9 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public IEnumerable<IBone> GetBones()
         {
-            return characterBones.Values.OrderBy(b => b.BoneIndex);
+            return characterBones.Values
+                .Where(bone => !bone.PendingDelete)
+                .OrderBy(bone => bone.BoneIndex);
         }
 
         /// <summary>
@@ -110,18 +132,24 @@ namespace NexusForever.Game.Entity
             foreach ((uint label, uint value) in customisations)
             {
                 if (characterCustomisations.TryGetValue(label, out ICustomisation customisation))
+                {
+                    if (customisation.PendingDelete)
+                        customisation.EnqueueDelete(false);
                     customisation.Value = value;
+                }
                 else
                     characterCustomisations.TryAdd(label, new Customisation(owner.CharacterId, label, value));
             }
 
-            foreach (uint label in characterCustomisations.Keys.Except(customisations.Select(t => t.Label).ToList()))
+            HashSet<uint> retainedLabels = customisations
+                .Select(customisation => customisation.Label)
+                .ToHashSet();
+            foreach (ICustomisation customisation in characterCustomisations.Values
+                .Where(customisation => !retainedLabels.Contains(customisation.Label))
+                .ToArray())
             {
-                if (!characterCustomisations.Remove(label, out ICustomisation customisation))
-                    continue;
-
-                customisation.Delete();
-                deletedCharacterCustomisations.Add(customisation);
+                if (!customisation.PendingDelete)
+                    customisation.Delete();
             }
         }
 
@@ -131,49 +159,62 @@ namespace NexusForever.Game.Entity
             foreach (IItemVisual visual in itemVisuals)
             {
                 if (characterAppearances.TryGetValue(visual.Slot, out IAppearance appearance))
+                {
+                    if (appearance.PendingDelete)
+                        appearance.EnqueueDelete(false);
                     appearance.DisplayId = visual.DisplayId.Value;
+                }
                 else
                     characterAppearances.TryAdd(visual.Slot, new Appearance(owner.CharacterId, visual.Slot, visual.DisplayId.Value));
 
                 owner.AddVisual(visual);
             }
 
-            foreach (ItemSlot slot in characterAppearances.Keys.Except(itemVisuals.Select(a => a.Slot)).ToList())
+            HashSet<ItemSlot> retainedSlots = itemVisuals
+                .Select(visual => visual.Slot)
+                .ToHashSet();
+            foreach (IAppearance appearance in characterAppearances.Values
+                .Where(appearance => !retainedSlots.Contains(appearance.ItemSlot))
+                .ToArray())
             {
-                if (!characterAppearances.Remove(slot, out IAppearance appearance))
-                    continue;
-
-                appearance.Delete();
-                deletedCharacterAppearances.Add(appearance);
+                if (!appearance.PendingDelete)
+                    appearance.Delete();
             }
         }
 
         private void UpdateBones(IList<float> bones)
         {
-            for (byte i = 0; i < bones.Count; i++)
+            if (bones.Count > byte.MaxValue + 1)
+                throw new ArgumentOutOfRangeException(nameof(bones));
+
+            for (int i = 0; i < bones.Count; i++)
             {
-                if (characterBones.TryGetValue(i, out IBone bone))
+                byte boneIndex = (byte)i;
+                if (characterBones.TryGetValue(boneIndex, out IBone bone))
+                {
+                    if (bone.PendingDelete)
+                        bone.EnqueueDelete(false);
                     bone.BoneValue = bones[i];
+                }
                 else
-                    characterBones.Add(i, new Bone(owner.CharacterId, i, bones[i]));
+                    characterBones.Add(boneIndex, new Bone(owner.CharacterId, boneIndex, bones[i]));
+            }
+
+            foreach (IBone bone in characterBones.Values
+                .Where(bone => bone.BoneIndex >= bones.Count)
+                .ToArray())
+            {
+                if (!bone.PendingDelete)
+                    bone.Delete();
             }
 
             owner.EnqueueToVisible(new ServerEntityBoneUpdate
             {
                 UnitId = owner.Guid,
                 Bones  = GetBones()
-                    .Select(b => b.BoneValue)
+                    .Select(bone => bone.BoneValue)
                     .ToList()
             }, true);
-
-            for (byte i = (byte)characterBones.Count; i >= bones.Count; i--)
-            {
-                if (!characterBones.Remove(i, out IBone bone))
-                    continue;
-
-                bone.Delete();
-                deletedCharacterBones.Add(bone);
-            }
         }
     }
 }

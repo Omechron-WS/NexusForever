@@ -1,7 +1,9 @@
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Spell;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Abilities;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Spell;
@@ -50,7 +52,7 @@ namespace NexusForever.Game.Spell
         private readonly Dictionary<UILocation, IActionSetShortcut> actions = new();
         private readonly Dictionary<ushort, IActionSetAmp> amps = new();
 
-        private ActionSetSaveMask saveMask;
+        private readonly VersionedSaveMask<ActionSetSaveMask> saveMask = new();
 
         /// <summary>
         /// Create a new <see cref="IActionSet"/> with supplied index.
@@ -65,32 +67,38 @@ namespace NexusForever.Game.Spell
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == ActionSetSaveMask.None)
-                return;
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
 
-            if ((saveMask & ActionSetSaveMask.ActionSetAmps) != 0)
+        /// <summary>
+        /// Stage action-set graph changes and register their successful-commit acknowledgements.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            VersionedSaveMaskSnapshot<ActionSetSaveMask> snapshot = saveMask.Capture();
+
+            foreach ((ushort id, IActionSetAmp amp) in amps.ToArray())
             {
-                foreach ((ushort id, IActionSetAmp amp) in amps.OrderBy(i => i.Value.PendingDelete == true).ToList())
+                amp.Save(context, commitScope, () =>
                 {
-                    if (amp.PendingDelete)
+                    if (amps.TryGetValue(id, out IActionSetAmp current) && ReferenceEquals(current, amp))
                         amps.Remove(id);
-
-                    amp.Save(context);
-                }
+                });
             }
 
-            if ((saveMask & ActionSetSaveMask.ActionSetActions) != 0)
+            foreach ((UILocation location, IActionSetShortcut shortcut) in actions.ToArray())
             {
-                foreach ((UILocation location, IActionSetShortcut shortcut) in actions.OrderBy(i => i.Value.PendingDelete == true).ToList())
+                shortcut.Save(context, commitScope, () =>
                 {
-                    if (shortcut.PendingDelete)
+                    if (actions.TryGetValue(location, out IActionSetShortcut current) && ReferenceEquals(current, shortcut))
                         actions.Remove(location);
-
-                    shortcut.Save(context);
-                }
+                });
             }
 
-            saveMask = ActionSetSaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         /// <summary>
@@ -153,7 +161,7 @@ namespace NexusForever.Game.Spell
             else
                 actions.Add(location, new ActionSetShortcut(this, location, type, objectId, tier));
 
-            saveMask |= ActionSetSaveMask.ActionSetActions;
+            saveMask.Mark(ActionSetSaveMask.ActionSetActions);
 
             log.Trace($"Added shortcut {type} {objectId} at {location} to action set {Index}.");
         }
@@ -192,7 +200,7 @@ namespace NexusForever.Game.Spell
             }
 
             shortcut.Tier = tier;
-            saveMask |= ActionSetSaveMask.ActionSetActions;
+            saveMask.Mark(ActionSetSaveMask.ActionSetActions);
         }
 
         /// <summary>
@@ -212,13 +220,8 @@ namespace NexusForever.Game.Spell
                 }
             }
 
-            if (shortcut.PendingCreate)
-                actions.Remove(location);
-            else
-            {
-                shortcut.EnqueueDelete(true);
-                saveMask |= ActionSetSaveMask.ActionSetActions;
-            }
+            shortcut.EnqueueDelete(true);
+            saveMask.Mark(ActionSetSaveMask.ActionSetActions);
 
             log.Trace($"Removed shortcut {shortcut.ShortcutType} {shortcut.ObjectId} at {location} from action set {Index}.");
         }
@@ -257,7 +260,7 @@ namespace NexusForever.Game.Spell
             else
                 amps.Add(id, new ActionSetAmp(this, entry, true));
 
-            saveMask |= ActionSetSaveMask.ActionSetAmps;
+            saveMask.Mark(ActionSetSaveMask.ActionSetAmps);
 
             log.Trace($"Added AMP {id} to action set {Index}.");
         }
@@ -321,13 +324,8 @@ namespace NexusForever.Game.Spell
                 AmpPoints += (byte)amp.Entry.PowerCost;
             }
 
-            if (amp.PendingCreate)
-                amps.Remove((ushort)amp.Entry.Id);
-            else
-            {
-                amp.EnqueueDelete(true);
-                saveMask |= ActionSetSaveMask.ActionSetAmps;
-            }
+            amp.EnqueueDelete(true);
+            saveMask.Mark(ActionSetSaveMask.ActionSetAmps);
 
             log.Trace($"Removed AMP {amp.Entry.Id} from action set {Index}.");
         }

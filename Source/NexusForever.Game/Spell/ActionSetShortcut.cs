@@ -1,14 +1,17 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Spell;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Spell;
 
 namespace NexusForever.Game.Spell
 {
     public class ActionSetShortcut : IActionSetShortcut
     {
+        [Flags]
         public enum ShortcutSaveMask
         {
             None         = 0x0000,
@@ -27,7 +30,7 @@ namespace NexusForever.Game.Spell
             set
             {
                 if (value != shortcutType)
-                    saveMask |= ShortcutSaveMask.ShortcutType;
+                    saveMask.Mark(ShortcutSaveMask.ShortcutType);
                 shortcutType = value;
             }
         }
@@ -40,7 +43,7 @@ namespace NexusForever.Game.Spell
             set
             {
                 if (value != objectId)
-                    saveMask |= ShortcutSaveMask.ObjectId;
+                    saveMask.Mark(ShortcutSaveMask.ObjectId);
                 objectId = value;
             }
         }
@@ -53,7 +56,7 @@ namespace NexusForever.Game.Spell
             set
             {
                 if (value != tier)
-                    saveMask |= ShortcutSaveMask.Tier;
+                    saveMask.Mark(ShortcutSaveMask.Tier);
                 tier = value;
             }
         }
@@ -63,14 +66,14 @@ namespace NexusForever.Game.Spell
         /// <summary>
         /// Returns if <see cref="IActionSetShortcut"/> is enqueued to be saved to the database.
         /// </summary>
-        public bool PendingCreate => (saveMask & ShortcutSaveMask.Create) != 0;
+        public bool PendingCreate => (saveMask.Current & ShortcutSaveMask.Create) != 0;
 
         /// <summary>
         /// Returns if <see cref="IActionSetShortcut"/> is enqueued to be deleted from the database.
         /// </summary>
-        public bool PendingDelete => (saveMask & ShortcutSaveMask.Delete) != 0;
+        public bool PendingDelete => (saveMask.Current & ShortcutSaveMask.Delete) != 0;
 
-        private ShortcutSaveMask saveMask;
+        private VersionedSaveMask<ShortcutSaveMask> saveMask = new();
         private readonly ActionSet actionSet;
 
         /// <summary>
@@ -80,9 +83,10 @@ namespace NexusForever.Game.Spell
         {
             this.actionSet = actionSet;
             Location       = (UILocation)model.Location;
-            ShortcutType   = (ShortcutType)model.ShortcutType;
+            shortcutType   = (ShortcutType)model.ShortcutType;
             objectId       = model.ObjectId;
             tier           = model.Tier;
+            saveMask       = new VersionedSaveMask<ShortcutSaveMask>();
         }
 
         /// <summary>
@@ -92,19 +96,61 @@ namespace NexusForever.Game.Spell
         {
             this.actionSet = actionSet;
             Location       = location;
-            ShortcutType   = shortcutType;
-            ObjectId       = objectId;
-            Tier           = tier;
+            this.shortcutType = shortcutType;
+            this.objectId     = objectId;
+            this.tier         = tier;
 
-            saveMask       = ShortcutSaveMask.Create;
+            saveMask          = new VersionedSaveMask<ShortcutSaveMask>(ShortcutSaveMask.Create);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == ShortcutSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage shortcut changes and register their successful-commit acknowledgements.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            Save(context, commitScope, null);
+        }
+
+        /// <summary>
+        /// Stage shortcut changes and invoke the supplied action when a requested deletion commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope, Action deleteAcknowledged)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            VersionedSaveMaskSnapshot<ShortcutSaveMask> snapshot = saveMask.Capture();
+            ShortcutSaveMask mask = snapshot.Mask;
+            if (mask == ShortcutSaveMask.None)
                 return;
 
-            if ((saveMask & ShortcutSaveMask.Create) != 0)
+            void Acknowledge()
+            {
+                bool deleteStillRequested = PendingDelete;
+                saveMask.Acknowledge(snapshot);
+
+                if ((mask & ShortcutSaveMask.Delete) == 0)
+                    return;
+
+                if (deleteStillRequested)
+                    deleteAcknowledged?.Invoke();
+                else
+                    saveMask.Mark(ShortcutSaveMask.Create);
+            }
+
+            if ((mask & (ShortcutSaveMask.Create | ShortcutSaveMask.Delete)) ==
+                (ShortcutSaveMask.Create | ShortcutSaveMask.Delete))
+            {
+                commitScope.Register(Acknowledge);
+                return;
+            }
+
+            if ((mask & ShortcutSaveMask.Create) != 0)
             {
                 var model = new CharacterActionSetShortcutModel
                 {
@@ -127,24 +173,24 @@ namespace NexusForever.Game.Spell
                     Location  = (ushort)Location
                 };
 
-                if ((saveMask & ShortcutSaveMask.Delete) != 0)
+                if ((mask & ShortcutSaveMask.Delete) != 0)
                     context.Entry(model).State = EntityState.Deleted;
                 else
                 {
                     EntityEntry<CharacterActionSetShortcutModel> entity = context.Attach(model);
-                    if ((saveMask & ShortcutSaveMask.ShortcutType) != 0)
+                    if ((mask & ShortcutSaveMask.ShortcutType) != 0)
                     {
                         model.ShortcutType = (byte)ShortcutType;
                         entity.Property(p => p.ShortcutType).IsModified = true;
                     }
 
-                    if ((saveMask & ShortcutSaveMask.ObjectId) != 0)
+                    if ((mask & ShortcutSaveMask.ObjectId) != 0)
                     {
                         model.ObjectId = ObjectId;
                         entity.Property(p => p.ObjectId).IsModified = true;
                     }
 
-                    if ((saveMask & ShortcutSaveMask.Tier) != 0)
+                    if ((mask & ShortcutSaveMask.Tier) != 0)
                     {
                         model.Tier = Tier;
                         entity.Property(p => p.Tier).IsModified = true;
@@ -152,7 +198,7 @@ namespace NexusForever.Game.Spell
                 }
             }
 
-            saveMask = ShortcutSaveMask.None;
+            commitScope.Register(Acknowledge);
         }
 
         /// <summary>
@@ -161,9 +207,9 @@ namespace NexusForever.Game.Spell
         public void EnqueueDelete(bool set)
         {
             if (set)
-                saveMask |= ShortcutSaveMask.Delete;
+                saveMask.Mark(ShortcutSaveMask.Delete);
             else
-                saveMask &= ~ShortcutSaveMask.Delete;
+                saveMask.Clear(ShortcutSaveMask.Delete);
         }
     }
 }

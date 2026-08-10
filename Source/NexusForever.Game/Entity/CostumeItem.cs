@@ -1,7 +1,9 @@
 ﻿using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Costume;
 using NexusForever.Game.Static.Entity;
 using NexusForever.GameTable;
@@ -57,7 +59,7 @@ namespace NexusForever.Game.Entity
                     return;
 
                 ItemInfo  = value.HasValue ? ItemManager.Instance.GetItemInfo(value.Value) : null;
-                saveMask |= CostumeItemSaveMask.ItemId;
+                saveMask.Mark(CostumeItemSaveMask.ItemId);
             }
         }
 
@@ -72,7 +74,7 @@ namespace NexusForever.Game.Entity
                     return;
 
                 dyeData = value;
-                saveMask |= CostumeItemSaveMask.DyeData;
+                saveMask.Mark(CostumeItemSaveMask.DyeData);
             }
         }
 
@@ -80,7 +82,7 @@ namespace NexusForever.Game.Entity
 
         private readonly ICostume costume;
 
-        private CostumeItemSaveMask saveMask;
+        private VersionedSaveMask<CostumeItemSaveMask> saveMask = new();
 
         /// <summary>
         /// Create a new <see cref="ICostumeItem"/> from an existing <see cref="CharacterCostumeItemModel"/> database model.
@@ -90,10 +92,10 @@ namespace NexusForever.Game.Entity
             this.costume = costume;
             Slot         = (CostumeItemSlot)model.Slot;
             ItemSlot     = GetSlot(Slot);
-            Item2Id      = model.Item2Id > 0 ? model.Item2Id : null;
+            ItemInfo     = model.Item2Id > 0 ? ItemManager.Instance.GetItemInfo(model.Item2Id) : null;
             dyeData      = model.DyeData;
 
-            saveMask     = CostumeItemSaveMask.None;
+            saveMask     = new VersionedSaveMask<CostumeItemSaveMask>();
         }
 
         /// <summary>
@@ -104,10 +106,10 @@ namespace NexusForever.Game.Entity
             this.costume = costume;
             Slot         = slot;
             ItemSlot     = GetSlot(Slot);
-            Item2Id      = item.Item2Id > 0 ? item.Item2Id : null;
+            ItemInfo     = item.Item2Id > 0 ? ItemManager.Instance.GetItemInfo(item.Item2Id) : null;
             dyeData      = GenerateDyeData(item.DyeColorRampIds);
 
-            saveMask     = CostumeItemSaveMask.Create;
+            saveMask     = new VersionedSaveMask<CostumeItemSaveMask>(CostumeItemSaveMask.Create);
         }
 
         private static ItemSlot GetSlot(CostumeItemSlot slot)
@@ -127,10 +129,23 @@ namespace NexusForever.Game.Entity
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == CostumeItemSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage costume item changes and register their successful-commit acknowledgements.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            VersionedSaveMaskSnapshot<CostumeItemSaveMask> snapshot = saveMask.Capture();
+            CostumeItemSaveMask mask = snapshot.Mask;
+            if (mask == CostumeItemSaveMask.None)
                 return;
 
-            if ((saveMask & CostumeItemSaveMask.Create) != 0)
+            if ((mask & CostumeItemSaveMask.Create) != 0)
             {
                 // costume item doesn't exist in database, all infomation must be saved
                 context.Add(new CharacterCostumeItemModel
@@ -153,19 +168,19 @@ namespace NexusForever.Game.Entity
                 };
 
                 EntityEntry<CharacterCostumeItemModel> entity = context.Attach(model);
-                if ((saveMask & CostumeItemSaveMask.ItemId) != 0)
+                if ((mask & CostumeItemSaveMask.ItemId) != 0)
                 {
                     model.Item2Id = Item2Id ?? 0;
                     entity.Property(p => p.Item2Id).IsModified = true;
                 }
-                if ((saveMask & CostumeItemSaveMask.DyeData) != 0)
+                if ((mask & CostumeItemSaveMask.DyeData) != 0)
                 {
                     model.DyeData = dyeData;
                     entity.Property(p => p.DyeData).IsModified = true;
                 }
             }
 
-            saveMask = CostumeItemSaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         /// <summary>

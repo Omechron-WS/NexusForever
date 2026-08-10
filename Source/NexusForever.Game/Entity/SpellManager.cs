@@ -1,8 +1,10 @@
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Spell;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Spell;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Spell;
@@ -38,8 +40,11 @@ namespace NexusForever.Game.Entity
             get => activeActionSet;
             private set
             {
-                saveMask |= SpellManagerSaveMask.ActiveActionSet;
+                if (activeActionSet == value)
+                    return;
+
                 activeActionSet = value;
+                saveMask.Mark(SpellManagerSaveMask.ActiveActionSet);
             }
         }
 
@@ -53,7 +58,7 @@ namespace NexusForever.Game.Entity
 
         private readonly IActionSet[] actionSets = new ActionSet[ActionSet.MaxActionSets];
 
-        private SpellManagerSaveMask saveMask;
+        private readonly VersionedSaveMask<SpellManagerSaveMask> saveMask = new();
 
         /// <summary>
         /// Create a new <see cref="ISpellManager"/> from existing <see cref="CharacterModel"/> database model.
@@ -153,26 +158,39 @@ namespace NexusForever.Game.Entity
 
         public void Save(CharacterContext context)
         {
-            if (saveMask != SpellManagerSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage spell and action-set graph changes and register their successful-commit acknowledgements.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            VersionedSaveMaskSnapshot<SpellManagerSaveMask> snapshot = saveMask.Capture();
+            SpellManagerSaveMask mask = snapshot.Mask;
+            if (mask != SpellManagerSaveMask.None)
             {
                 // character is attached in Player::Save, this will only be local lookup
                 CharacterModel character = context.Character.Find(player.CharacterId);
                 EntityEntry<CharacterModel> entity = context.Entry(character);
 
-                if ((saveMask & SpellManagerSaveMask.ActiveActionSet) != 0)
+                if ((mask & SpellManagerSaveMask.ActiveActionSet) != 0)
                 {
                     character.ActiveSpec = ActiveActionSet;
                     entity.Property(p => p.ActiveSpec).IsModified = true;
                 }
 
-                saveMask = SpellManagerSaveMask.None;
+                commitScope.Register(() => saveMask.Acknowledge(snapshot));
             }
 
             foreach (ICharacterSpell spell in spells.Values)
-                spell.Save(context);
+                spell.Save(context, commitScope);
 
             foreach (IActionSet actionSet in actionSets)
-                actionSet.Save(context);
+                actionSet.Save(context, commitScope);
         }
 
         /// <summary>

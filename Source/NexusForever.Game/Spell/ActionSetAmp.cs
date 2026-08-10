@@ -1,13 +1,16 @@
 using Microsoft.EntityFrameworkCore;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Spell;
+using NexusForever.Game.Persistence;
 using NexusForever.GameTable.Model;
 
 namespace NexusForever.Game.Spell
 {
     public class ActionSetAmp : IActionSetAmp
     {
+        [Flags]
         public enum AmpSaveMask
         {
             None    = 0x0000,
@@ -20,14 +23,14 @@ namespace NexusForever.Game.Spell
         /// <summary>
         /// Returns if <see cref="IActionSetAmp"/> is enqueued to be saved to the database.
         /// </summary>
-        public bool PendingCreate => (saveMask & AmpSaveMask.Create) != 0;
+        public bool PendingCreate => (saveMask.Current & AmpSaveMask.Create) != 0;
 
         /// <summary>
         /// Returns if <see cref="IActionSetAmp"/> is enqueued to be deleted from the database.
         /// </summary>
-        public bool PendingDelete => (saveMask & AmpSaveMask.Delete) != 0;
+        public bool PendingDelete => (saveMask.Current & AmpSaveMask.Delete) != 0;
 
-        private AmpSaveMask saveMask;
+        private readonly VersionedSaveMask<AmpSaveMask> saveMask;
         private readonly ActionSet actionSet;
 
         /// <summary>
@@ -38,14 +41,57 @@ namespace NexusForever.Game.Spell
             Entry          = entry;
             this.actionSet = actionSet;
 
-            if (isDirty)
-                saveMask = AmpSaveMask.Create;
+            saveMask = isDirty
+                ? new VersionedSaveMask<AmpSaveMask>(AmpSaveMask.Create)
+                : new VersionedSaveMask<AmpSaveMask>();
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == AmpSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage AMP changes and register their successful-commit acknowledgements.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            Save(context, commitScope, null);
+        }
+
+        /// <summary>
+        /// Stage AMP changes and invoke the supplied action when a requested deletion commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope, Action deleteAcknowledged)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            VersionedSaveMaskSnapshot<AmpSaveMask> snapshot = saveMask.Capture();
+            AmpSaveMask mask = snapshot.Mask;
+            if (mask == AmpSaveMask.None)
                 return;
+
+            void Acknowledge()
+            {
+                bool deleteStillRequested = PendingDelete;
+                saveMask.Acknowledge(snapshot);
+
+                if ((mask & AmpSaveMask.Delete) == 0)
+                    return;
+
+                if (deleteStillRequested)
+                    deleteAcknowledged?.Invoke();
+                else
+                    saveMask.Mark(AmpSaveMask.Create);
+            }
+
+            if ((mask & (AmpSaveMask.Create | AmpSaveMask.Delete)) ==
+                (AmpSaveMask.Create | AmpSaveMask.Delete))
+            {
+                commitScope.Register(Acknowledge);
+                return;
+            }
 
             var model = new CharacterActionSetAmpModel
             {
@@ -54,12 +100,12 @@ namespace NexusForever.Game.Spell
                 AmpId     = (byte)Entry.Id
             };
 
-            if ((saveMask & AmpSaveMask.Create) != 0)
+            if ((mask & AmpSaveMask.Create) != 0)
                 context.Add(model);
-            else if ((saveMask & AmpSaveMask.Delete) != 0)
+            else if ((mask & AmpSaveMask.Delete) != 0)
                 context.Entry(model).State = EntityState.Deleted;
 
-            saveMask = AmpSaveMask.None;
+            commitScope.Register(Acknowledge);
         }
 
         /// <summary>
@@ -68,9 +114,9 @@ namespace NexusForever.Game.Spell
         public void EnqueueDelete(bool set)
         {
             if (set)
-                saveMask |= AmpSaveMask.Delete;
+                saveMask.Mark(AmpSaveMask.Delete);
             else
-                saveMask &= ~AmpSaveMask.Delete;
+                saveMask.Clear(AmpSaveMask.Delete);
         }
     }
 }

@@ -1,8 +1,10 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 
 namespace NexusForever.Game.Entity
 {
@@ -28,15 +30,15 @@ namespace NexusForever.Game.Entity
                 if (this.value != value)
                 {
                     this.value = value;
-                    saveMask |= CustomisationSaveMask.Modify;
+                    saveMask.Mark(CustomisationSaveMask.Modify);
                 }
             }
         }
         private uint value;
 
-        public bool PendingDelete => (saveMask & CustomisationSaveMask.Delete) != 0;
+        public bool PendingDelete => (saveMask.Current & CustomisationSaveMask.Delete) != 0;
 
-        private CustomisationSaveMask saveMask;
+        private VersionedSaveMask<CustomisationSaveMask> saveMask = new();
 
         /// <summary>
         /// Create a new <see cref="ICustomisation"/> from database model.
@@ -47,7 +49,7 @@ namespace NexusForever.Game.Entity
             Label       = model.Label;
             value       = model.Value;
 
-            saveMask    = CustomisationSaveMask.None;
+            saveMask    = new VersionedSaveMask<CustomisationSaveMask>();
         }
 
         /// <summary>
@@ -59,47 +61,90 @@ namespace NexusForever.Game.Entity
             Label       = label;
             this.value  = value;
 
-            saveMask    = CustomisationSaveMask.Create;
+            saveMask    = new VersionedSaveMask<CustomisationSaveMask>(CustomisationSaveMask.Create);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == CustomisationSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage customisation changes and register their successful-commit acknowledgements.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            Save(context, commitScope, null);
+        }
+
+        /// <summary>
+        /// Stage customisation changes and invoke the supplied action when a requested deletion commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope, Action deleteAcknowledged)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            VersionedSaveMaskSnapshot<CustomisationSaveMask> snapshot = saveMask.Capture();
+            CustomisationSaveMask mask = snapshot.Mask;
+            if (mask == CustomisationSaveMask.None)
                 return;
+
+            void Acknowledge()
+            {
+                bool deleteStillRequested = PendingDelete;
+                saveMask.Acknowledge(snapshot);
+
+                if ((mask & CustomisationSaveMask.Delete) == 0)
+                    return;
+
+                if (deleteStillRequested)
+                    deleteAcknowledged?.Invoke();
+                else
+                    saveMask.Mark(CustomisationSaveMask.Create);
+            }
+
+            if ((mask & (CustomisationSaveMask.Create | CustomisationSaveMask.Delete)) ==
+                (CustomisationSaveMask.Create | CustomisationSaveMask.Delete))
+            {
+                commitScope.Register(Acknowledge);
+                return;
+            }
 
             var model = new CharacterCustomisationModel
             {
                 Id    = CharacterId,
-                Label = Label
+                Label = Label,
+                Value = Value
             };
 
-            EntityEntry<CharacterCustomisationModel> entity = context.Attach(model);
-
-            if ((saveMask & CustomisationSaveMask.Create) != 0)
-            {
-                model.Value = Value;
-
+            if ((mask & CustomisationSaveMask.Create) != 0)
                 context.Add(model);
-            }
-            else if ((saveMask & CustomisationSaveMask.Delete) != 0)
-            {
+            else if ((mask & CustomisationSaveMask.Delete) != 0)
                 context.Entry(model).State = EntityState.Deleted;
-            }
-            else if ((saveMask & CustomisationSaveMask.Modify) != 0)
+            else if ((mask & CustomisationSaveMask.Modify) != 0)
             {
-                model.Value = Value;
+                EntityEntry<CharacterCustomisationModel> entity = context.Attach(model);
                 entity.Property(e => e.Value).IsModified = true;
             }
 
-            saveMask = CustomisationSaveMask.None;
+            commitScope.Register(Acknowledge);
         }
 
         public void Delete()
         {
-            if ((saveMask & CustomisationSaveMask.Create) != 0)
-                saveMask = CustomisationSaveMask.None;
+            EnqueueDelete(true);
+        }
+
+        /// <summary>
+        /// Enqueue or cancel deletion of this customisation.
+        /// </summary>
+        public void EnqueueDelete(bool set)
+        {
+            if (set)
+                saveMask.Mark(CustomisationSaveMask.Delete);
             else
-                saveMask = CustomisationSaveMask.Delete;
+                saveMask.Clear(CustomisationSaveMask.Delete);
         }
     }
 }

@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Game.Static.Entity;
 using NexusForever.GameTable.Model;
 using NexusForever.Network.Message;
@@ -12,6 +13,11 @@ namespace NexusForever.Game.Abstract.Entity
         PetType Type { get; }
         uint ObjectId { get; }
         string Name { get; set; }
+
+        /// <summary>
+        /// Stage pet customisation changes and register their successful-commit acknowledgements.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
 
         /// <summary>
         /// Add or update flair from supplied <see cref="PetFlairEntry"/> at index.

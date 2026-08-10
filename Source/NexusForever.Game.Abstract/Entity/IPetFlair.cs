@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.GameTable.Model;
 
 namespace NexusForever.Game.Abstract.Entity
@@ -7,5 +8,10 @@ namespace NexusForever.Game.Abstract.Entity
     {
         PetFlairEntry Entry { get; }
         ulong Owner { get; }
+
+        /// <summary>
+        /// Stage pet flair changes and register their successful-commit acknowledgements.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
     }
 }

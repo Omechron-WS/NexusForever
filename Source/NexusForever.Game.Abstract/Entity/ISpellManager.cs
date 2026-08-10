@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Game.Abstract.Spell;
 using NexusForever.Network.World.Message.Static;
 using NexusForever.Shared;
@@ -11,6 +12,11 @@ namespace NexusForever.Game.Abstract.Entity
         /// Index of the active <see cref="IActionSet"/>.
         /// </summary>
         byte ActiveActionSet { get; }
+
+        /// <summary>
+        /// Stage spell and action-set graph changes and register their successful-commit acknowledgements.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
 
         void GrantSpells();
 

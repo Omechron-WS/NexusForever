@@ -1,10 +1,16 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Game.Static.Entity;
 
 namespace NexusForever.Game.Abstract.Entity
 {
     public interface IPetCustomisationManager : IDatabaseCharacter
     {
+        /// <summary>
+        /// Stage pet customisation graph changes and register their successful-commit acknowledgements.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         /// <summary>
         /// Unlock pet flair with supplied id.
         /// </summary>

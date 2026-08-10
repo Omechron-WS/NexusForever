@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Static.Abilities;
 using NexusForever.Game.Static.Spell;
@@ -12,6 +13,11 @@ namespace NexusForever.Game.Abstract.Spell
         byte Index { get; }
         byte TierPoints { get; }
         byte AmpPoints { get; }
+
+        /// <summary>
+        /// Stage action-set graph changes and register their successful-commit acknowledgements.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
 
         /// <summary>
         /// Collection of <see cref="IActionSetShortcut"/> contained in the <see cref="IActionSet"/>.

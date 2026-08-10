@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Game.Abstract.Customisation;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Reputation;
@@ -7,6 +8,11 @@ namespace NexusForever.Game.Abstract.Entity
 {
     public interface IAppearanceManager : IDatabaseCharacter
     {
+        /// <summary>
+        /// Stage appearance graph changes and register their successful-commit acknowledgements.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
+
         /// <summary>
         /// Return a collection of <see cref="ICustomisation"/> for <see cref="IPlayer"/>.
         /// </summary>

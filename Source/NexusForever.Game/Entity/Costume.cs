@@ -1,8 +1,10 @@
 ﻿using System.Collections;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Costume;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Network.World.Message.Model.Costume;
@@ -37,7 +39,7 @@ namespace NexusForever.Game.Entity
                     return;
 
                 visibilityMask = value;
-                saveMask |= CostumeSaveMask.Mask;
+                saveMask.Mark(CostumeSaveMask.Mask);
             }
         }
 
@@ -45,7 +47,7 @@ namespace NexusForever.Game.Entity
 
         private readonly ICostumeItem[] items = new CostumeItem[MaxCostumeItems];
 
-        private CostumeSaveMask saveMask;
+        private VersionedSaveMask<CostumeSaveMask> saveMask = new();
 
         /// <summary>
         /// Create a new <see cref="ICostume"/> from an existing <see cref="CharacterCostumeModel"/> database model.
@@ -72,14 +74,27 @@ namespace NexusForever.Game.Entity
             for (byte i = 0; i < costumeSave.Items.Count; i++)
                 items[i] = new CostumeItem(this, costumeSave.Items[i], (CostumeItemSlot)i);
 
-            saveMask = CostumeSaveMask.Create;
+            saveMask = new VersionedSaveMask<CostumeSaveMask>(CostumeSaveMask.Create);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask != CostumeSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage costume graph changes and register their successful-commit acknowledgements.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            VersionedSaveMaskSnapshot<CostumeSaveMask> snapshot = saveMask.Capture();
+            CostumeSaveMask mask = snapshot.Mask;
+            if (mask != CostumeSaveMask.None)
             {
-                if ((saveMask & CostumeSaveMask.Create) != 0)
+                if ((mask & CostumeSaveMask.Create) != 0)
                 {
                     // costume doesn't exist in database, all information must be saved
                     var model = new CharacterCostumeModel
@@ -101,18 +116,18 @@ namespace NexusForever.Game.Entity
                     };
 
                     EntityEntry<CharacterCostumeModel> entity = context.Attach(model);
-                    if ((saveMask & CostumeSaveMask.Mask) != 0)
+                    if ((mask & CostumeSaveMask.Mask) != 0)
                     {
                         model.VisibilityMask = visibilityMask;
                         entity.Property(p => p.VisibilityMask).IsModified = true;
                     }
                 }
 
-                saveMask = CostumeSaveMask.None;
+                commitScope.Register(() => saveMask.Acknowledge(snapshot));
             }
 
-            foreach (ICostumeItem costumeItem in items)
-                costumeItem.Save(context);
+            foreach (ICostumeItem costumeItem in items.Where(item => item != null))
+                costumeItem.Save(context, commitScope);
         }
 
         /// <summary>

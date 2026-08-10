@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Game.Static.Costume;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Network.Message;
@@ -11,6 +12,11 @@ namespace NexusForever.Game.Abstract.Entity
         ulong Owner { get; }
         byte Index { get; }
         uint VisibilityMask { get; set; }
+
+        /// <summary>
+        /// Stage costume graph changes and register their successful-commit acknowledgements.
+        /// </summary>
+        new void Save(CharacterContext context, ISaveCommitScope commitScope);
 
         /// <summary>
         /// Return <see cref="ICostumeItem"/> at supplied index.

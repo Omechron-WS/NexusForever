@@ -1,8 +1,10 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 
 namespace NexusForever.Game.Entity
 {
@@ -28,15 +30,15 @@ namespace NexusForever.Game.Entity
                 if (boneValue != value)
                 {
                     boneValue = value;
-                    saveMask |= BoneSaveMask.Modify;
+                    saveMask.Mark(BoneSaveMask.Modify);
                 }
             }
         }
         private float boneValue;
 
-        public bool PendingDelete => (saveMask & BoneSaveMask.Delete) != 0;
+        public bool PendingDelete => (saveMask.Current & BoneSaveMask.Delete) != 0;
 
-        private BoneSaveMask saveMask;
+        private VersionedSaveMask<BoneSaveMask> saveMask = new();
 
         /// <summary>
         /// Create a new <see cref="IBone"/> from database model.
@@ -47,7 +49,7 @@ namespace NexusForever.Game.Entity
             BoneIndex = model.BoneIndex;
             boneValue = model.Bone;
 
-            saveMask  = BoneSaveMask.None;
+            saveMask  = new VersionedSaveMask<BoneSaveMask>();
         }
 
         /// <summary>
@@ -59,47 +61,90 @@ namespace NexusForever.Game.Entity
             BoneIndex = boneIndex;
             boneValue = value;
 
-            saveMask  = BoneSaveMask.Create;
+            saveMask  = new VersionedSaveMask<BoneSaveMask>(BoneSaveMask.Create);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == BoneSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage bone changes and register their successful-commit acknowledgements.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            Save(context, commitScope, null);
+        }
+
+        /// <summary>
+        /// Stage bone changes and invoke the supplied action when a requested deletion commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope, Action deleteAcknowledged)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            VersionedSaveMaskSnapshot<BoneSaveMask> snapshot = saveMask.Capture();
+            BoneSaveMask mask = snapshot.Mask;
+            if (mask == BoneSaveMask.None)
                 return;
+
+            void Acknowledge()
+            {
+                bool deleteStillRequested = PendingDelete;
+                saveMask.Acknowledge(snapshot);
+
+                if ((mask & BoneSaveMask.Delete) == 0)
+                    return;
+
+                if (deleteStillRequested)
+                    deleteAcknowledged?.Invoke();
+                else
+                    saveMask.Mark(BoneSaveMask.Create);
+            }
+
+            if ((mask & (BoneSaveMask.Create | BoneSaveMask.Delete)) ==
+                (BoneSaveMask.Create | BoneSaveMask.Delete))
+            {
+                commitScope.Register(Acknowledge);
+                return;
+            }
 
             var model = new CharacterBoneModel
             {
                 Id        = Owner,
-                BoneIndex = BoneIndex
+                BoneIndex = BoneIndex,
+                Bone      = BoneValue
             };
 
-            EntityEntry<CharacterBoneModel> entity = context.Attach(model);
-
-            if ((saveMask & BoneSaveMask.Create) != 0)
-            {
-                model.Bone = BoneValue;
-
+            if ((mask & BoneSaveMask.Create) != 0)
                 context.Add(model);
-            }
-            else if ((saveMask & BoneSaveMask.Delete) != 0)
-            {
+            else if ((mask & BoneSaveMask.Delete) != 0)
                 context.Entry(model).State = EntityState.Deleted;
-            }
-            else if ((saveMask & BoneSaveMask.Modify) != 0)
+            else if ((mask & BoneSaveMask.Modify) != 0)
             {
-                model.Bone = BoneValue;
+                EntityEntry<CharacterBoneModel> entity = context.Attach(model);
                 entity.Property(e => e.Bone).IsModified = true;
             }
 
-            saveMask = BoneSaveMask.None;
+            commitScope.Register(Acknowledge);
         }
 
         public void Delete()
         {
-            if ((saveMask & BoneSaveMask.Create) != 0)
-                saveMask = BoneSaveMask.None;
+            EnqueueDelete(true);
+        }
+
+        /// <summary>
+        /// Enqueue or cancel deletion of this bone.
+        /// </summary>
+        public void EnqueueDelete(bool set)
+        {
+            if (set)
+                saveMask.Mark(BoneSaveMask.Delete);
             else
-                saveMask = BoneSaveMask.Delete;
+                saveMask.Clear(BoneSaveMask.Delete);
         }
     }
 }

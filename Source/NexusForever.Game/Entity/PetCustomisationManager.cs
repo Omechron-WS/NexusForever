@@ -1,6 +1,8 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Entity;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
@@ -47,11 +49,22 @@ namespace NexusForever.Game.Entity
 
         public void Save(CharacterContext context)
         {
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage pet customisation graph changes and register their successful-commit acknowledgements.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
             foreach (IPetFlair flair in petFlairs.Values)
-                flair.Save(context);
+                flair.Save(context, commitScope);
 
             foreach (IPetCustomisation customisation in petCustomisations.Values)
-                customisation.Save(context);
+                customisation.Save(context, commitScope);
         }
 
         /// <summary>

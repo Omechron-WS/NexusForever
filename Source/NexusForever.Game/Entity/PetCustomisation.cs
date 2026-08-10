@@ -1,8 +1,10 @@
 ﻿using System.Collections;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Entity;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
@@ -30,8 +32,11 @@ namespace NexusForever.Game.Entity
             get => name;
             set
             {
+                if (name == value)
+                    return;
+
                 name = value;
-                saveMask |= PetCustomisationSaveMask.Name;
+                saveMask.Mark(PetCustomisationSaveMask.Name);
             }
         }
 
@@ -39,7 +44,7 @@ namespace NexusForever.Game.Entity
 
         private readonly PetFlairEntry[] flairs = new PetFlairEntry[PetCustomisationManager.MaxCustomisationFlairs];
 
-        private PetCustomisationSaveMask saveMask;
+        private VersionedSaveMask<PetCustomisationSaveMask> saveMask = new();
 
         /// <summary>
         /// Create a new <see cref="IPetCustomisation"/> from existing <see cref="CharacterPetCustomisationModel"/> database model.
@@ -49,13 +54,15 @@ namespace NexusForever.Game.Entity
             Owner    = model.Id;
             Type     = (PetType)model.Type;
             ObjectId = model.ObjectId;
-            Name     = model.Name;
+            name     = model.Name;
 
             for (int i = 0; i < PetCustomisationManager.MaxCustomisationFlairs; i++)
             {
                 uint flairId = (uint)(model.FlairIdMask >> i * 16) & 0xFFFF;
-                flairs[i] = GameTableManager.Instance.PetFlair.GetEntry(flairId);
+                flairs[i] = flairId != 0u ? GameTableManager.Instance.PetFlair.GetEntry(flairId) : null;
             }
+
+            saveMask = new VersionedSaveMask<PetCustomisationSaveMask>();
         }
 
         /// <summary>
@@ -67,15 +74,28 @@ namespace NexusForever.Game.Entity
             Type     = type;
             ObjectId = objectId;
 
-            saveMask = PetCustomisationSaveMask.Create;
+            saveMask = new VersionedSaveMask<PetCustomisationSaveMask>(PetCustomisationSaveMask.Create);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == PetCustomisationSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage pet customisation changes and register their successful-commit acknowledgements.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(commitScope);
+
+            VersionedSaveMaskSnapshot<PetCustomisationSaveMask> snapshot = saveMask.Capture();
+            PetCustomisationSaveMask mask = snapshot.Mask;
+            if (mask == PetCustomisationSaveMask.None)
                 return;
 
-            if ((saveMask & PetCustomisationSaveMask.Create) != 0)
+            if ((mask & PetCustomisationSaveMask.Create) != 0)
             {
                 // pet customisation doesn't exist in database, all infomation must be saved
                 var model = new CharacterPetCustomisationModel
@@ -100,19 +120,19 @@ namespace NexusForever.Game.Entity
                 };
 
                 EntityEntry<CharacterPetCustomisationModel> entity = context.Attach(model);
-                if ((saveMask & PetCustomisationSaveMask.Name) != 0)
+                if ((mask & PetCustomisationSaveMask.Name) != 0)
                 {
                     model.Name = Name;
                     entity.Property(p => p.Name).IsModified = true;
                 }
-                if ((saveMask & PetCustomisationSaveMask.Flairs) != 0)
+                if ((mask & PetCustomisationSaveMask.Flairs) != 0)
                 {
                     model.FlairIdMask = GenerateFlairMask();
                     entity.Property(p => p.FlairIdMask).IsModified = true;
                 }
             }
 
-            saveMask = PetCustomisationSaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         public NetworkPetCustomisation Build()
@@ -143,7 +163,7 @@ namespace NexusForever.Game.Entity
         public void AddFlair(ushort index, PetFlairEntry entry)
         {
             flairs[index] = entry;
-            saveMask |= PetCustomisationSaveMask.Flairs;
+            saveMask.Mark(PetCustomisationSaveMask.Flairs);
         }
 
         public IEnumerator<PetFlairEntry> GetEnumerator()
