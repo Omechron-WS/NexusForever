@@ -29,6 +29,25 @@ namespace NexusForever.Database.Character
             await context.SaveChangesAsync(cancellationToken);
         }
 
+        /// <summary>
+        /// Stage and save character database changes, returning their acknowledgement only after the commit succeeds.
+        /// </summary>
+        /// <param name="action">Action that stages database changes and their post-commit acknowledgements.</param>
+        /// <param name="cancellationToken">Token that cancels the database save.</param>
+        /// <returns>A one-shot acknowledgement for the committed in-memory state.</returns>
+        public async Task<SaveCommitAcknowledgement> SaveWithAcknowledgement(
+            Action<CharacterContext, ISaveCommitScope> action,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(action);
+
+            await using CharacterContext context = CreateContext();
+            var scope = new SaveCommitScope();
+            action.Invoke(context, scope);
+            await context.SaveChangesAsync(cancellationToken);
+            return scope.CreateAcknowledgement();
+        }
+
         public async Task Save(IDatabaseCharacter entity)
         {
             await using var context = new CharacterContext(config);
@@ -42,6 +61,15 @@ namespace NexusForever.Database.Character
             foreach (IDatabaseCharacter entity in entities)
                 entity.Save(context);
             await context.SaveChangesAsync();
+        }
+
+        /// <summary>
+        /// Create a character database context for a save operation.
+        /// </summary>
+        /// <returns>A character database context.</returns>
+        protected virtual CharacterContext CreateContext()
+        {
+            return new CharacterContext(config);
         }
 
         public void Migrate()

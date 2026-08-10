@@ -42,6 +42,7 @@ Completed hardening:
 - The administrative command WebSocket is disabled by default, bound to loopback in the example configuration, and no longer published by the default Aspire topology. When explicitly enabled it requires a hashed bearer credential and an exact Origin allow-list, accepts only bounded strict-UTF-8 text messages, and rejects malformed command envelopes without dispatching them.
 - Task-backed events now distinguish successful, failed, and cancelled operations. Authentication and character mutations fail closed without running success callbacks, detached task failures are logged by default, and player cleanup retains its account lock while retrying failed saves.
 - World loot tables now have an EF migration, are validated and loaded recursively at startup, and active loot expiry advances from the world tick. Invalid graph data fails startup without poisoning a later initialisation attempt.
+- Persistence now has one-shot post-commit acknowledgements, register-only staging scopes, and per-bit versioned dirty-mask snapshots. Auth and Character databases expose additive acknowledged-save APIs; entity graphs still need conversion before failed commits are retry-safe.
 
 Remaining priority work:
 

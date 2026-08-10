@@ -31,6 +31,34 @@ namespace NexusForever.Database.Auth
             await context.SaveChangesAsync(cancellationToken);
         }
 
+        /// <summary>
+        /// Stage and save authentication database changes, returning their acknowledgement only after the commit succeeds.
+        /// </summary>
+        /// <param name="action">Action that stages database changes and their post-commit acknowledgements.</param>
+        /// <param name="cancellationToken">Token that cancels the database save.</param>
+        /// <returns>A one-shot acknowledgement for the committed in-memory state.</returns>
+        public async Task<SaveCommitAcknowledgement> SaveWithAcknowledgement(
+            Action<AuthContext, ISaveCommitScope> action,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(action);
+
+            await using AuthContext context = CreateContext();
+            var scope = new SaveCommitScope();
+            action.Invoke(context, scope);
+            await context.SaveChangesAsync(cancellationToken);
+            return scope.CreateAcknowledgement();
+        }
+
+        /// <summary>
+        /// Create an authentication database context for a save operation.
+        /// </summary>
+        /// <returns>An authentication database context.</returns>
+        protected virtual AuthContext CreateContext()
+        {
+            return new AuthContext(config);
+        }
+
         public void Migrate()
         {
             using var context = new AuthContext(config);
