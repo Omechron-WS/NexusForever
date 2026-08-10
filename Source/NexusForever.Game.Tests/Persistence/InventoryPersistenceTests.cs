@@ -10,7 +10,9 @@ using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Entity;
 using NexusForever.Game.Static.Entity;
 using NexusForever.GameTable.Model;
+using NexusForever.Network.Message;
 using NexusForever.Network.Session;
+using NexusForever.Network.World.Message.Model;
 using NexusForever.Network.World.Message.Model.Shared;
 using NexusForever.Network.World.Message.Static;
 using NexusForever.Shared;
@@ -122,6 +124,161 @@ namespace NexusForever.Game.Tests.Persistence
         }
 
         [Fact]
+        public void TryItemExchange_CapacityDriftReturnsFalseWithoutMutation()
+        {
+            Inventory inventory = CreateInventory(1u, out Mock<IGameSession> session);
+            inventory.ItemCreate(InventoryLocation.Inventory, nonStackableItemInfo, 1u);
+            session.Invocations.Clear();
+
+            bool exchanged = inventory.TryItemExchange(
+                [],
+                [new KeyValuePair<IItemInfo, uint>(stackableItemInfo, 1u)],
+                ItemUpdateReason.Quest);
+
+            Assert.False(exchanged);
+            Assert.Equal(NonStackableItemId, Assert.Single(GetItems(inventory)).Id);
+            session.Verify(gameSession => gameSession.EnqueueMessageEncrypted(It.IsAny<IWritable>()), Times.Never);
+        }
+
+        [Fact]
+        public void TryItemExchange_FullBagReclamationMakesRewardFitWithQuestReason()
+        {
+            Inventory inventory = CreateInventory(1u, out Mock<IGameSession> session, new ItemModel
+            {
+                Id         = 600ul,
+                OwnerId    = 42ul,
+                ItemId     = StackableItemId,
+                Location   = (ushort)InventoryLocation.Inventory,
+                BagIndex   = 0u,
+                StackCount = 1u,
+                Durability = 1f
+            });
+
+            bool exchanged = inventory.TryItemExchange(
+                [new KeyValuePair<uint, uint>(StackableItemId, 1u)],
+                [new KeyValuePair<IItemInfo, uint>(nonStackableItemInfo, 1u)],
+                ItemUpdateReason.Quest);
+
+            Assert.True(exchanged);
+            Assert.Equal(NonStackableItemId, Assert.Single(GetItems(inventory)).Id);
+            session.Verify(gameSession => gameSession.EnqueueMessageEncrypted(
+                It.Is<ServerItemDelete>(message => message.Reason == ItemUpdateReason.Quest)), Times.Once);
+            session.Verify(gameSession => gameSession.EnqueueMessageEncrypted(
+                It.Is<ServerItemAdd>(message => message.InventoryItem.Reason == ItemUpdateReason.Quest)), Times.Once);
+        }
+
+        [Fact]
+        public void TryItemExchange_AggregatesDuplicateRemovalsAndAdditionsAcrossStacks()
+        {
+            Inventory inventory = CreateInventory(2u, out Mock<IGameSession> session,
+                new ItemModel
+                {
+                    Id         = 601ul,
+                    OwnerId    = 42ul,
+                    ItemId     = StackableItemId,
+                    Location   = (ushort)InventoryLocation.Inventory,
+                    BagIndex   = 0u,
+                    StackCount = 4u,
+                    Durability = 1f
+                },
+                new ItemModel
+                {
+                    Id         = 602ul,
+                    OwnerId    = 42ul,
+                    ItemId     = StackableItemId,
+                    Location   = (ushort)InventoryLocation.Inventory,
+                    BagIndex   = 1u,
+                    StackCount = 4u,
+                    Durability = 1f
+                });
+
+            bool exchanged = inventory.TryItemExchange(
+                [
+                    new KeyValuePair<uint, uint>(StackableItemId, 3u),
+                    new KeyValuePair<uint, uint>(StackableItemId, 5u)
+                ],
+                [
+                    new KeyValuePair<IItemInfo, uint>(nonStackableItemInfo, 1u),
+                    new KeyValuePair<IItemInfo, uint>(nonStackableItemInfo, 1u)
+                ],
+                ItemUpdateReason.Quest);
+
+            Assert.True(exchanged);
+            Assert.Equal([NonStackableItemId, NonStackableItemId], GetItems(inventory)
+                .OrderBy(item => item.BagIndex)
+                .Select(item => item.Id));
+            session.Verify(gameSession => gameSession.EnqueueMessageEncrypted(
+                It.Is<ServerItemDelete>(message => message.Reason == ItemUpdateReason.Quest)), Times.Exactly(2));
+            session.Verify(gameSession => gameSession.EnqueueMessageEncrypted(
+                It.Is<ServerItemAdd>(message => message.InventoryItem.Reason == ItemUpdateReason.Quest)), Times.Exactly(2));
+        }
+
+        [Fact]
+        public void TryItemExchange_PartialStackRemovalUsesQuestReason()
+        {
+            Inventory inventory = CreateInventory(1u, out Mock<IGameSession> session, new ItemModel
+            {
+                Id         = 603ul,
+                OwnerId    = 42ul,
+                ItemId     = StackableItemId,
+                Location   = (ushort)InventoryLocation.Inventory,
+                BagIndex   = 0u,
+                StackCount = 5u,
+                Durability = 1f
+            });
+
+            bool exchanged = inventory.TryItemExchange(
+                [
+                    new KeyValuePair<uint, uint>(StackableItemId, 1u),
+                    new KeyValuePair<uint, uint>(StackableItemId, 1u)
+                ],
+                [],
+                ItemUpdateReason.Quest);
+
+            Assert.True(exchanged);
+            Assert.Equal(3u, Assert.Single(GetItems(inventory)).StackCount);
+            session.Verify(gameSession => gameSession.EnqueueMessageEncrypted(
+                It.Is<ServerItemStackCountUpdate>(message => message.Reason == ItemUpdateReason.Quest)), Times.Once);
+        }
+
+        [Fact]
+        public void TryItemExchange_MissingRemovalQuantityDoesNotCreatePhantomCapacity()
+        {
+            Inventory inventory = CreateInventory(2u, out Mock<IGameSession> session,
+                new ItemModel
+                {
+                    Id         = 604ul,
+                    OwnerId    = 42ul,
+                    ItemId     = StackableItemId,
+                    Location   = (ushort)InventoryLocation.Inventory,
+                    BagIndex   = 0u,
+                    StackCount = 1u,
+                    Durability = 1f
+                },
+                new ItemModel
+                {
+                    Id         = 605ul,
+                    OwnerId    = 42ul,
+                    ItemId     = NonStackableItemId,
+                    Location   = (ushort)InventoryLocation.Inventory,
+                    BagIndex   = 1u,
+                    StackCount = 1u,
+                    Durability = 1f
+                });
+
+            bool exchanged = inventory.TryItemExchange(
+                [new KeyValuePair<uint, uint>(StackableItemId, 2u)],
+                [new KeyValuePair<IItemInfo, uint>(nonStackableItemInfo, 2u)],
+                ItemUpdateReason.Quest);
+
+            Assert.False(exchanged);
+            Assert.Equal([StackableItemId, NonStackableItemId], GetItems(inventory)
+                .OrderBy(item => item.BagIndex)
+                .Select(item => item.Id));
+            session.Verify(gameSession => gameSession.EnqueueMessageEncrypted(It.IsAny<IWritable>()), Times.Never);
+        }
+
+        [Fact]
         public void Save_DeletedItemRemainsRetryableUntilCommitAcknowledgement()
         {
             Inventory inventory = CreateInventory(1u, new ItemModel
@@ -197,6 +354,11 @@ namespace NexusForever.Game.Tests.Persistence
 
         private Inventory CreateInventory(uint capacity, params ItemModel[] items)
         {
+            return CreateInventory(capacity, out _, items);
+        }
+
+        private Inventory CreateInventory(uint capacity, out Mock<IGameSession> session, params ItemModel[] items)
+        {
             SetInventoryCapacities(ImmutableDictionary<InventoryLocation, uint>.Empty
                 .Add(InventoryLocation.Inventory, capacity));
 
@@ -204,7 +366,7 @@ namespace NexusForever.Game.Tests.Persistence
             foreach (ItemModel item in items)
                 model.Item.Add(item);
 
-            var session = new Mock<IGameSession>();
+            session = new Mock<IGameSession>();
             var player = new Mock<IPlayer>();
             player.SetupGet(p => p.CharacterId).Returns(model.Id);
             player.SetupGet(p => p.Session).Returns(session.Object);

@@ -1,5 +1,6 @@
 ﻿using NexusForever.GameTable.Model;
 using System.Collections.Immutable;
+using NexusForever.Game.Static.Reputation;
 
 namespace NexusForever.Game.Abstract.Quest
 {
@@ -30,5 +31,10 @@ namespace NexusForever.Game.Abstract.Quest
         /// Return money rewarded on completion.
         /// </summary>
         uint GetRewardMoney();
+
+        /// <summary>
+        /// Return faction reputation rewarded on completion.
+        /// </summary>
+        ImmutableDictionary<Faction, float> GetRewardReputation();
     }
 }

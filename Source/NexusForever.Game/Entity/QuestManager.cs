@@ -1,11 +1,13 @@
 ﻿using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
+using NexusForever.Game.Abstract;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Quest;
 using NexusForever.Game.Persistence;
 using NexusForever.Game.Prerequisite;
 using NexusForever.Game.Quest;
+using NexusForever.Game.Reputation;
 using NexusForever.Game.Static;
 using NexusForever.Game.Static.Achievement;
 using NexusForever.Game.Static.Entity;
@@ -34,21 +36,38 @@ namespace NexusForever.Game.Entity
         }
 
         private readonly IPlayer player;
+        private readonly IGlobalQuestManager globalQuestManager;
+        private IQuestRewardManager questRewardManager;
+        private readonly IDisableManager disableManager;
 
         private readonly Dictionary<ushort, IQuest> completedQuests = new();
         private readonly Dictionary<ushort, IQuest> inactiveQuests = new();
         private readonly Dictionary<ushort, IQuest> activeQuests = new();
+        private readonly HashSet<ushort> completingQuests = new();
 
         /// <summary>
         /// Create a new <see cref="IQuestManager"/> from existing <see cref="CharacterModel"/> database model.
         /// </summary>
         public QuestManager(IPlayer owner, CharacterModel model)
+            : this(owner, model, null, null, null)
+        {
+        }
+
+        internal QuestManager(
+            IPlayer owner,
+            CharacterModel model,
+            IGlobalQuestManager globalQuestManager,
+            IQuestRewardManager questRewardManager,
+            IDisableManager disableManager)
         {
             player = owner;
+            this.globalQuestManager = globalQuestManager;
+            this.questRewardManager = questRewardManager;
+            this.disableManager = disableManager;
 
             foreach (CharacterQuestModel questModel in model.Quest)
             {
-                IQuestInfo info = GlobalQuestManager.Instance.GetQuestInfo(questModel.QuestId);
+                IQuestInfo info = GetGlobalQuestManager().GetQuestInfo(questModel.QuestId);
                 if (info == null)
                 {
                     log.Error($"Player {player.CharacterId} has an invalid quest {questModel.QuestId}!");
@@ -214,7 +233,7 @@ namespace NexusForever.Game.Entity
             if (info == null)
                 throw new ArgumentException($"Invalid quest {questId}!");
 
-            if (DisableManager.Instance.IsDisabled(DisableType.Quest, questId))
+            if (GetDisableManager().IsDisabled(DisableType.Quest, questId))
             {
                 player.SendSystemMessage($"Unable to add quest {questId} because it is disabled.");
                 return;
@@ -252,7 +271,7 @@ namespace NexusForever.Game.Entity
             if (info == null)
                 throw new ArgumentException($"Invalid quest {questId}!");
 
-            if (DisableManager.Instance.IsDisabled(DisableType.Quest, questId))
+            if (GetDisableManager().IsDisabled(DisableType.Quest, questId))
             {
                 player.SendSystemMessage($"Unable to add quest {questId} because it is disabled.");
                 return;
@@ -520,11 +539,12 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void QuestComplete(ushort questId, ushort reward, bool communicator)
         {
-            IQuestInfo questInfo = GlobalQuestManager.Instance.GetQuestInfo(questId);
+            IGlobalQuestManager globalQuestManager = GetGlobalQuestManager();
+            IQuestInfo questInfo = globalQuestManager.GetQuestInfo(questId);
             if (questInfo == null)
                 throw new ArgumentException($"Invalid quest {questId}!");
 
-            if (DisableManager.Instance.IsDisabled(DisableType.Quest, questId))
+            if (GetDisableManager().IsDisabled(DisableType.Quest, questId))
             {
                 player.SendSystemMessage($"Unable to complete quest {questId} because it is disabled.");
                 return;
@@ -544,6 +564,9 @@ namespace NexusForever.Game.Entity
             if (quest.State != QuestState.Achieved)
                 throw new QuestException($"Player {player.CharacterId} tried to complete quest {questId} which wasn't complete!");
 
+            if (completingQuests.Contains(questId))
+                throw new QuestException($"Player {player.CharacterId} tried to complete quest {questId} while completion was already in progress!");
+
             if (communicator)
             {
                 // TODO: check if this is complete, client seems to also refer to contact info
@@ -553,84 +576,72 @@ namespace NexusForever.Game.Entity
             }
             else
             {
-                if (!GlobalQuestManager.Instance.GetQuestReceivers(questId).Any(c => player.GetVisibleCreature<WorldEntity>(c).Any()))
+                if (!globalQuestManager.GetQuestReceivers(questId).Any(c => player.GetVisibleCreature<WorldEntity>(c).Any()))
                     throw new QuestException($"Player {player.CharacterId} tried to complete quest {questId} without any quest receiver!");
             }
 
-            // reclaim any quest specific items
-            for (int i = 0; i < quest.Info.Entry.PushedItemIds.Length; i++)
+            if (!completingQuests.Add(questId))
+                throw new QuestException($"Player {player.CharacterId} tried to complete quest {questId} while completion was already in progress!");
+            bool releaseCompletionGuard = false;
+            try
             {
-                uint itemId = quest.Info.Entry.PushedItemIds[i];
-                if (itemId != 0u)
-                    player.Inventory.ItemDelete(itemId, quest.Info.Entry.PushedItemCounts[i]);
-            }
-
-            RewardQuest(quest.Info, reward);
-            quest.State = QuestState.Completed;
-
-            // mark repeatable quests for reset
-            switch ((QuestRepeatPeriod)quest.Info.Entry.QuestRepeatPeriodEnum)
-            {
-                case QuestRepeatPeriod.Daily:
-                    quest.Reset = GlobalQuestManager.Instance.NextDailyReset;
-                    break;
-                case QuestRepeatPeriod.Weekly:
-                    quest.Reset = GlobalQuestManager.Instance.NextWeeklyReset;
-                    break;
-            }
-
-            activeQuests.Remove(questId);
-            completedQuests.Add(questId, quest);
-
-            player.AchievementManager.CheckAchievements(player, AchievementType.QuestComplete, questId);
-        }
-
-        private void RewardQuest(IQuestInfo info, ushort reward)
-        {
-            // Handle all Rewards that are not chosen
-            foreach (Quest2RewardEntry rewardEntry in info.Rewards.Values.Where(x => x.Flags == 0))
-                RewardQuest(rewardEntry);
-
-            // Handle any chosen rewards
-            if (reward != 0)
-            {
-                if (!info.Rewards.TryGetValue(reward, out Quest2RewardEntry entry))
-                    throw new QuestException($"Player {player.CharacterId} tried to complete quest {info.Entry.Id} with invalid reward!");
-
-                // TODO: make sure reward is valid for player, some rewards are conditional
-
-                RewardQuest(entry);
-            }
-
-            // TODO: fixed rewards
-
-            uint experience = info.GetRewardExperience();
-            if (experience != 0u)
-                player.XpManager.GrantXp(experience, ExpReason.Quest);
-
-            uint money = info.GetRewardMoney();
-            if (money != 0u)
-                player.CurrencyManager.CurrencyAddAmount(CurrencyType.Credits, money);
-        }
-
-        private void RewardQuest(Quest2RewardEntry entry)
-        {
-            switch ((QuestRewardType)entry.Quest2RewardTypeId)
-            {
-                case QuestRewardType.Item:
-                    player.Inventory.ItemCreate(InventoryLocation.Inventory, entry.ObjectId, entry.ObjectAmount);
-                    break;
-                case QuestRewardType.Money:
-                    player.CurrencyManager.CurrencyAddAmount((CurrencyType)entry.ObjectId, entry.ObjectAmount);
-                    break;
-                default:
+                IQuestRewardManager questRewardManager = GetQuestRewardManager();
+                if (!questRewardManager.TryCreatePlan(quest.Info, reward, out QuestRewardPlan rewardPlan))
                 {
-                    log.Warn($"Unhandled quest reward type {entry.Quest2RewardTypeId}!");
-                    break;
+                    releaseCompletionGuard = true;
+                    return;
                 }
-            }
 
-            log.Trace($"Recieved quest reward, type: {(QuestRewardType)entry.Quest2RewardTypeId}, objectId: {entry.ObjectId}, amount: {entry.ObjectAmount}.");
+                if (!questRewardManager.TryApply(rewardPlan))
+                {
+                    releaseCompletionGuard = true;
+                    return;
+                }
+
+                quest.State = QuestState.Completed;
+
+                // mark repeatable quests for reset
+                switch ((QuestRepeatPeriod)quest.Info.Entry.QuestRepeatPeriodEnum)
+                {
+                    case QuestRepeatPeriod.Daily:
+                        quest.Reset = globalQuestManager.NextDailyReset;
+                        break;
+                    case QuestRepeatPeriod.Weekly:
+                        quest.Reset = globalQuestManager.NextWeeklyReset;
+                        break;
+                }
+
+                activeQuests.Remove(questId);
+                completedQuests.Add(questId, quest);
+
+                player.AchievementManager.CheckAchievements(player, AchievementType.QuestComplete, questId);
+                releaseCompletionGuard = true;
+            }
+            finally
+            {
+                if (releaseCompletionGuard)
+                    completingQuests.Remove(questId);
+            }
+        }
+
+        private IGlobalQuestManager GetGlobalQuestManager()
+        {
+            return globalQuestManager ?? GlobalQuestManager.Instance;
+        }
+
+        private IQuestRewardManager GetQuestRewardManager()
+        {
+            return questRewardManager ??= new QuestRewardManager(
+                player,
+                ItemManager.Instance,
+                GameTableManager.Instance,
+                FactionManager.Instance,
+                PrerequisiteManager.Instance);
+        }
+
+        private IDisableManager GetDisableManager()
+        {
+            return disableManager ?? DisableManager.Instance;
         }
 
         /// <summary>

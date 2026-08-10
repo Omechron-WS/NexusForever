@@ -49,13 +49,20 @@ namespace NexusForever.Game.Entity
 
         private readonly VersionedSaveMask<XpSaveMask> saveMask = new();
         private readonly IPlayer player;
+        private readonly IGameTableManager gameTableManager;
 
         /// <summary>
         /// Create a new <see cref="IXpManager"/> from existing <see cref="CharacterModel"/> database model.
         /// </summary>
         public XpManager(IPlayer player, CharacterModel model)
+            : this(player, model, null)
+        {
+        }
+
+        internal XpManager(IPlayer player, CharacterModel model, IGameTableManager gameTableManager)
         {
             this.player = player;
+            this.gameTableManager = gameTableManager;
             totalXp      = model.TotalXp;
             restBonusXp  = model.RestBonusXp;
 
@@ -94,14 +101,17 @@ namespace NexusForever.Game.Entity
             if (model.LastOnline == null)
                 return;
 
-            float xpForLevel     = GameTableManager.Instance.XpPerLevel.GetEntry(player.Level).MinXpForLevel;
-            float xpForNextLevel = GameTableManager.Instance.XpPerLevel.GetEntry(player.Level + 1).MinXpForLevel;
+            if (player.Level >= 50u)
+            {
+                // TODO: Calculate Elder Gem Rest Bonus XP.
+                RestBonusXp = 0u;
+                return;
+            }
 
-            uint maximumBonusXp;
-            if (player.Level < 50)
-                maximumBonusXp = (uint)((xpForNextLevel - xpForLevel) * 1.5f);
-            else
-                maximumBonusXp = 0; // TODO: Calculate Elder Gem Rest Bonus XP
+            IGameTableManager gameTableManager = GetGameTableManager();
+            float xpForLevel     = gameTableManager.XpPerLevel.GetEntry(player.Level).MinXpForLevel;
+            float xpForNextLevel = gameTableManager.XpPerLevel.GetEntry(player.Level + 1u).MinXpForLevel;
+            uint maximumBonusXp = (uint)((xpForNextLevel - xpForLevel) * 1.5f);
 
             double xpPercentEarned;
 
@@ -169,12 +179,16 @@ namespace NexusForever.Game.Entity
             
             uint totalXp = TotalXp + earnedXp + signatureXp + restXp;
 
-            uint xpToNextLevel = GameTableManager.Instance.XpPerLevel.GetEntry(player.Level + 1).MinXpForLevel;
+            IGameTableManager gameTableManager = GetGameTableManager();
+            uint xpToNextLevel = gameTableManager.XpPerLevel.GetEntry(player.Level + 1u).MinXpForLevel;
             while (totalXp >= xpToNextLevel && player.Level < maxLevel) // WorldServer.Rules.MaxLevel)
             {
                 GrantLevel((byte)(player.Level + 1));
 
-                xpToNextLevel = GameTableManager.Instance.XpPerLevel.GetEntry(player.Level + 1).MinXpForLevel;
+                if (player.Level >= maxLevel)
+                    break;
+
+                xpToNextLevel = gameTableManager.XpPerLevel.GetEntry(player.Level + 1u).MinXpForLevel;
             }
 
             TotalXp += earnedXp + signatureXp + restXp;
@@ -190,7 +204,7 @@ namespace NexusForever.Game.Entity
             if (newLevel == player.Level)
                 return;
 
-            uint newXp = GameTableManager.Instance.XpPerLevel.GetEntry(newLevel).MinXpForLevel;
+            uint newXp = GetGameTableManager().XpPerLevel.GetEntry(newLevel).MinXpForLevel;
             player.Session.EnqueueMessageEncrypted(new ServerExperienceGained
             {
                 TotalXpGained     = newXp - TotalXp,
@@ -201,6 +215,11 @@ namespace NexusForever.Game.Entity
 
             TotalXp = newXp;
             GrantLevel(newLevel);
+        }
+
+        private IGameTableManager GetGameTableManager()
+        {
+            return gameTableManager ?? GameTableManager.Instance;
         }
 
         /// <summary>

@@ -109,6 +109,22 @@ namespace NexusForever.Game.Abstract.Entity
             ItemUpdateReason reason = ItemUpdateReason.NoReason, uint charges = 0);
 
         /// <summary>
+        /// Exchange inventory item quantities as one aggregate capacity-admitted operation.
+        /// </summary>
+        /// <remarks>
+        /// A <see langword="false"/> result is guaranteed not to mutate inventory. This is an in-memory admission
+        /// boundary rather than a database transaction; unexpected runtime exceptions after admission are not compensated.
+        /// </remarks>
+        /// <param name="removals">Item identifiers and quantities to remove when present.</param>
+        /// <param name="additions">Item templates and quantities that must all fit.</param>
+        /// <param name="reason">Reason reported for every item update.</param>
+        /// <returns><see langword="true"/> when the complete exchange was applied; otherwise <see langword="false"/> without mutation.</returns>
+        bool TryItemExchange(
+            IEnumerable<KeyValuePair<uint, uint>> removals,
+            IEnumerable<KeyValuePair<IItemInfo, uint>> additions,
+            ItemUpdateReason reason = ItemUpdateReason.NoReason);
+
+        /// <summary>
         /// Returns if <see cref="IItem"/> can be moved to supplied <see cref="ItemLocation"/>.
         /// </summary>
         GenericError? CanMoveItem(IItem item, ItemLocation location);

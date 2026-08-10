@@ -283,11 +283,12 @@ namespace NexusForever.Game.Entity
                     if (count == 0u)
                         break;
 
-                    if (item.StackCount == info.Entry.MaxStackCount)
+                    if (item.StackCount >= info.Entry.MaxStackCount)
                         continue;
 
-                    uint newStackCount = Math.Min(item.StackCount + count, info.Entry.MaxStackCount);
-                    count -= newStackCount - item.StackCount;
+                    uint added = Math.Min(count, info.Entry.MaxStackCount - item.StackCount);
+                    uint newStackCount = item.StackCount + added;
+                    count -= added;
                     ItemStackCountUpdate(item, newStackCount, reason);
                 }
             }
@@ -407,6 +408,147 @@ namespace NexusForever.Game.Entity
             uint stackCapacity = info.IsStackable() ? info.Entry.MaxStackCount : 1u;
             capacity += (ulong)availableSlots * stackCapacity;
             return capacity;
+        }
+
+        /// <summary>
+        /// Exchange inventory item quantities as one aggregate capacity-admitted operation.
+        /// </summary>
+        /// <remarks>
+        /// A <see langword="false"/> result is guaranteed not to mutate inventory. This is an in-memory admission
+        /// boundary rather than a database transaction; unexpected runtime exceptions after admission are not compensated.
+        /// </remarks>
+        /// <param name="removals">Item identifiers and quantities to remove when present.</param>
+        /// <param name="additions">Item templates and quantities that must all fit.</param>
+        /// <param name="reason">Reason reported for every item update.</param>
+        /// <returns><see langword="true"/> when the complete exchange was applied; otherwise <see langword="false"/> without mutation.</returns>
+        public bool TryItemExchange(
+            IEnumerable<KeyValuePair<uint, uint>> removals,
+            IEnumerable<KeyValuePair<IItemInfo, uint>> additions,
+            ItemUpdateReason reason = ItemUpdateReason.NoReason)
+        {
+            ArgumentNullException.ThrowIfNull(removals);
+            ArgumentNullException.ThrowIfNull(additions);
+
+            if (!TryPrepareItemExchange(removals, additions, out Dictionary<uint, uint> removalAmounts,
+                    out Dictionary<uint, (IItemInfo Info, uint Amount)> additionAmounts))
+                return false;
+
+            foreach ((uint itemId, uint amount) in removalAmounts.OrderBy(pair => pair.Key))
+                ItemDelete(itemId, amount, reason);
+
+            foreach ((_, (IItemInfo info, uint amount)) in additionAmounts.OrderBy(pair => pair.Key))
+                ItemCreate(InventoryLocation.Inventory, info, amount, reason);
+
+            return true;
+        }
+
+        private bool TryPrepareItemExchange(
+            IEnumerable<KeyValuePair<uint, uint>> removals,
+            IEnumerable<KeyValuePair<IItemInfo, uint>> additions,
+            out Dictionary<uint, uint> removalAmounts,
+            out Dictionary<uint, (IItemInfo Info, uint Amount)> additionAmounts)
+        {
+            removalAmounts = new Dictionary<uint, uint>();
+            additionAmounts = new Dictionary<uint, (IItemInfo Info, uint Amount)>();
+
+            foreach ((uint itemId, uint amount) in removals)
+            {
+                if (itemId == 0u || amount == 0u)
+                    continue;
+
+                removalAmounts.TryGetValue(itemId, out uint current);
+                ulong total = (ulong)current + amount;
+                if (total > uint.MaxValue)
+                    return false;
+
+                removalAmounts[itemId] = (uint)total;
+            }
+
+            foreach ((IItemInfo info, uint amount) in additions)
+            {
+                if (info?.Entry == null || info.Id == 0u || amount == 0u)
+                    return false;
+
+                additionAmounts.TryGetValue(info.Id, out (IItemInfo Info, uint Amount) current);
+                if (current.Info != null
+                    && (current.Info.IsStackable() != info.IsStackable()
+                        || current.Info.Entry.MaxStackCount != info.Entry.MaxStackCount))
+                    return false;
+
+                ulong total = (ulong)current.Amount + amount;
+                if (total > uint.MaxValue)
+                    return false;
+
+                additionAmounts[info.Id] = (current.Info ?? info, (uint)total);
+            }
+
+            if (removalAmounts.Count == 0 && additionAmounts.Count == 0)
+                return true;
+
+            IBag bag = GetBag(InventoryLocation.Inventory);
+            if (bag == null || bag.SlotsRemaining > bag.Slots)
+                return false;
+
+            var stacks = bag
+                .Select(item => new ItemExchangeStack(item.Id, item.StackCount))
+                .ToList();
+            if ((ulong)stacks.Count > bag.Slots
+                || bag.SlotsRemaining != bag.Slots - (uint)stacks.Count)
+                return false;
+
+            ulong slotsRemaining = bag.SlotsRemaining;
+
+            foreach ((uint itemId, uint removalAmount) in removalAmounts)
+            {
+                uint remaining = removalAmount;
+                foreach (ItemExchangeStack stack in stacks.Where(stack => stack.ItemId == itemId && stack.Amount != 0u))
+                {
+                    uint removed = Math.Min(remaining, stack.Amount);
+                    stack.Amount -= removed;
+                    remaining -= removed;
+
+                    if (stack.Amount == 0u)
+                        slotsRemaining++;
+                    if (remaining == 0u)
+                        break;
+                }
+            }
+
+            if (slotsRemaining > bag.Slots)
+                return false;
+
+            foreach ((uint itemId, (IItemInfo info, uint additionAmount)) in additionAmounts)
+            {
+                bool stackable = info.IsStackable();
+                uint maximumStack = stackable ? info.Entry.MaxStackCount : 1u;
+                if (maximumStack == 0u)
+                    return false;
+
+                ulong remaining = additionAmount;
+                if (stackable)
+                {
+                    foreach (ItemExchangeStack stack in stacks.Where(stack => stack.ItemId == itemId && stack.Amount != 0u))
+                    {
+                        if (stack.Amount > maximumStack)
+                            return false;
+
+                        uint added = (uint)Math.Min(remaining, maximumStack - stack.Amount);
+                        stack.Amount += added;
+                        remaining -= added;
+
+                        if (remaining == 0ul)
+                            break;
+                    }
+                }
+
+                ulong requiredSlots = (remaining + maximumStack - 1u) / maximumStack;
+                if (requiredSlots > slotsRemaining)
+                    return false;
+
+                slotsRemaining -= requiredSlots;
+            }
+
+            return true;
         }
 
         /// <summary>
@@ -689,7 +831,7 @@ namespace NexusForever.Game.Entity
             {
                 if (item.StackCount > count)
                 {
-                    ItemStackCountUpdate(item, item.StackCount - count);
+                    ItemStackCountUpdate(item, item.StackCount - count, reason);
                     count = 0;
                 }
                 else
@@ -914,6 +1056,18 @@ namespace NexusForever.Game.Entity
         private IBag GetBag(InventoryLocation location)
         {
             return bags.TryGetValue(location, out IBag container) ? container : null;
+        }
+
+        private sealed class ItemExchangeStack
+        {
+            public uint ItemId { get; }
+            public uint Amount { get; set; }
+
+            public ItemExchangeStack(uint itemId, uint amount)
+            {
+                ItemId = itemId;
+                Amount = amount;
+            }
         }
 
         private void ApplyProperties(IItem item)
