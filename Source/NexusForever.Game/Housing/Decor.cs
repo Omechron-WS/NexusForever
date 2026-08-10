@@ -1,6 +1,7 @@
 using System.Numerics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract;
@@ -41,7 +42,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 type = value;
-                saveMask |= DecorSaveMask.Type;
+                saveMask.Mark(DecorSaveMask.Type);
             }
         }
 
@@ -53,7 +54,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 plotIndex = value;
-                saveMask |= DecorSaveMask.PlotIndex;
+                saveMask.Mark(DecorSaveMask.PlotIndex);
             }
         }
 
@@ -65,7 +66,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 position = value;
-                saveMask |= DecorSaveMask.Position;
+                saveMask.Mark(DecorSaveMask.Position);
             }
         }
 
@@ -77,7 +78,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 rotation = value;
-                saveMask |= DecorSaveMask.Rotation;
+                saveMask.Mark(DecorSaveMask.Rotation);
             }
         }
 
@@ -89,7 +90,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 scale = value;
-                saveMask |= DecorSaveMask.Scale;
+                saveMask.Mark(DecorSaveMask.Scale);
             }
         }
 
@@ -101,7 +102,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 decorParentId = value;
-                saveMask |= DecorSaveMask.DecorParentId;
+                saveMask.Mark(DecorSaveMask.DecorParentId);
             }
         }
 
@@ -113,7 +114,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 colourShiftId = value;
-                saveMask |= DecorSaveMask.ColourShiftId;
+                saveMask.Mark(DecorSaveMask.ColourShiftId);
             }
         }
 
@@ -121,24 +122,27 @@ namespace NexusForever.Game.Housing
 
         public IResidence Residence { get; }
 
-        private DecorSaveMask saveMask;
+        private VersionedSaveMask<DecorSaveMask> saveMask = new();
 
         /// <summary>
         /// Returns if <see cref="IDecor"/> is enqueued to be saved to the database.
         /// </summary>
-        public bool PendingCreate => (saveMask & DecorSaveMask.Create) != 0;
+        public bool PendingCreate => (saveMask.Current & DecorSaveMask.Create) != 0;
 
         /// <summary>
         /// Returns if <see cref="IDecor"/> is enqueued to be deleted from the database.
         /// </summary>
-        public bool PendingDelete => (saveMask & DecorSaveMask.Delete) != 0;
+        public bool PendingDelete => (saveMask.Current & DecorSaveMask.Delete) != 0;
 
         /// <summary>
         /// Enqueue <see cref="IDecor"/> to be deleted from the database.
         /// </summary>
         public void EnqueueDelete(bool set)
         {
-            saveMask = DecorSaveMask.Delete;
+            if (set)
+                saveMask.Mark(DecorSaveMask.Delete);
+            else
+                saveMask.Clear(DecorSaveMask.Delete);
         }
 
         /// <summary>
@@ -157,7 +161,7 @@ namespace NexusForever.Game.Housing
             colourShiftId = model.ColourShiftId;
             Residence     = residence;
 
-            saveMask = DecorSaveMask.None;
+            saveMask = new VersionedSaveMask<DecorSaveMask>();
         }
 
         /// <summary>
@@ -172,7 +176,7 @@ namespace NexusForever.Game.Housing
             rotation  = Quaternion.Identity;
             Residence = residence;
 
-            saveMask = DecorSaveMask.Create;
+            saveMask = new VersionedSaveMask<DecorSaveMask>(DecorSaveMask.Create);
         }
 
         /// <summary>
@@ -194,15 +198,65 @@ namespace NexusForever.Game.Housing
             colourShiftId = decor.ColourShiftId;
             Residence     = residence;
 
-            saveMask = DecorSaveMask.Create;
+            saveMask = new VersionedSaveMask<DecorSaveMask>(DecorSaveMask.Create);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == DecorSaveMask.None)
+            Save(context, action => action(), null);
+        }
+
+        /// <summary>
+        /// Stage this decor's database changes and register their successful-commit acknowledgements.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            Save(context, commitScope, null);
+        }
+
+        /// <summary>
+        /// Stage this decor's database changes and register their successful-commit acknowledgements.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        /// <param name="deleteAcknowledged">Action invoked when a requested deletion commits.</param>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope, Action deleteAcknowledged)
+        {
+            ArgumentNullException.ThrowIfNull(commitScope);
+            Save(context, commitScope.Register, deleteAcknowledged);
+        }
+
+        private void Save(CharacterContext context, Action<Action> registerAcknowledgement, Action deleteAcknowledged)
+        {
+            VersionedSaveMaskSnapshot<DecorSaveMask> snapshot = saveMask.Capture();
+            DecorSaveMask stagedMask = snapshot.Mask;
+            if (stagedMask == DecorSaveMask.None)
                 return;
 
-            if ((saveMask & DecorSaveMask.Create) != 0)
+            void Acknowledge()
+            {
+                bool deleteStillRequested = PendingDelete;
+                saveMask.Acknowledge(snapshot);
+
+                if ((stagedMask & DecorSaveMask.Delete) == 0)
+                    return;
+
+                if (deleteStillRequested)
+                    deleteAcknowledged?.Invoke();
+                else
+                    saveMask.Mark(DecorSaveMask.Create);
+            }
+
+            if ((stagedMask & (DecorSaveMask.Create | DecorSaveMask.Delete)) ==
+                (DecorSaveMask.Create | DecorSaveMask.Delete))
+            {
+                registerAcknowledgement(Acknowledge);
+                return;
+            }
+
+            if ((stagedMask & DecorSaveMask.Create) != 0)
             {
                 // decor doesn't exist in database, all infomation must be saved
                 context.Add(new ResidenceDecor
@@ -224,7 +278,7 @@ namespace NexusForever.Game.Housing
                     ColourShiftId = ColourShiftId
                 });
             }
-            else if ((saveMask & DecorSaveMask.Delete) != 0)
+            else if ((stagedMask & DecorSaveMask.Delete) != 0)
             {
                 var model = new ResidenceDecor
                 {
@@ -245,17 +299,17 @@ namespace NexusForever.Game.Housing
 
                 // could probably clean this up with reflection, works for the time being
                 EntityEntry<ResidenceDecor> entity = context.Attach(model);
-                if ((saveMask & DecorSaveMask.Type) != 0)
+                if ((stagedMask & DecorSaveMask.Type) != 0)
                 {
                     model.DecorType = (uint)Type;
                     entity.Property(p => p.DecorType).IsModified = true;
                 }
-                if ((saveMask & DecorSaveMask.PlotIndex) != 0)
+                if ((stagedMask & DecorSaveMask.PlotIndex) != 0)
                 {
                     model.PlotIndex = PlotIndex;
                     entity.Property(p => p.PlotIndex).IsModified = true;
                 }
-                if ((saveMask & DecorSaveMask.Position) != 0)
+                if ((stagedMask & DecorSaveMask.Position) != 0)
                 {
                     model.X = Position.X;
                     entity.Property(p => p.X).IsModified = true;
@@ -264,7 +318,7 @@ namespace NexusForever.Game.Housing
                     model.Z = Position.Z;
                     entity.Property(p => p.Z).IsModified = true;
                 }
-                if ((saveMask & DecorSaveMask.Rotation) != 0)
+                if ((stagedMask & DecorSaveMask.Rotation) != 0)
                 {
                     model.Qx = Rotation.X;
                     entity.Property(p => p.Qx).IsModified = true;
@@ -275,24 +329,24 @@ namespace NexusForever.Game.Housing
                     model.Qw = Rotation.W;
                     entity.Property(p => p.Qw).IsModified = true;
                 }
-                if ((saveMask & DecorSaveMask.Scale) != 0)
+                if ((stagedMask & DecorSaveMask.Scale) != 0)
                 {
                     model.Scale = Scale;
                     entity.Property(p => p.Scale).IsModified = true;
                 }
-                if ((saveMask & DecorSaveMask.DecorParentId) != 0)
+                if ((stagedMask & DecorSaveMask.DecorParentId) != 0)
                 {
                     model.DecorParentId = DecorParentId;
                     entity.Property(p => p.DecorParentId).IsModified = true;
                 }
-                if ((saveMask & DecorSaveMask.ColourShiftId) != 0)
+                if ((stagedMask & DecorSaveMask.ColourShiftId) != 0)
                 {
                     model.ColourShiftId = ColourShiftId;
                     entity.Property(p => p.ColourShiftId).IsModified = true;
                 }
             }
 
-            saveMask = DecorSaveMask.None;
+            registerAcknowledgement(Acknowledge);
         }
 
         /// <summary>

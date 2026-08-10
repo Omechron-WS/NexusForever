@@ -24,6 +24,14 @@ namespace NexusForever.Game.Abstract.Housing
         IResidence Residence { get; }
 
         /// <summary>
+        /// Stage this decor's database changes and register their successful-commit acknowledgements.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        /// <param name="deleteAcknowledged">Action invoked when a requested deletion commits.</param>
+        void Save(CharacterContext context, ISaveCommitScope commitScope, Action deleteAcknowledged);
+
+        /// <summary>
         /// Move <see cref="IDecor"/> to supplied position.
         /// </summary>
         void Move(DecorType type, Vector3 position, Quaternion rotation, float scale, uint plotIndex);

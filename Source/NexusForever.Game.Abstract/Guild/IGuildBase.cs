@@ -20,6 +20,16 @@ namespace NexusForever.Game.Abstract.Guild
         uint MemberCount { get; }
 
         /// <summary>
+        /// Returns if this guild is enqueued to be created in the database.
+        /// </summary>
+        bool PendingCreate { get; }
+
+        /// <summary>
+        /// Returns if this guild is enqueued to be deleted from the database.
+        /// </summary>
+        bool PendingDelete { get; }
+
+        /// <summary>
         /// Maximum number of <see cref="IGuildMember"/>'s allowed in the guild.
         /// </summary>
         uint MaxMembers { get; }

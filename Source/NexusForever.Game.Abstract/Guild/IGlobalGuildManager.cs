@@ -23,7 +23,9 @@ namespace NexusForever.Game.Abstract.Guild
         /// <remarks>
         /// This will force save all guilds.
         /// </remarks>
-        void Shutdown();
+        /// <param name="cancellationToken">Token that cancels the final database saves.</param>
+        /// <returns>A task representing the shutdown operation.</returns>
+        Task ShutdownAsync(CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Returns <see cref="IGuildBase"/> with supplied id.

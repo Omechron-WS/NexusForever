@@ -47,6 +47,7 @@ namespace NexusForever.Game.Housing
         private readonly Dictionary<Identity, IPublicCommunity> visitableCommunities = [];
 
         private double timeToSave = SaveDuration;
+        private readonly List<PendingResidenceSave> pendingSaves = [];
 
         #region Dependency Injection
 
@@ -135,31 +136,102 @@ namespace NexusForever.Game.Housing
         /// <remarks>
         /// This will force save all residences.
         /// </remarks>
-        public void Shutdown()
+        /// <param name="cancellationToken">Token that cancels the final database saves.</param>
+        /// <returns>A task representing the shutdown operation.</returns>
+        public async Task ShutdownAsync(CancellationToken cancellationToken = default)
         {
             log.LogInformation("Shutting down residence manager...");
 
-            SaveResidences();
+            IReadOnlyList<Exception> pendingFailures = await DrainPendingSavesAsync();
+            foreach (Exception exception in pendingFailures)
+                log.LogWarning(exception, "A pending residence save failed during shutdown; retrying dirty state.");
+
+            StartResidenceSaves(cancellationToken);
+            IReadOnlyList<Exception> failures = await DrainPendingSavesAsync();
+            if (failures.Count != 0)
+                throw new AggregateException("One or more residences failed to save during shutdown.", failures);
         }
 
         public void Update(double lastTick)
         {
+            CompleteFinishedSaves();
             timeToSave -= lastTick;
             if (timeToSave <= 0d)
             {
-                SaveResidences();
+                if (pendingSaves.Count == 0)
+                    StartResidenceSaves();
                 timeToSave = SaveDuration;
             }
         }
 
-        private void SaveResidences()
+        private void StartResidenceSaves(CancellationToken cancellationToken = default)
         {
-            var tasks = new List<Task>();
-            foreach (IResidence residence in residences.Values)
-                tasks.Add(databaseManager.GetDatabase<CharacterDatabase>().Save(residence.Save));
+            CharacterDatabase database = databaseManager.GetDatabase<CharacterDatabase>();
+            foreach (IResidence residence in residences.Values.ToList())
+            {
+                Task<SaveCommitAcknowledgement> saveTask;
+                try
+                {
+                    saveTask = database.SaveWithAcknowledgement(residence.Save, cancellationToken);
+                }
+                catch (Exception exception)
+                {
+                    saveTask = Task.FromException<SaveCommitAcknowledgement>(exception);
+                }
 
-            Task.WaitAll(tasks.ToArray());
+                pendingSaves.Add(new PendingResidenceSave(residence.Identity, saveTask));
+            }
         }
+
+        private void CompleteFinishedSaves()
+        {
+            for (int i = pendingSaves.Count - 1; i >= 0; i--)
+            {
+                PendingResidenceSave pendingSave = pendingSaves[i];
+                if (!pendingSave.SaveTask.IsCompleted)
+                    continue;
+
+                pendingSaves.RemoveAt(i);
+                try
+                {
+                    pendingSave.SaveTask.GetAwaiter().GetResult().Acknowledge();
+                }
+                catch (Exception exception)
+                {
+                    log.LogError(exception, $"Failed to save residence {pendingSave.ResidenceIdentity}.");
+                }
+            }
+        }
+
+        private async Task<IReadOnlyList<Exception>> DrainPendingSavesAsync()
+        {
+            PendingResidenceSave[] saves = pendingSaves.ToArray();
+            pendingSaves.Clear();
+
+            Task<Exception>[] completions = saves
+                .Select(CompleteSaveAsync)
+                .ToArray();
+            Exception[] results = await Task.WhenAll(completions);
+            return results
+                .Where(exception => exception != null)
+                .ToArray();
+        }
+
+        private static async Task<Exception> CompleteSaveAsync(PendingResidenceSave pendingSave)
+        {
+            try
+            {
+                SaveCommitAcknowledgement acknowledgement = await pendingSave.SaveTask;
+                acknowledgement.Acknowledge();
+                return null;
+            }
+            catch (Exception exception)
+            {
+                return exception;
+            }
+        }
+
+        private sealed record PendingResidenceSave(Identity ResidenceIdentity, Task<SaveCommitAcknowledgement> SaveTask);
 
         /// <summary>
         /// Create new <see cref="IResidence"/> for supplied <see cref="IPlayer"/>.

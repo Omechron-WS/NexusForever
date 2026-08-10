@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
@@ -34,7 +35,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 plotInfoEntry = value;
-                saveMask |= PlotSaveMask.PlotInfoId;
+                saveMask.Mark(PlotSaveMask.PlotInfoId);
             }
         }
 
@@ -46,7 +47,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 plugItemEntry = value;
-                saveMask |= PlotSaveMask.PlugItemId;
+                saveMask.Mark(PlotSaveMask.PlugItemId);
             }
         }
 
@@ -58,7 +59,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 plugFacing = value;
-                saveMask |= PlotSaveMask.PlugFacing;
+                saveMask.Mark(PlotSaveMask.PlugFacing);
             }
         }
 
@@ -70,13 +71,13 @@ namespace NexusForever.Game.Housing
             set
             {
                 buildState = value;
-                saveMask |= PlotSaveMask.BuildState;
+                saveMask.Mark(PlotSaveMask.BuildState);
             }
         }
 
         private BuildState buildState;
 
-        private PlotSaveMask saveMask;
+        private VersionedSaveMask<PlotSaveMask> saveMask = new();
 
         public IPlugEntity PlugEntity { get; set; }
 
@@ -104,7 +105,7 @@ namespace NexusForever.Game.Housing
             plugFacing    = model.PlugFacing;
             buildState    = model.BuildState;
 
-            saveMask = PlotSaveMask.None;
+            saveMask = new VersionedSaveMask<PlotSaveMask>();
         }
 
         /// <summary>
@@ -123,15 +124,33 @@ namespace NexusForever.Game.Housing
                 // plugItemId = entry.HousingPlugItemIdDefault;
             }
 
-            saveMask = PlotSaveMask.Create;
+            saveMask = new VersionedSaveMask<PlotSaveMask>(PlotSaveMask.Create);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == PlotSaveMask.None)
+            Save(context, action => action());
+        }
+
+        /// <summary>
+        /// Stage this plot's database changes and register their successful-commit acknowledgements.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(commitScope);
+            Save(context, commitScope.Register);
+        }
+
+        private void Save(CharacterContext context, Action<Action> registerAcknowledgement)
+        {
+            VersionedSaveMaskSnapshot<PlotSaveMask> snapshot = saveMask.Capture();
+            PlotSaveMask stagedMask = snapshot.Mask;
+            if (stagedMask == PlotSaveMask.None)
                 return;
 
-            if ((saveMask & PlotSaveMask.Create) != 0)
+            if ((stagedMask & PlotSaveMask.Create) != 0)
             {
                 // plot doesn't exist in database, all infomation must be saved
                 context.Add(new ResidencePlotModel
@@ -154,32 +173,32 @@ namespace NexusForever.Game.Housing
                 };
 
                 EntityEntry<ResidencePlotModel> entity = context.Attach(model);
-                if ((saveMask & PlotSaveMask.PlotInfoId) != 0)
+                if ((stagedMask & PlotSaveMask.PlotInfoId) != 0)
                 {
                     model.PlotInfoId = (ushort)PlotInfoEntry.Id;
                     entity.Property(p => p.PlotInfoId).IsModified = true;
                 }
 
-                if ((saveMask & PlotSaveMask.PlugItemId) != 0)
+                if ((stagedMask & PlotSaveMask.PlugItemId) != 0)
                 {
-                    model.PlugItemId = (ushort)PlugItemEntry.Id;
+                    model.PlugItemId = (ushort)(PlugItemEntry?.Id ?? 0u);
                     entity.Property(p => p.PlugItemId).IsModified = true;
                 }
 
-                if ((saveMask & PlotSaveMask.PlugFacing) != 0)
+                if ((stagedMask & PlotSaveMask.PlugFacing) != 0)
                 {
                     model.PlugFacing = PlugFacing;
                     entity.Property(p => p.PlugFacing).IsModified = true;
                 }
 
-                if ((saveMask & PlotSaveMask.BuildState) != 0)
+                if ((stagedMask & PlotSaveMask.BuildState) != 0)
                 {
                     model.BuildState = BuildState;
                     entity.Property(p => p.BuildState).IsModified = true;
                 }
             }
 
-            saveMask = PlotSaveMask.None;
+            registerAcknowledgement(() => saveMask.Acknowledge(snapshot));
         }
 
         public void SetPlug(ushort plugItemId)

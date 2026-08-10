@@ -206,8 +206,8 @@ namespace NexusForever.WorldServer.Service
             worldManager.Shutdown();
 
             // save residences, guilds and players to the database
-            GlobalResidenceManager.Instance.Shutdown();
-            GlobalGuildManager.Instance.Shutdown();
+            await GlobalResidenceManager.Instance.ShutdownAsync(cancellationToken);
+            await GlobalGuildManager.Instance.ShutdownAsync(cancellationToken);
 
             IEnumerable<IPlayer> players = networkManager
                 .Select(worldSession => worldSession.Player)

@@ -1,5 +1,6 @@
 ﻿using System.Collections;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Guild;
@@ -36,7 +37,7 @@ namespace NexusForever.Game.Guild
             set
             {
                 name = value;
-                saveMask |= GuildRankSaveMask.Name;
+                saveMask.Mark(GuildRankSaveMask.Name);
             }
         }
         private string name;
@@ -47,7 +48,7 @@ namespace NexusForever.Game.Guild
             set
             {
                 permissions = value;
-                saveMask |= GuildRankSaveMask.Permissions;
+                saveMask.Mark(GuildRankSaveMask.Permissions);
             }
         }
         private GuildRankPermission permissions;
@@ -58,7 +59,7 @@ namespace NexusForever.Game.Guild
             set
             {
                 bankPermissions = value;
-                saveMask |= GuildRankSaveMask.BankPermissions;
+                saveMask.Mark(GuildRankSaveMask.BankPermissions);
             }
         }
         private ulong bankPermissions;
@@ -69,7 +70,7 @@ namespace NexusForever.Game.Guild
             set
             {
                 bankMoneyWithdrawlLimits = value;
-                saveMask |= GuildRankSaveMask.BankMoneyWithdrawlLimits;
+                saveMask.Mark(GuildRankSaveMask.BankMoneyWithdrawlLimits);
             }
         }
         private ulong bankMoneyWithdrawlLimits;
@@ -80,22 +81,22 @@ namespace NexusForever.Game.Guild
             set
             {
                 repairLimit = value;
-                saveMask |= GuildRankSaveMask.RepairLimit;
+                saveMask.Mark(GuildRankSaveMask.RepairLimit);
             }
         }
         private ulong repairLimit;
 
-        private GuildRankSaveMask saveMask;
+        private VersionedSaveMask<GuildRankSaveMask> saveMask = new();
 
         /// <summary>
         /// Returns if <see cref="IGuildRank"/> is enqueued to be saved to the database.
         /// </summary>
-        public bool PendingCreate => (saveMask & GuildRankSaveMask.Create) != 0;
+        public bool PendingCreate => (saveMask.Current & GuildRankSaveMask.Create) != 0;
 
         /// <summary>
         /// Returns if <see cref="IGuildRank"/> is enqueued to be deleted from the database.
         /// </summary>
-        public bool PendingDelete => (saveMask & GuildRankSaveMask.Delete) != 0;
+        public bool PendingDelete => (saveMask.Current & GuildRankSaveMask.Delete) != 0;
 
         public uint MemberCount => (uint)members.Count;
 
@@ -114,7 +115,7 @@ namespace NexusForever.Game.Guild
             bankMoneyWithdrawlLimits = model.MoneyWithdrawalLimit;
             repairLimit              = model.RepairLimit;
 
-            saveMask                 = GuildRankSaveMask.None;
+            saveMask                 = new VersionedSaveMask<GuildRankSaveMask>();
         }
 
         /// <summary>
@@ -131,7 +132,7 @@ namespace NexusForever.Game.Guild
             this.bankMoneyWithdrawlLimits = bankMoneyWithdrawlLimits;
             this.repairLimit              = repairLimit;
 
-            saveMask                      = GuildRankSaveMask.Create;
+            saveMask                      = new VersionedSaveMask<GuildRankSaveMask>(GuildRankSaveMask.Create);
         }
 
         /// <summary>
@@ -139,8 +140,58 @@ namespace NexusForever.Game.Guild
         /// </summary>
         public void Save(CharacterContext context)
         {
-            if (saveMask == GuildRankSaveMask.None)
+            Save(context, action => action(), null);
+        }
+
+        /// <summary>
+        /// Stage this guild rank's database changes and register their successful-commit acknowledgements.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            Save(context, commitScope, null);
+        }
+
+        /// <summary>
+        /// Stage this guild rank's database changes and register their successful-commit acknowledgements.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        /// <param name="deleteAcknowledged">Action invoked when a requested deletion commits.</param>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope, Action deleteAcknowledged)
+        {
+            ArgumentNullException.ThrowIfNull(commitScope);
+            Save(context, commitScope.Register, deleteAcknowledged);
+        }
+
+        private void Save(CharacterContext context, Action<Action> registerAcknowledgement, Action deleteAcknowledged)
+        {
+            VersionedSaveMaskSnapshot<GuildRankSaveMask> snapshot = saveMask.Capture();
+            GuildRankSaveMask stagedMask = snapshot.Mask;
+            if (stagedMask == GuildRankSaveMask.None)
                 return;
+
+            void Acknowledge()
+            {
+                bool deleteStillRequested = PendingDelete;
+                saveMask.Acknowledge(snapshot);
+
+                if ((stagedMask & GuildRankSaveMask.Delete) == 0)
+                    return;
+
+                if (deleteStillRequested)
+                    deleteAcknowledged?.Invoke();
+                else
+                    saveMask.Mark(GuildRankSaveMask.Create);
+            }
+
+            if ((stagedMask & (GuildRankSaveMask.Create | GuildRankSaveMask.Delete)) ==
+                (GuildRankSaveMask.Create | GuildRankSaveMask.Delete))
+            {
+                registerAcknowledgement(Acknowledge);
+                return;
+            }
 
             var model = new GuildRankModel
             {
@@ -148,7 +199,7 @@ namespace NexusForever.Game.Guild
                 Index = Index
             };
 
-            if ((saveMask & GuildRankSaveMask.Create) != 0)
+            if ((stagedMask & GuildRankSaveMask.Create) != 0)
             {
                 model.Name                     = name;
                 model.Permission               = (uint)permissions;
@@ -157,39 +208,39 @@ namespace NexusForever.Game.Guild
                 model.RepairLimit              = repairLimit;
                 context.Add(model);
             }
-            else if ((saveMask & GuildRankSaveMask.Delete) != 0)
+            else if ((stagedMask & GuildRankSaveMask.Delete) != 0)
                 context.Remove(model);
             else
             {
                 EntityEntry<GuildRankModel> entity = context.Attach(model);
-                if ((saveMask & GuildRankSaveMask.Name) != 0)
+                if ((stagedMask & GuildRankSaveMask.Name) != 0)
                 {
                     model.Name = Name;
                     entity.Property(p => p.Name).IsModified = true;
                 }
-                if ((saveMask & GuildRankSaveMask.Permissions) != 0)
+                if ((stagedMask & GuildRankSaveMask.Permissions) != 0)
                 {
                     model.Permission = (uint)Permissions;
                     entity.Property(p => p.Permission).IsModified = true;
                 }
-                if ((saveMask & GuildRankSaveMask.BankPermissions) != 0)
+                if ((stagedMask & GuildRankSaveMask.BankPermissions) != 0)
                 {
                     model.BankWithdrawalPermission = BankPermissions;
                     entity.Property(p => p.BankWithdrawalPermission).IsModified = true;
                 }
-                if ((saveMask & GuildRankSaveMask.BankMoneyWithdrawlLimits) != 0)
+                if ((stagedMask & GuildRankSaveMask.BankMoneyWithdrawlLimits) != 0)
                 {
                     model.MoneyWithdrawalLimit = BankMoneyWithdrawlLimits;
                     entity.Property(p => p.MoneyWithdrawalLimit).IsModified = true;
                 }
-                if ((saveMask & GuildRankSaveMask.RepairLimit) != 0)
+                if ((stagedMask & GuildRankSaveMask.RepairLimit) != 0)
                 {
                     model.RepairLimit = repairLimit;
                     entity.Property(p => p.RepairLimit).IsModified = true;
                 }
             }
 
-            saveMask = GuildRankSaveMask.None;
+            registerAcknowledgement(Acknowledge);
         }
 
         public NetworkGuildRank Build()
@@ -210,9 +261,9 @@ namespace NexusForever.Game.Guild
         public void EnqueueDelete(bool set)
         {
             if (set)
-                saveMask |= GuildRankSaveMask.Delete;
+                saveMask.Mark(GuildRankSaveMask.Delete);
             else
-                saveMask &= ~GuildRankSaveMask.Delete;
+                saveMask.Clear(GuildRankSaveMask.Delete);
         }
 
         /// <summary>

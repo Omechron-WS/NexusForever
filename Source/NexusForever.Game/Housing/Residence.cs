@@ -54,7 +54,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 guildOwnerIdentity = value;
-                saveMask |= ResidenceSaveMask.GuildOwner;
+                saveMask.Mark(ResidenceSaveMask.GuildOwner);
             }
         }
 
@@ -66,7 +66,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 propertyInfoId = value;
-                saveMask |= ResidenceSaveMask.PropertyInfo;
+                saveMask.Mark(ResidenceSaveMask.PropertyInfo);
 
                 UpdatePlots();
             }
@@ -80,7 +80,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 name = value;
-                saveMask |= ResidenceSaveMask.Name;
+                saveMask.Mark(ResidenceSaveMask.Name);
             }
         }
 
@@ -95,7 +95,7 @@ namespace NexusForever.Game.Housing
                     throw new ArgumentOutOfRangeException();
 
                 privacyLevel = value;
-                saveMask |= ResidenceSaveMask.PrivacyLevel;
+                saveMask.Mark(ResidenceSaveMask.PrivacyLevel);
             }
         }
 
@@ -110,7 +110,7 @@ namespace NexusForever.Game.Housing
                     throw new ArgumentOutOfRangeException();
 
                 wallpaperId = value;
-                saveMask |= ResidenceSaveMask.Wallpaper;
+                saveMask.Mark(ResidenceSaveMask.Wallpaper);
             }
         }
 
@@ -125,7 +125,7 @@ namespace NexusForever.Game.Housing
                     throw new ArgumentOutOfRangeException();
 
                 roofDecorInfoId = value;
-                saveMask |= ResidenceSaveMask.Roof;
+                saveMask.Mark(ResidenceSaveMask.Roof);
             }
         }
 
@@ -140,7 +140,7 @@ namespace NexusForever.Game.Housing
                     throw new ArgumentOutOfRangeException();
 
                 entrywayDecorInfoId = value;
-                saveMask |= ResidenceSaveMask.Entryway;
+                saveMask.Mark(ResidenceSaveMask.Entryway);
             }
         }
 
@@ -155,7 +155,7 @@ namespace NexusForever.Game.Housing
                     throw new ArgumentOutOfRangeException();
 
                 doorDecorInfoId = value;
-                saveMask |= ResidenceSaveMask.Door;
+                saveMask.Mark(ResidenceSaveMask.Door);
             }
         }
 
@@ -174,7 +174,7 @@ namespace NexusForever.Game.Housing
                     throw new ArgumentOutOfRangeException();
 
                 musicId = value;
-                saveMask |= ResidenceSaveMask.Music;
+                saveMask.Mark(ResidenceSaveMask.Music);
             }
         }
 
@@ -193,7 +193,7 @@ namespace NexusForever.Game.Housing
                     throw new ArgumentOutOfRangeException();
 
                 groundWallpaperId = value;
-                saveMask |= ResidenceSaveMask.Ground;
+                saveMask.Mark(ResidenceSaveMask.Ground);
             }
         }
 
@@ -212,7 +212,7 @@ namespace NexusForever.Game.Housing
                     throw new ArgumentOutOfRangeException();
 
                 skyWallpaperId = value;
-                saveMask |= ResidenceSaveMask.Sky;
+                saveMask.Mark(ResidenceSaveMask.Sky);
             }
         }
 
@@ -224,7 +224,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 flags = value;
-                saveMask |= ResidenceSaveMask.Flags;
+                saveMask.Mark(ResidenceSaveMask.Flags);
             }
         }
 
@@ -236,7 +236,7 @@ namespace NexusForever.Game.Housing
             set
             {
                 resourceSharing = value;
-                saveMask |= ResidenceSaveMask.ResourceSharing;
+                saveMask.Mark(ResidenceSaveMask.ResourceSharing);
             }
         }
 
@@ -248,13 +248,13 @@ namespace NexusForever.Game.Housing
             set
             {
                 gardenSharing = value;
-                saveMask |= ResidenceSaveMask.GardenSharing;
+                saveMask.Mark(ResidenceSaveMask.GardenSharing);
             }
         }
 
         private byte gardenSharing;
 
-        private ResidenceSaveMask saveMask;
+        private VersionedSaveMask<ResidenceSaveMask> saveMask = new();
 
         public bool IsCommunityResidence => GuildOwnerIdentity != null && OwnerIdentity == null;
 
@@ -364,7 +364,7 @@ namespace NexusForever.Game.Housing
                 plots.Add(plot);
             }
 
-            saveMask = ResidenceSaveMask.None;
+            saveMask = new VersionedSaveMask<ResidenceSaveMask>();
         }
 
         /// <summary>
@@ -382,7 +382,7 @@ namespace NexusForever.Game.Housing
             name           = $"{player.Name}'s House";
             privacyLevel   = ResidencePrivacyLevel.Public;
 
-            saveMask       = ResidenceSaveMask.Create;
+            saveMask       = new VersionedSaveMask<ResidenceSaveMask>(ResidenceSaveMask.Create);
 
             InitialiseDefaultPlots();
 
@@ -408,7 +408,7 @@ namespace NexusForever.Game.Housing
             name           = community.Name;
             privacyLevel   = ResidencePrivacyLevel.Public;
 
-            saveMask       = ResidenceSaveMask.Create;
+            saveMask       = new VersionedSaveMask<ResidenceSaveMask>(ResidenceSaveMask.Create);
 
             InitialiseDefaultPlots();
 
@@ -437,16 +437,34 @@ namespace NexusForever.Game.Housing
 
         public void Save(CharacterContext context)
         {
-            if (saveMask != ResidenceSaveMask.None)
+            Save(context, action => action());
+        }
+
+        /// <summary>
+        /// Stage this residence's database changes and register their successful-commit acknowledgements.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(commitScope);
+            Save(context, commitScope.Register);
+        }
+
+        private void Save(CharacterContext context, Action<Action> registerAcknowledgement)
+        {
+            VersionedSaveMaskSnapshot<ResidenceSaveMask> snapshot = saveMask.Capture();
+            ResidenceSaveMask stagedMask = snapshot.Mask;
+            if (stagedMask != ResidenceSaveMask.None)
             {
-                if ((saveMask & ResidenceSaveMask.Create) != 0)
+                if ((stagedMask & ResidenceSaveMask.Create) != 0)
                 {
                     // residence doesn't exist in database, all information must be saved
                     context.Add(new ResidenceModel
                     {
                         Id                  = Identity.Id,
-                        OwnerId             = OwnerIdentity.Id,
-                        GuildOwnerId        = GuildOwnerIdentity?.Id ?? null,
+                        OwnerId             = OwnerIdentity?.Id,
+                        GuildOwnerId        = GuildOwnerIdentity?.Id,
                         PropertyInfoId      = PropertyInfoId,
                         Name                = Name,
                         PrivacyLevel        = privacyLevel,
@@ -472,95 +490,109 @@ namespace NexusForever.Game.Housing
 
                     // could probably clean this up with reflection, works for the time being
                     EntityEntry<ResidenceModel> entity = context.Attach(model);
-                    if ((saveMask & ResidenceSaveMask.Name) != 0)
+                    if ((stagedMask & ResidenceSaveMask.Name) != 0)
                     {
                         model.Name = Name;
                         entity.Property(p => p.Name).IsModified = true;
                     }
-                    if ((saveMask & ResidenceSaveMask.PrivacyLevel) != 0)
+                    if ((stagedMask & ResidenceSaveMask.PrivacyLevel) != 0)
                     {
                         model.PrivacyLevel = PrivacyLevel;
                         entity.Property(p => p.PrivacyLevel).IsModified = true;
                     }
-                    if ((saveMask & ResidenceSaveMask.Wallpaper) != 0)
+                    if ((stagedMask & ResidenceSaveMask.Wallpaper) != 0)
                     {
                         model.WallpaperId = Wallpaper;
                         entity.Property(p => p.WallpaperId).IsModified = true;
                     }
-                    if ((saveMask & ResidenceSaveMask.Roof) != 0)
+                    if ((stagedMask & ResidenceSaveMask.Roof) != 0)
                     {
                         model.RoofDecorInfoId = Roof;
                         entity.Property(p => p.RoofDecorInfoId).IsModified = true;
                     }
-                    if ((saveMask & ResidenceSaveMask.Entryway) != 0)
+                    if ((stagedMask & ResidenceSaveMask.Entryway) != 0)
                     {
                         model.EntrywayDecorInfoId = Entryway;
                         entity.Property(p => p.EntrywayDecorInfoId).IsModified = true;
                     }
-                    if ((saveMask & ResidenceSaveMask.Door) != 0)
+                    if ((stagedMask & ResidenceSaveMask.Door) != 0)
                     {
                         model.DoorDecorInfoId = Door;
                         entity.Property(p => p.DoorDecorInfoId).IsModified = true;
                     }
-                    if ((saveMask & ResidenceSaveMask.Ground) != 0)
+                    if ((stagedMask & ResidenceSaveMask.Ground) != 0)
                     {
                         model.GroundWallpaperId = Ground;
                         entity.Property(p => p.GroundWallpaperId).IsModified = true;
                     }
-                    if ((saveMask & ResidenceSaveMask.Music) != 0)
+                    if ((stagedMask & ResidenceSaveMask.Music) != 0)
                     {
                         model.MusicId = Music;
                         entity.Property(p => p.MusicId).IsModified = true;
                     }
-                    if ((saveMask & ResidenceSaveMask.Sky) != 0)
+                    if ((stagedMask & ResidenceSaveMask.Sky) != 0)
                     {
                         model.SkyWallpaperId = Sky;
                         entity.Property(p => p.SkyWallpaperId).IsModified = true;
                     }
-                    if ((saveMask & ResidenceSaveMask.Flags) != 0)
+                    if ((stagedMask & ResidenceSaveMask.Flags) != 0)
                     {
                         model.Flags = Flags;
                         entity.Property(p => p.Flags).IsModified = true;
                     }
-                    if ((saveMask & ResidenceSaveMask.ResourceSharing) != 0)
+                    if ((stagedMask & ResidenceSaveMask.ResourceSharing) != 0)
                     {
                         model.ResourceSharing = ResourceSharing;
                         entity.Property(p => p.ResourceSharing).IsModified = true;
                     }
-                    if ((saveMask & ResidenceSaveMask.GardenSharing) != 0)
+                    if ((stagedMask & ResidenceSaveMask.GardenSharing) != 0)
                     {
                         model.GardenSharing = GardenSharing;
                         entity.Property(p => p.GardenSharing).IsModified = true;
                     }
-                    if ((saveMask & ResidenceSaveMask.GuildOwner) != 0)
+                    if ((stagedMask & ResidenceSaveMask.GuildOwner) != 0)
                     {
-                        model.GuildOwnerId = GuildOwnerIdentity.Id;
+                        model.GuildOwnerId = GuildOwnerIdentity?.Id;
                         entity.Property(p => p.GuildOwnerId).IsModified = true;
                     }
-                    if ((saveMask & ResidenceSaveMask.PropertyInfo) != 0)
+                    if ((stagedMask & ResidenceSaveMask.PropertyInfo) != 0)
                     {
                         model.PropertyInfoId = PropertyInfoId;
                         entity.Property(p => p.PropertyInfoId).IsModified = true;
                     }
                 }
 
-                saveMask = ResidenceSaveMask.None;
             }
 
-            var decorToRemove = new List<IDecor>();
-            foreach (IDecor decor in decors.Values)
+            registerAcknowledgement(() => saveMask.Acknowledge(snapshot));
+
+            var commitScope = new DelegateSaveCommitScope(registerAcknowledgement);
+            foreach (IDecor decor in decors.Values.ToList())
             {
-                if (decor.PendingDelete)
-                    decorToRemove.Add(decor);
-
-                decor.Save(context);
+                decor.Save(context, commitScope, () =>
+                {
+                    if (decors.TryGetValue(decor.DecorId, out IDecor current) && ReferenceEquals(current, decor))
+                        decors.Remove(decor.DecorId);
+                });
             }
-
-            foreach (IDecor decor in decorToRemove)
-                decors.Remove(decor.DecorId);
 
             foreach (IPlot plot in plots)
-                plot.Save(context);
+                plot.Save(context, commitScope);
+        }
+
+        private sealed class DelegateSaveCommitScope : ISaveCommitScope
+        {
+            private readonly Action<Action> registerAcknowledgement;
+
+            public DelegateSaveCommitScope(Action<Action> registerAcknowledgement)
+            {
+                this.registerAcknowledgement = registerAcknowledgement;
+            }
+
+            public void Register(Action action)
+            {
+                registerAcknowledgement(action);
+            }
         }
 
         public ServerHousingResidences.Residence Build()

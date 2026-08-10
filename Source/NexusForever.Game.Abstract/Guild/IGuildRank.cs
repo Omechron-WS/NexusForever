@@ -19,6 +19,14 @@ namespace NexusForever.Game.Abstract.Guild
         uint MemberCount { get; }
 
         /// <summary>
+        /// Stage this guild rank's database changes and register their successful-commit acknowledgements.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        /// <param name="deleteAcknowledged">Action invoked when a requested deletion commits.</param>
+        void Save(CharacterContext context, ISaveCommitScope commitScope, Action deleteAcknowledged);
+
+        /// <summary>
         /// Add a new <see cref="GuildRankPermission"/>.
         /// </summary>
         void AddPermission(GuildRankPermission guildRankPermission);

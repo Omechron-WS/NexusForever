@@ -53,7 +53,7 @@ namespace NexusForever.Game.Guild
             set
             {
                 name = value;
-                saveMask |= GuildBaseSaveMask.Name;
+                saveMask.Mark(GuildBaseSaveMask.Name);
             }
         }
         private string name;
@@ -64,7 +64,7 @@ namespace NexusForever.Game.Guild
             set
             {
                 leaderId = value;
-                saveMask |= GuildBaseSaveMask.LeaderId;
+                saveMask.Mark(GuildBaseSaveMask.LeaderId);
             }
         }
         private ulong? leaderId;
@@ -75,24 +75,24 @@ namespace NexusForever.Game.Guild
             set
             {
                 guildFlags = value;
-                saveMask |= GuildBaseSaveMask.Flags;
+                saveMask.Mark(GuildBaseSaveMask.Flags);
             }
         }
         private GuildFlag guildFlags;
 
-        private GuildBaseSaveMask saveMask;
+        private VersionedSaveMask<GuildBaseSaveMask> saveMask = new();
 
         public uint MemberCount => (uint)members.Count;
 
         /// <summary>
         /// Returns if <see cref="IGuildBase"/> is enqueued to be saved to the database.
         /// </summary>
-        public bool PendingCreate => (saveMask & GuildBaseSaveMask.Create) != 0;
+        public bool PendingCreate => (saveMask.Current & GuildBaseSaveMask.Create) != 0;
 
         /// <summary>
         /// Returns if <see cref="IGuildBase"/> is enqueued to be deleted from the database.
         /// </summary>
-        public bool PendingDelete => (saveMask & GuildBaseSaveMask.Delete) != 0;
+        public bool PendingDelete => (saveMask.Current & GuildBaseSaveMask.Delete) != 0;
 
         /// <summary>
         /// Maximum number of <see cref="IGuildMember"/>'s allowed in the guild.
@@ -146,7 +146,7 @@ namespace NexusForever.Game.Guild
                 members.Add(memberModel.CharacterId, member);
             }
 
-            saveMask = GuildBaseSaveMask.None;
+            saveMask = new VersionedSaveMask<GuildBaseSaveMask>();
         }
 
         /// <summary>
@@ -171,7 +171,7 @@ namespace NexusForever.Game.Guild
                 Type    = Type
             }).FireAndForgetAsync();
 
-            saveMask = GuildBaseSaveMask.Create;
+            saveMask = new VersionedSaveMask<GuildBaseSaveMask>(GuildBaseSaveMask.Create);
         }
 
         protected virtual void InitialiseRanks(string leaderRankName, string councilRankName, string memberRankName)
@@ -186,9 +186,27 @@ namespace NexusForever.Game.Guild
         /// </summary>
         public void Save(CharacterContext context)
         {
-            if (saveMask != GuildBaseSaveMask.None)
+            Save(context, action => action());
+        }
+
+        /// <summary>
+        /// Stage this guild's database changes and register their successful-commit acknowledgements.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            ArgumentNullException.ThrowIfNull(commitScope);
+            Save(context, commitScope.Register);
+        }
+
+        private void Save(CharacterContext context, Action<Action> registerAcknowledgement)
+        {
+            VersionedSaveMaskSnapshot<GuildBaseSaveMask> snapshot = saveMask.Capture();
+            GuildBaseSaveMask stagedMask = snapshot.Mask;
+            if (stagedMask != GuildBaseSaveMask.None)
             {
-                if ((saveMask & GuildBaseSaveMask.Create) != 0)
+                if ((stagedMask & GuildBaseSaveMask.Create) != 0)
                 {
                     context.Add(new GuildModel
                     {
@@ -196,10 +214,11 @@ namespace NexusForever.Game.Guild
                         Type       = (byte)Type,
                         Name       = Name,
                         LeaderId   = LeaderId,
+                        Flags      = (uint)Flags,
                         CreateTime = CreateTime
                     });
                 }
-                else if ((saveMask & GuildBaseSaveMask.Delete) != 0)
+                else if ((stagedMask & GuildBaseSaveMask.Delete) != 0)
                 {
                     var model = new GuildModel
                     {
@@ -231,19 +250,19 @@ namespace NexusForever.Game.Guild
                     };
 
                     EntityEntry<GuildModel> entity = context.Attach(model);
-                    if ((saveMask & GuildBaseSaveMask.Name) != 0)
+                    if ((stagedMask & GuildBaseSaveMask.Name) != 0)
                     {
                         model.Name = name;
                         entity.Property(p => p.Name).IsModified = true;
                     }
 
-                    if ((saveMask & GuildBaseSaveMask.LeaderId) != 0)
+                    if ((stagedMask & GuildBaseSaveMask.LeaderId) != 0)
                     {
                         model.LeaderId = LeaderId;
                         entity.Property(p => p.LeaderId).IsModified = true;
                     }
 
-                    if ((saveMask & GuildBaseSaveMask.Flags) != 0)
+                    if ((stagedMask & GuildBaseSaveMask.Flags) != 0)
                     {
                         model.Flags = (uint)Flags;
                         entity.Property(p => p.Flags).IsModified = true;
@@ -251,29 +270,46 @@ namespace NexusForever.Game.Guild
                 }
             }
 
-            Save(context, saveMask);
-            saveMask = GuildBaseSaveMask.None;
+            StageSave(context, stagedMask, registerAcknowledgement);
+            registerAcknowledgement(() => saveMask.Acknowledge(snapshot));
 
             foreach (IGuildRank rank in ranks.Values.ToList())
             {
-                if (rank.PendingDelete)
-                    ranks.Remove(rank.Index);
-
-                rank.Save(context);
+                rank.Save(context, new DelegateSaveCommitScope(registerAcknowledgement), () =>
+                {
+                    if (ranks.TryGetValue(rank.Index, out IGuildRank current) && ReferenceEquals(current, rank))
+                        ranks.Remove(rank.Index);
+                });
             }
 
             foreach (IGuildMember member in members.Values.ToList())
             {
-                if (member.PendingDelete)
-                    members.Remove(member.CharacterId);
-
-                member.Save(context);
+                member.Save(context, new DelegateSaveCommitScope(registerAcknowledgement), () =>
+                {
+                    if (members.TryGetValue(member.CharacterId, out IGuildMember current) && ReferenceEquals(current, member))
+                        members.Remove(member.CharacterId);
+                });
             }
         }
 
-        protected virtual void Save(CharacterContext context, GuildBaseSaveMask saveMask)
+        protected virtual void StageSave(CharacterContext context, GuildBaseSaveMask saveMask, Action<Action> registerAcknowledgement)
         {
             // deliberately empty
+        }
+
+        private sealed class DelegateSaveCommitScope : ISaveCommitScope
+        {
+            private readonly Action<Action> registerAcknowledgement;
+
+            public DelegateSaveCommitScope(Action<Action> registerAcknowledgement)
+            {
+                this.registerAcknowledgement = registerAcknowledgement;
+            }
+
+            public void Register(Action action)
+            {
+                registerAcknowledgement(action);
+            }
         }
 
         public virtual GuildData Build()
@@ -522,7 +558,7 @@ namespace NexusForever.Game.Guild
                 GuildId = Id,
             }).FireAndForgetAsync();
 
-            saveMask |= GuildBaseSaveMask.Delete;
+            saveMask.Mark(GuildBaseSaveMask.Delete);
             log.Trace($"Guild {Id} was disbanded.");
         }
 

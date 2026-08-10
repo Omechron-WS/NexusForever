@@ -28,7 +28,9 @@ namespace NexusForever.Game.Abstract.Housing
         /// <remarks>
         /// This will force save all residences.
         /// </remarks>
-        void Shutdown();
+        /// <param name="cancellationToken">Token that cancels the final database saves.</param>
+        /// <returns>A task representing the shutdown operation.</returns>
+        Task ShutdownAsync(CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Create new <see cref="IResidence"/> for supplied <see cref="IPlayer"/>.

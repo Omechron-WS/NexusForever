@@ -41,15 +41,19 @@ namespace NexusForever.Game.Guild
         private delegate void GuildOperationHandlerDelegate(IGuildBase guild, IGuildMember member, IPlayer player, ClientGuildOperation operation);
 
         private readonly UpdateTimer saveTimer = new(SaveDuration);
+        private readonly List<PendingGuildSave> pendingSaves = [];
 
         #region Dependency Injection
 
         private readonly IGuildFactory guildFactory;
+        private readonly IDatabaseManager databaseManager;
 
         public GlobalGuildManager(
-            IGuildFactory guildFactory)
+            IGuildFactory guildFactory,
+            IDatabaseManager databaseManager)
         {
-            this.guildFactory = guildFactory;
+            this.guildFactory    = guildFactory;
+            this.databaseManager = databaseManager;
         }
 
         #endregion
@@ -158,11 +162,20 @@ namespace NexusForever.Game.Guild
         /// <remarks>
         /// This will force save all guilds.
         /// </remarks>
-        public void Shutdown()
+        /// <param name="cancellationToken">Token that cancels the final database saves.</param>
+        /// <returns>A task representing the shutdown operation.</returns>
+        public async Task ShutdownAsync(CancellationToken cancellationToken = default)
         {
             log.Info("Shutting down guild manager...");
 
-            SaveGuilds();
+            IReadOnlyList<Exception> pendingFailures = await DrainPendingSavesAsync();
+            foreach (Exception exception in pendingFailures)
+                log.Warn(exception, "A pending guild save failed during shutdown; retrying dirty state.");
+
+            StartGuildSaves(cancellationToken);
+            IReadOnlyList<Exception> failures = await DrainPendingSavesAsync();
+            if (failures.Count != 0)
+                throw new AggregateException("One or more guilds failed to save during shutdown.", failures);
         }
 
         /// <summary>
@@ -170,34 +183,120 @@ namespace NexusForever.Game.Guild
         /// </summary>
         public void Update(double lastTick)
         {
+            CompleteFinishedSaves();
             saveTimer.Update(lastTick);
 
             if (saveTimer.HasElapsed)
             {
-                SaveGuilds();
+                if (pendingSaves.Count == 0)
+                    StartGuildSaves();
                 saveTimer.Reset();
             }
         }
 
-        private void SaveGuilds()
+        private void StartGuildSaves(CancellationToken cancellationToken = default)
         {
-            var tasks = new List<Task>();
-            foreach (GuildBase guild in guilds.Values.ToList())
+            CharacterDatabase database = databaseManager.GetDatabase<CharacterDatabase>();
+            foreach (IGuildBase guild in guilds.Values.ToList())
             {
-                if (guild.PendingDelete)
+                if (guild.PendingCreate && guild.PendingDelete)
                 {
-                    guilds.Remove(guild.Id);
-                    guildNameCache.Remove((guild.Type, guild.Name));
-
-                    if (guild.PendingCreate)
-                        continue;
+                    RemoveGuildFromCaches(guild);
+                    continue;
                 }
 
-                tasks.Add(DatabaseManager.Instance.GetDatabase<CharacterDatabase>().Save(guild.Save));
-            }
+                bool deleteStaged = guild.PendingDelete;
+                Task<SaveCommitAcknowledgement> saveTask;
+                try
+                {
+                    saveTask = database.SaveWithAcknowledgement((context, commitScope) =>
+                    {
+                        guild.Save(context, commitScope);
+                        if (deleteStaged)
+                            commitScope.Register(() => RemoveGuildFromCaches(guild));
+                    }, cancellationToken);
+                }
+                catch (Exception exception)
+                {
+                    saveTask = Task.FromException<SaveCommitAcknowledgement>(exception);
+                }
 
-            Task.WaitAll(tasks.ToArray());
+                pendingSaves.Add(new PendingGuildSave(guild.Id, saveTask));
+            }
         }
+
+        private void CompleteFinishedSaves()
+        {
+            for (int i = pendingSaves.Count - 1; i >= 0; i--)
+            {
+                PendingGuildSave pendingSave = pendingSaves[i];
+                if (!pendingSave.SaveTask.IsCompleted)
+                    continue;
+
+                pendingSaves.RemoveAt(i);
+                try
+                {
+                    pendingSave.SaveTask.GetAwaiter().GetResult().Acknowledge();
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to save guild {pendingSave.GuildId}.");
+                }
+            }
+        }
+
+        private async Task<IReadOnlyList<Exception>> DrainPendingSavesAsync()
+        {
+            PendingGuildSave[] saves = pendingSaves.ToArray();
+            pendingSaves.Clear();
+
+            Task<Exception>[] completions = saves
+                .Select(CompleteSaveAsync)
+                .ToArray();
+            Exception[] results = await Task.WhenAll(completions);
+            return results
+                .Where(exception => exception != null)
+                .ToArray();
+        }
+
+        private static async Task<Exception> CompleteSaveAsync(PendingGuildSave pendingSave)
+        {
+            try
+            {
+                SaveCommitAcknowledgement acknowledgement = await pendingSave.SaveTask;
+                acknowledgement.Acknowledge();
+                return null;
+            }
+            catch (Exception exception)
+            {
+                return exception;
+            }
+        }
+
+        private void RemoveGuildFromCaches(IGuildBase guild)
+        {
+            if (guilds.TryGetValue(guild.Id, out IGuildBase current) && ReferenceEquals(current, guild))
+                guilds.Remove(guild.Id);
+
+            foreach ((GuildType Type, string Name) key in guildNameCache
+                .Where(entry => entry.Value == guild.Id)
+                .Select(entry => entry.Key)
+                .ToList())
+                guildNameCache.Remove(key);
+
+            foreach (ulong characterId in guildMemberCache
+                .Where(entry => entry.Value.Contains(guild.Id))
+                .Select(entry => entry.Key)
+                .ToList())
+            {
+                List<ulong> characterGuilds = guildMemberCache[characterId];
+                characterGuilds.Remove(guild.Id);
+                if (characterGuilds.Count == 0)
+                    guildMemberCache.Remove(characterId);
+            }
+        }
+
+        private sealed record PendingGuildSave(ulong GuildId, Task<SaveCommitAcknowledgement> SaveTask);
 
         /// <summary>
         /// Returns <see cref="IGuildBase"/> with supplied id.

@@ -13,5 +13,13 @@ namespace NexusForever.Game.Abstract.Guild
         IGuildRank Rank { get; set; }
         string Note { get; set; }
         int CommunityPlotReservation { get; set; }
+
+        /// <summary>
+        /// Stage this guild member's database changes and register their successful-commit acknowledgements.
+        /// </summary>
+        /// <param name="context">Character database context.</param>
+        /// <param name="commitScope">Scope receiving post-commit acknowledgements.</param>
+        /// <param name="deleteAcknowledged">Action invoked when a requested deletion commits.</param>
+        void Save(CharacterContext context, ISaveCommitScope commitScope, Action deleteAcknowledged);
     }
 }

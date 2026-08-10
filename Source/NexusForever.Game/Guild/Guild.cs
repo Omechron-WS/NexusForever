@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract;
@@ -36,7 +37,7 @@ namespace NexusForever.Game.Guild
             set
             {
                 messageOfTheDay = value;
-                saveMask |= GuildSaveMask.MessageOfTheDay;
+                saveMask.Mark(GuildSaveMask.MessageOfTheDay);
             }
         }
         private string messageOfTheDay;
@@ -47,12 +48,12 @@ namespace NexusForever.Game.Guild
             set
             {
                 additionalInfo = value;
-                saveMask |= GuildSaveMask.AdditionalInfo;
+                saveMask.Mark(GuildSaveMask.AdditionalInfo);
             }
         }
         private string additionalInfo;
 
-        private GuildSaveMask saveMask;
+        private VersionedSaveMask<GuildSaveMask> saveMask = new();
 
         #region Dependency Injection
 
@@ -76,6 +77,7 @@ namespace NexusForever.Game.Guild
             additionalInfo     = model.GuildData.AdditionalInfo;
 
             base.Initialise(model);
+            saveMask = new VersionedSaveMask<GuildSaveMask>();
         }
 
         /// <summary>
@@ -89,9 +91,10 @@ namespace NexusForever.Game.Guild
             additionalInfo     = "";
 
             Initialise(name, leaderRankName, councilRankName, memberRankName);
+            saveMask = new VersionedSaveMask<GuildSaveMask>();
         }
 
-        protected override void Save(CharacterContext context, GuildBaseSaveMask baseSaveMask)
+        protected override void StageSave(CharacterContext context, GuildBaseSaveMask baseSaveMask, Action<Action> registerAcknowledgement)
         {
             if ((baseSaveMask & GuildBaseSaveMask.Create) != 0)
             {
@@ -106,7 +109,9 @@ namespace NexusForever.Game.Guild
                 });
             }
 
-            if (saveMask != GuildSaveMask.None)
+            VersionedSaveMaskSnapshot<GuildSaveMask> snapshot = saveMask.Capture();
+            GuildSaveMask stagedMask = snapshot.Mask;
+            if ((baseSaveMask & GuildBaseSaveMask.Create) == 0 && stagedMask != GuildSaveMask.None)
             {
                 var model = new GuildDataModel
                 {
@@ -114,20 +119,21 @@ namespace NexusForever.Game.Guild
                 };
 
                 EntityEntry<GuildDataModel> entity = context.Attach(model);
-                if ((saveMask & GuildSaveMask.MessageOfTheDay) != 0)
+                if ((stagedMask & GuildSaveMask.MessageOfTheDay) != 0)
                 {
                     model.MessageOfTheDay = MessageOfTheDay;
                     entity.Property(p => p.MessageOfTheDay).IsModified = true;
                 }
 
-                if ((saveMask & GuildSaveMask.AdditionalInfo) != 0)
+                if ((stagedMask & GuildSaveMask.AdditionalInfo) != 0)
                 {
                     model.AdditionalInfo = AdditionalInfo;
                     entity.Property(p => p.AdditionalInfo).IsModified = true;
                 }
 
-                saveMask = GuildSaveMask.None;
             }
+
+            registerAcknowledgement(() => saveMask.Acknowledge(snapshot));
 
             AchievementManager.Save(context);
         }
