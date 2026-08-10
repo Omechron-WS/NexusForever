@@ -19,9 +19,9 @@ This document records verified implementation status on the `convergence` branch
 | 1 — Loot | Incomplete | Schema, recursive loading, startup/ticking, owner attachment, authorised same-map collection, reconnect notification, loot bags, capacity-safe item grants, expiry, and stale-owner cleanup are live and tested. Conditional loot, group/raid allocation, and the Phase 6 `CorpseLooted` removal transition remain incomplete. |
 | 2 — Spell variants | Incomplete | Factory dispatch is live. Failed-cast cleanup, cancellation semantics, phase masks, threshold input, aura cleanup, and exactly-once costs remain incomplete. |
 | 3 — Client-side interaction | Incomplete | Foundations exist, but the build-16042 start/result packet loop, client correlation ID, timeout, entity callbacks, and quest integration are not live. |
-| 4 — Combat, healing, and procs | Incomplete | Healing and immediate combat-state hooks exist. Proc collection, dispatch, cooldowns, and lifecycle cleanup are not integrated into the live combat loop. |
+| 4 — Combat, healing, and procs | Incomplete | Healing, live movement/critical proc dispatch, cooldowns and delayed triggers, exact per-spell/per-target teardown across finish, cancellation, aura exit, death, and disposal, combat-state transitions, and corrected critical, power, and mitigation formula paths are live and tested. The broader roadmap's proc-chance, `OnHit`/`OnDamageReceived`, and PvP threat-timeout coverage remains incomplete. |
 | 5 — NPC AI | Not implemented | Scheduled after the Phase 6 entity lifecycle is stable. |
-| 6 — Entity vitals and lifecycle | Design only | Vitals, regeneration, death/corpse completion, rewards, respawn, class resources, sprint, and dash remain to be implemented. |
+| 6 — Entity vitals and lifecycle | Design only | The Phase 4 combat-state hooks required by the design are now live. Vitals, regeneration, death/corpse completion, rewards, respawn, class resources, sprint, and dash remain to be implemented; the design's sprint packet and class-resource property assumptions still require build-16042 verification. |
 | 7 — Quests | Not implemented | Pending stable combat, lifecycle, and interaction systems. |
 | 8 — Zone content | Not implemented | A starter/tutorial gameplay loop has not yet been proven. |
 | 9 — Housing | Not implemented | Pending earlier gameplay phases. |
@@ -42,12 +42,12 @@ Completed hardening:
 - The administrative command WebSocket is disabled by default, bound to loopback in the example configuration, and no longer published by the default Aspire topology. When explicitly enabled it requires a hashed bearer credential and an exact Origin allow-list, accepts only bounded strict-UTF-8 text messages, and rejects malformed command envelopes without dispatching them.
 - Task-backed events now distinguish successful, failed, and cancelled operations. Authentication and character mutations fail closed without running success callbacks, detached task failures are logged by default, and player cleanup retains its account lock while retrying failed saves.
 - World loot tables now have an EF migration, are validated and loaded recursively at startup, and active loot expiry advances from the world tick. Invalid graph data fails startup without poisoning a later initialisation attempt.
-- Player saves are serialised and acknowledge Auth and Character commits independently. Player/account state, inventory, mail, keybindings, entitlements, RBAC, guilds, and housing retain dirty state and deletion tombstones until their database commit succeeds; manager shutdown retries failed saves without blocking worker threads.
+- Player saves are serialised and acknowledge Auth and Character commits independently. Player/account state, inventory, mail, character stats and scalar progression, presentation and loadout graphs, keybindings, entitlements, RBAC, guilds, and housing retain dirty state and deletion tombstones until their database commit succeeds; manager shutdown retries failed saves without blocking worker threads.
 - Loot claims validate the stable character identity, client-supplied owner/item identifiers, live source entity, exact map instance, and range. Inventory-full claims remain retryable, reward-path failures use an at-most-once boundary, and unsupported loot-table item types fail startup rather than leaving permanent uncollectable drops.
 
 Remaining priority work:
 
-- Convert the remaining character child graphs (progression, loadouts, quests, and achievements) to post-commit acknowledgement; their compatibility overloads still clear dirty state while staging.
+- Convert the residual quest and achievement child graphs to post-commit acknowledgement; they still use compatibility overloads that clear dirty state while staging.
 - Make cross-server lifecycle publication failures retryable; detached failures are now observable through error logging.
 - Add bounded, non-blocking network send backpressure so a stalled client cannot stop the world update thread.
 - Replace the command WebSocket role's effectively unrestricted permission set, bound its pending command queue, and serialise/bound outbound responses before restoring a browser console in Phase 11.
@@ -58,7 +58,7 @@ SharpCompress `0.22.0` is transitively supplied by `Nexus.Archive 1.0.1` to the 
 
 ## Next validated slices
 
-1. Complete Phase 4 proc dispatch and combat-state hooks, then start the Phase 6 vital/death lifecycle.
-2. Convert the remaining character child persistence graphs and make cross-server publication failures retryable.
+1. Close the broader Phase 4 proc-trigger/chance and PvP threat-timeout gaps, then start the Phase 6 vital/death lifecycle on the tested combat-state hooks.
+2. Convert quest and achievement persistence to post-commit acknowledgement and make cross-server publication failures retryable.
 3. Repair the Phase 2 and Phase 3 state-machine and client-correlation blockers; implement conditional loot alongside Phase 7 quest-state queries.
 4. Add bounded network send backpressure and continue lower-risk long-uptime hardening alongside the gameplay phases.
