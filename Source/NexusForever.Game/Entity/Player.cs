@@ -457,16 +457,39 @@ namespace NexusForever.Game.Entity
         }
 
         /// <summary>
-        /// Save <see cref="IPlayer"/> to database.
+        /// Save <see cref="IPlayer"/> to the databases and return when both attempts are complete.
         /// </summary>
         /// <remarks>
-        /// This is an instant save, <see cref="AuthContext"/> changes are saved first followed by <see cref="CharacterContext"/> changes.
-        /// This will block the calling thread until the database save is complete.
+        /// <see cref="AuthContext"/> and <see cref="CharacterContext"/> changes are attempted independently so one failure does not suppress the other.
         /// </remarks>
-        public async void SaveDirect()
+        public async Task SaveDirectAsync(CancellationToken cancellationToken = default)
         {
-            await DatabaseManager.Instance.GetDatabase<AuthDatabase>().Save(Save);
-            await DatabaseManager.Instance.GetDatabase<CharacterDatabase>().Save(Save);
+            var exceptions = new List<Exception>();
+            try
+            {
+                await DatabaseManager.Instance.GetDatabase<AuthDatabase>().Save(Save, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                exceptions.Add(exception);
+            }
+
+            try
+            {
+                await DatabaseManager.Instance.GetDatabase<CharacterDatabase>().Save(Save, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                exceptions.Add(exception);
+            }
+
+            if (exceptions.Count == 0)
+                return;
+
+            if (cancellationToken.IsCancellationRequested && exceptions.All(exception => exception is OperationCanceledException))
+                throw new OperationCanceledException(cancellationToken);
+
+            throw new AggregateException($"Failed to save player {CharacterId}.", exceptions);
         }
 
         /// <summary>

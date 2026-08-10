@@ -105,13 +105,12 @@ namespace NexusForever.Game.Abstract.Entity
         void Save(Action callback = null);
 
         /// <summary>
-        /// Save <see cref="IPlayer"/> to database.
+        /// Save <see cref="IPlayer"/> to the databases and return when both attempts are complete.
         /// </summary>
         /// <remarks>
-        /// This is an instant save, <see cref="AuthContext"/> changes are saved first followed by <see cref="CharacterContext"/> changes.
-        /// This will block the calling thread until the database save is complete. 
+        /// <see cref="AuthContext"/> and <see cref="CharacterContext"/> changes are attempted independently so one failure does not suppress the other.
         /// </remarks>
-        void SaveDirect();
+        Task SaveDirectAsync(CancellationToken cancellationToken = default);
 
         ItemProficiency GetItemProficiencies();
 

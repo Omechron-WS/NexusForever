@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -7,6 +9,7 @@ using NexusForever.Database;
 using NexusForever.Database.Configuration.Model;
 using NexusForever.Game;
 using NexusForever.Game.Abstract.Chat.Format;
+using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Matching.Match;
 using NexusForever.Game.Abstract.Matching.Queue;
 using NexusForever.Game.Abstract.PublicEvent;
@@ -178,7 +181,7 @@ namespace NexusForever.WorldServer.Service
         /// <summary>
         /// Stop <see cref="WorldServer"/> and any related resources.
         /// </summary>
-        public Task StopAsync(CancellationToken cancellationToken)
+        public async Task StopAsync(CancellationToken cancellationToken)
         {
             log.LogInformation("Stopping...");
 
@@ -200,11 +203,12 @@ namespace NexusForever.WorldServer.Service
             GlobalResidenceManager.Instance.Shutdown();
             GlobalGuildManager.Instance.Shutdown();
 
-            foreach (IWorldSession worldSession in networkManager)
-                worldSession.Player?.SaveDirect();
+            IEnumerable<IPlayer> players = networkManager
+                .Select(worldSession => worldSession.Player)
+                .Where(player => player != null);
+            await PlayerSaveCoordinator.SaveAsync(players, cancellationToken);
 
             log.LogInformation("Stopped!");
-            return Task.CompletedTask;
         }
     }
 }

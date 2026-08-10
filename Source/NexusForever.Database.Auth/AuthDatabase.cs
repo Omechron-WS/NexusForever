@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
@@ -23,11 +24,11 @@ namespace NexusForever.Database.Auth
             config = connectionString;
         }
 
-        public async Task Save(Action<AuthContext> action)
+        public async Task Save(Action<AuthContext> action, CancellationToken cancellationToken = default)
         {
             using var context = new AuthContext(config);
             action.Invoke(context);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(cancellationToken);
         }
 
         public void Migrate()

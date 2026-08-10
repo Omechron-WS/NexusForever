@@ -36,12 +36,13 @@ Completed hardening:
 - Bounded STS headers, bodies, SRP fields, and XML parsing, including correct fragmented and coalesced packet handling.
 - Enforced STS authentication states with a pending state, authenticated-only token/account operations, and same-connection reauthentication support.
 - Session encryption keys and account credentials are no longer written to authentication logs or exceptions.
+- World shutdown awaits every player save, attempts both databases and every connected player after individual failures, and reports aggregate failure before declaring shutdown complete.
 
 Remaining priority work:
 
 - Authenticate and bound `/ws/commands`; enforce an origin policy and disable broad external exposure by default.
 - Authenticate the Character and Account service APIs and their clients.
-- Replace `Player.SaveDirect` asynchronous-void shutdown behavior with awaited, retry-safe persistence.
+- Make persistence dirty-state acknowledgement retry-safe after a database commit fails.
 - Isolate and report per-map update failures instead of silently skipping work.
 - Make cross-server lifecycle publication failures observable and retryable.
 - Add bounded, non-blocking network send backpressure so a stalled client cannot stop the world update thread.

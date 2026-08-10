@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using NexusForever.Database.Character.Model;
@@ -21,11 +22,11 @@ namespace NexusForever.Database.Character
             config = connectionString;
         }
 
-        public async Task Save(Action<CharacterContext> action)
+        public async Task Save(Action<CharacterContext> action, CancellationToken cancellationToken = default)
         {
             await using var context = new CharacterContext(config);
             action.Invoke(context);
-            await context.SaveChangesAsync();
+            await context.SaveChangesAsync(cancellationToken);
         }
 
         public async Task Save(IDatabaseCharacter entity)
