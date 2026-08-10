@@ -7,7 +7,7 @@ using NexusForever.Database.World;
 using NexusForever.Database.World.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Loot;
-using NexusForever.Game.Static.Account;
+using NexusForever.Game.Static.AccountInventory;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Loot;
 using NexusForever.Shared;
@@ -112,7 +112,7 @@ namespace NexusForever.Game.Loot
             if (Random.Shared.NextDouble() * 100d < OmnibitDropChance)
             {
                 uint omnibitAmount = OmnibitMinAmount + (uint)Random.Shared.Next(0, (int)(OmnibitMaxAmount - OmnibitMinAmount + 1)) + looter.Level;
-                instance.AddLootItem((uint)AccountCurrencyType.Omnibit, LootItemType.AccountCurrency, omnibitAmount);
+                instance.AddLootItem((uint)AccountCurrencyType.Omnibits, LootItemType.AccountCurrency, omnibitAmount);
             }
 
             activeLootInstances.Add(instance);
