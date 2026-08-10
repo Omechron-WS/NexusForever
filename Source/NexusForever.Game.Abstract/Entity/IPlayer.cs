@@ -96,13 +96,14 @@ namespace NexusForever.Game.Abstract.Entity
         IVendorInfo SelectedVendorInfo { get; set; }
 
         /// <summary>
-        /// Save <see cref="IPlayer"/> to database, invoke supplied <see cref="Action"/> once save is complete.
+        /// Save <see cref="IPlayer"/> to the databases and invoke the supplied callback once both attempts complete successfully.
         /// </summary>
         /// <remarks>
-        /// This is a delayed save, <see cref="AuthContext"/> changes are saved first followed by <see cref="CharacterContext"/> changes.
+        /// This is a delayed save. <see cref="AuthContext"/> changes are attempted first, followed by <see cref="CharacterContext"/> changes.
+        /// Failures are aggregated and passed to the optional failure callback.
         /// Packets for session will not be handled until save is complete.
         /// </remarks>
-        void Save(Action callback = null);
+        void Save(Action callback = null, Action<Exception> exceptionCallback = null);
 
         /// <summary>
         /// Save <see cref="IPlayer"/> to the databases and return when both attempts are complete.

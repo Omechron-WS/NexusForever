@@ -11,11 +11,14 @@ using NexusForever.Network.Message;
 using NexusForever.Network.World.Message.Model.Pregame;
 using NexusForever.Network.World.Message.Static;
 using NexusForever.Shared.Game.Events;
+using NLog;
 
 namespace NexusForever.WorldServer.Network.Message.Handler.Character
 {
     public class ClientSelectRealmHandler : IMessageHandler<IWorldSession, ClientSelectRealm>
     {
+        private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+
         #region Dependency Injection
 
         private readonly IServerManager serverManager;
@@ -49,9 +52,11 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Character
             }
 
             byte[] sessionKey = RandomProvider.GetBytes(16u);
+            session.CanProcessIncomingPackets = false;
             session.Events.EnqueueEvent(new TaskEvent(databaseManager.GetDatabase<AuthDatabase>().UpdateAccountSessionKey(session.Account.Id, Convert.ToHexString(sessionKey)),
                 () =>
             {
+                session.CanProcessIncomingPackets = true;
                 session.EnqueueMessageEncrypted(new ServerNewRealm
                 {
                     SessionKey  = sessionKey,
@@ -63,6 +68,11 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Character
                     RealmName = server.Model.Name,
                     Type      = (RealmType)server.Model.Type
                 });
+            }, exception =>
+            {
+                session.CanProcessIncomingPackets = true;
+                log.Error(exception, $"Failed to persist a realm-selection key for account {session.Account.Id}.");
+                session.EnqueueMessageEncrypted(new ServerForceKick());
             }));
         }
     }

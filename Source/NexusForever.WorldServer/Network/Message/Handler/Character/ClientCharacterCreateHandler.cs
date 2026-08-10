@@ -21,11 +21,14 @@ using NexusForever.Network.Message;
 using NexusForever.Network.World.Message.Model.Pregame;
 using NexusForever.Network.World.Message.Static;
 using NexusForever.Shared.Game.Events;
+using NLog;
 
 namespace NexusForever.WorldServer.Network.Message.Handler.Character
 {
     public class ClientCharacterCreateHandler : IMessageHandler<IWorldSession, ClientCharacterCreate>
     {
+        private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+
         #region Dependency Injection
 
         private readonly ITextFilterManager textFilterManager;
@@ -243,7 +246,7 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Character
                     Value = 1
                 });
 
-                // TODO: actually error check this
+                session.CanProcessIncomingPackets = false;
                 session.Events.EnqueueEvent(new TaskEvent(databaseManager.GetDatabase<CharacterDatabase>().Save(c =>
                     {
                         c.Character.Add(character);
@@ -252,6 +255,7 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Character
                     }),
                     () =>
                 {
+                    session.CanProcessIncomingPackets = true;
                     session.Characters.Add(character);
                     characterManager.AddCharacter(character);
 
@@ -263,6 +267,14 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Character
                         CharacterId = character.Id,
                         WorldId     = character.WorldId,
                         Result      = CharacterModifyResult.CreateOk
+                    });
+                }, exception =>
+                {
+                    session.CanProcessIncomingPackets = true;
+                    log.Error(exception, $"Failed to create character {character.Id} for account {session.Account.Id}.");
+                    session.EnqueueMessageEncrypted(new ServerCharacterCreate
+                    {
+                        Result = CharacterModifyResult.CreateFailed
                     });
                 }));
             }

@@ -13,11 +13,14 @@ using NexusForever.Network.World.Message.Model;
 using NexusForever.Network.World.Message.Model.Pregame;
 using NexusForever.Network.World.Message.Static;
 using NexusForever.Shared.Game.Events;
+using NLog;
 
 namespace NexusForever.WorldServer.Network.Message.Handler.Character
 {
     public class CharacterDeleteHandler : IMessageHandler<IWorldSession, ClientCharacterDelete>
     {
+        private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+
         #region Dependency Injection
 
         private readonly IGlobalGuildManager globalGuildManager;
@@ -112,6 +115,14 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Character
                 session.EnqueueMessageEncrypted(new ServerCharacterDeleteResult
                 {
                     Result = deleteCheck.result
+                });
+            }, exception =>
+            {
+                session.CanProcessIncomingPackets = true;
+                log.Error(exception, $"Failed to delete character {characterToDelete.Id} for account {session.Account.Id}.");
+                session.EnqueueMessageEncrypted(new ServerCharacterDeleteResult
+                {
+                    Result = CharacterModifyResult.DeleteFailed
                 });
             }));
         }

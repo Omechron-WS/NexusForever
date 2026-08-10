@@ -40,11 +40,12 @@ Completed hardening:
 - Map updates isolate and report individual top-level map and instance failures in both synchronous and worker-task modes, allowing healthy siblings to keep ticking.
 - Character and Account service APIs require bounded per-service credentials; typed clients attach them without redirect forwarding, and Aspire provisions separate persisted secrets.
 - The administrative command WebSocket is disabled by default, bound to loopback in the example configuration, and no longer published by the default Aspire topology. When explicitly enabled it requires a hashed bearer credential and an exact Origin allow-list, accepts only bounded strict-UTF-8 text messages, and rejects malformed command envelopes without dispatching them.
+- Task-backed events now distinguish successful, failed, and cancelled operations. Authentication and character mutations fail closed without running success callbacks, detached task failures are logged by default, and player cleanup retains its account lock while retrying failed saves.
 
 Remaining priority work:
 
 - Make persistence dirty-state acknowledgement retry-safe after a database commit fails.
-- Make cross-server lifecycle publication failures observable and retryable.
+- Make cross-server lifecycle publication failures retryable; detached failures are now observable through error logging.
 - Add bounded, non-blocking network send backpressure so a stalled client cannot stop the world update thread.
 - Replace the command WebSocket role's effectively unrestricted permission set, bound its pending command queue, and serialise/bound outbound responses before restoring a browser console in Phase 11.
 

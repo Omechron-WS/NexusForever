@@ -430,25 +430,56 @@ namespace NexusForever.Game.Entity
         }
 
         /// <summary>
-        /// Save <see cref="IPlayer"/> to database, invoke supplied <see cref="Action"/> once save is complete.
+        /// Save <see cref="IPlayer"/> to the databases and invoke the supplied callback once both attempts complete successfully.
         /// </summary>
         /// <remarks>
-        /// This is a delayed save, <see cref="AuthContext"/> changes are saved first followed by <see cref="CharacterContext"/> changes.
+        /// This is a delayed save. <see cref="AuthContext"/> changes are attempted first, followed by <see cref="CharacterContext"/> changes.
+        /// Failures are aggregated and passed to the optional failure callback.
         /// Packets for session will not be handled until save is complete.
         /// </remarks>
-        public void Save(Action callback = null)
+        public void Save(Action callback = null, Action<Exception> exceptionCallback = null)
         {
-            Session.Events.EnqueueEvent(new TaskEvent(DatabaseManager.Instance.GetDatabase<AuthDatabase>().Save(Save),
-            () =>
+            var exceptions = new List<Exception>();
+
+            void CompleteSave()
             {
-                Session.Events.EnqueueEvent(new TaskEvent(DatabaseManager.Instance.GetDatabase<CharacterDatabase>().Save(Save),
-                () =>
+                Session.CanProcessIncomingPackets = true;
+                saveTimer.Resume();
+
+                if (exceptions.Count == 0)
                 {
                     callback?.Invoke();
-                    Session.CanProcessIncomingPackets = true;
-                    saveTimer.Resume();
+                    return;
+                }
+
+                forceSave = true;
+                var exception = new AggregateException($"Failed to save player {CharacterId}.", exceptions);
+                if (exceptionCallback != null)
+                    exceptionCallback.Invoke(exception);
+                else
+                    log.Error(exception);
+            }
+
+            void SaveCharacter()
+            {
+                Session.Events.EnqueueEvent(new TaskEvent(
+                    DatabaseManager.Instance.GetDatabase<CharacterDatabase>().Save(Save),
+                    CompleteSave,
+                    exception =>
+                    {
+                        exceptions.Add(exception);
+                        CompleteSave();
+                    }));
+            }
+
+            Session.Events.EnqueueEvent(new TaskEvent(
+                DatabaseManager.Instance.GetDatabase<AuthDatabase>().Save(Save),
+                SaveCharacter,
+                exception =>
+                {
+                    exceptions.Add(exception);
+                    SaveCharacter();
                 }));
-            }));
 
             saveTimer.Reset(false);
 
@@ -939,34 +970,35 @@ namespace NexusForever.Game.Entity
 
             log.Trace($"Waiting to cleanup character {Name}({CharacterId})...");
 
-            Session.Events.EnqueueEvent(new TimeoutPredicateEvent(TimeSpan.FromSeconds(15), CanCleanup,
-                () =>
+            void SaveForCleanup()
             {
-                try
+                Save(() =>
                 {
-                    log.Trace($"Cleanup for character {Name}({CharacterId}) has started...");
+                    if (Map != null)
+                        RemoveFromMap();
 
-                    Save(() =>
+                    messagePublisher.PublishAsync(new PlayerLoggedOutMessage
                     {
-                        if (Map != null)
-                            RemoveFromMap();
+                        Identity = Identity.ToInternalIdentity()
+                    }).FireAndForgetAsync();
 
-                        messagePublisher.PublishAsync(new PlayerLoggedOutMessage
-                        {
-                            Identity = Identity.ToInternalIdentity()
-                        }).FireAndForgetAsync();
-
-                        Dispose();
-                    });
-                }
-                finally
-                {
+                    Dispose();
                     CleanupManager.Instance.RemovePlayer(this);
                     log.Trace($"Cleanup for character {Name}({CharacterId}) has completed.");
-
                     LogoutManager.State = LogoutState.Finished;
-                }
-            }));
+                }, exception =>
+                {
+                    log.Error(exception, $"Cleanup save failed for character {Name}({CharacterId}); retrying.");
+                    Session.Events.EnqueueEvent(new DelayEvent(TimeSpan.FromSeconds(5), SaveForCleanup));
+                });
+            }
+
+            Session.Events.EnqueueEvent(new TimeoutPredicateEvent(TimeSpan.FromSeconds(15), CanCleanup,
+                () =>
+                {
+                    log.Trace($"Cleanup for character {Name}({CharacterId}) has started...");
+                    SaveForCleanup();
+                }));
         }
 
         private bool CanCleanup()

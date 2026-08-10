@@ -10,12 +10,15 @@ using NexusForever.Network.Auth.Message.Model;
 using NexusForever.Network.Auth.Static;
 using NexusForever.Network.Message;
 using NexusForever.Shared.Game.Events;
+using NLog;
 using NetworkMessage = NexusForever.Network.Message.Model.Shared.Message;
 
 namespace NexusForever.AuthServer.Network.Message.Handler
 {
     public class HelloAuthHandler : IMessageHandler<AuthSession, ClientHelloAuth>
     {
+        private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+
         #region Dependency Injection
 
         private readonly IDatabaseManager databaseManager;
@@ -87,24 +90,23 @@ namespace NexusForever.AuthServer.Network.Message.Handler
                     return;
                 }
 
-                session.EnqueueMessageEncrypted(new ServerAuthAccepted());
-                session.EnqueueMessageEncrypted(new ServerRealmMessages
-                {
-                    Messages = serverManager.ServerMessages
-                        .Select(m => new NetworkMessage
-                        {
-                            Index    = m.Index,
-                            Messages = m.Messages
-                        })
-                        .ToList()
-                });
-
                 byte[] sessionKey = RandomProvider.GetBytes(16u);
 
                 account.SessionKey = Convert.ToHexString(sessionKey);
                 session.Events.EnqueueEvent(new TaskEvent(databaseManager.GetDatabase<AuthDatabase>().UpdateAccountSessionKey(account.Id, account.SessionKey),
                     () =>
                 {
+                    session.EnqueueMessageEncrypted(new ServerAuthAccepted());
+                    session.EnqueueMessageEncrypted(new ServerRealmMessages
+                    {
+                        Messages = serverManager.ServerMessages
+                            .Select(m => new NetworkMessage
+                            {
+                                Index    = m.Index,
+                                Messages = m.Messages
+                            })
+                            .ToList()
+                    });
                     session.EnqueueMessageEncrypted(new ServerRealmInfo
                     {
                         AccountId  = account.Id,
@@ -114,7 +116,15 @@ namespace NexusForever.AuthServer.Network.Message.Handler
                         Port       = server.Model.Port,
                         Type       = (RealmType)server.Model.Type
                     });
+                }, exception =>
+                {
+                    log.Error(exception, $"Failed to persist the session key for authentication session {session.Id}.");
+                    SendServerAuthDenied(NpLoginResult.ErrorDb);
                 }));
+            }, exception =>
+            {
+                log.Error(exception, $"Failed to load the account for authentication session {session.Id}.");
+                SendServerAuthDenied(NpLoginResult.ErrorDb);
             }));
         }
     }

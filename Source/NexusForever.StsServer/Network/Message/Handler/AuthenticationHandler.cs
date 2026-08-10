@@ -112,7 +112,7 @@ namespace NexusForever.StsServer.Network.Message.Handler
                 {
                     Token = guid.ToString()
                 });
-            }));
+            }, session.FailAuthentication));
         }
     }
 }
