@@ -36,6 +36,37 @@ namespace NexusForever.Game.Abstract.Entity
         public IThreatManager ThreatManager { get; }
 
         /// <summary>
+        /// Attempts to return the current value for a build-16042 <see cref="Vital"/> identifier.
+        /// </summary>
+        /// <param name="vital">Vital identifier to read.</param>
+        /// <param name="value">Current vital value when supported.</param>
+        /// <returns><see langword="true"/> when the vital has supported server-side storage; otherwise, <see langword="false"/>.</returns>
+        bool TryGetVitalValue(Vital vital, out float value);
+
+        /// <summary>
+        /// Attempts to return the maximum value for a build-16042 <see cref="Vital"/> identifier.
+        /// </summary>
+        /// <param name="vital">Vital identifier to read.</param>
+        /// <param name="maximum">Current maximum vital value when bounded and supported.</param>
+        /// <returns><see langword="true"/> when the vital has a finite server-side maximum; otherwise, <see langword="false"/>.</returns>
+        bool TryGetVitalMaximum(Vital vital, out float maximum);
+
+        /// <summary>
+        /// Attempts to add a signed delta to a build-16042 <see cref="Vital"/> identifier.
+        /// </summary>
+        /// <remarks>
+        /// Positive deltas restore or add to a vital and negative deltas consume or damage it.
+        /// Integer-backed vital results are truncated towards zero after clamping. Unsupported identifiers,
+        /// non-finite deltas and values that cannot be represented by their backing stat fail without mutation.
+        /// Positive Health deltas do not resurrect a dead entity; resurrection must use its dedicated lifecycle.
+        /// </remarks>
+        /// <param name="vital">Vital identifier to modify.</param>
+        /// <param name="delta">Signed amount to add.</param>
+        /// <param name="source">Optional entity responsible for the modification.</param>
+        /// <returns><see langword="true"/> when the vital is supported and the modification is valid; otherwise, <see langword="false"/>.</returns>
+        bool TryModifyVital(Vital vital, float delta, IUnitEntity source = null);
+
+        /// <summary>
         /// Add a <see cref="Property"/> modifier given a Spell4Id and <see cref="ISpellPropertyModifier"/> instance.
         /// </summary>
         void AddSpellModifierProperty(ISpellPropertyModifier modifier, uint spell4Id);

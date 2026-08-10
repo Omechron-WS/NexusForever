@@ -71,6 +71,141 @@ namespace NexusForever.Game.Entity
 
         public IThreatManager ThreatManager { get; private set; }
 
+        /// <inheritdoc />
+        public bool TryGetVitalValue(Vital vital, out float value)
+        {
+            value = 0f;
+            if (!VitalDefinition.TryGet(vital, out VitalDefinition definition))
+                return false;
+
+            if (definition.UsesIntegerStorage)
+            {
+                value = GetIntegerVitalValue(definition);
+                return true;
+            }
+
+            value = GetStatFloat(definition.Stat) ?? 0f;
+            return float.IsFinite(value);
+        }
+
+        /// <inheritdoc />
+        public bool TryGetVitalMaximum(Vital vital, out float maximum)
+        {
+            maximum = 0f;
+            if (!VitalDefinition.TryGet(vital, out VitalDefinition definition)
+                || definition.MaximumProperty == null)
+                return false;
+
+            maximum = GetPropertyValue(definition.MaximumProperty.Value);
+            if (!float.IsFinite(maximum) || maximum < 0f)
+            {
+                maximum = 0f;
+                return false;
+            }
+
+            if (definition.UsesIntegerStorage && (double)maximum > uint.MaxValue)
+            {
+                maximum = 0f;
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <inheritdoc />
+        public bool TryModifyVital(Vital vital, float delta, IUnitEntity source = null)
+        {
+            if (!float.IsFinite(delta)
+                || !VitalDefinition.TryGet(vital, out VitalDefinition definition))
+                return false;
+
+            if (definition.Stat == Stat.Health && delta > 0f && !IsAlive)
+                return false;
+
+            if (definition.UsesIntegerStorage)
+                return TryModifyIntegerVital(definition, delta, source);
+
+            float current = GetStatFloat(definition.Stat) ?? 0f;
+            if (!float.IsFinite(current)
+                || !TryGetVitalMaximum(vital, out float maximum))
+                return false;
+
+            double result = Math.Clamp((double)current + delta, 0d, maximum);
+            if (!double.IsFinite(result) || result > float.MaxValue)
+                return false;
+
+            float value = (float)result;
+            if (value != current)
+                SetStat(definition.Stat, value);
+
+            return true;
+        }
+
+        private uint GetIntegerVitalValue(VitalDefinition definition)
+        {
+            return definition.Stat switch
+            {
+                Stat.Health          => Health,
+                Stat.Shield          => Shield,
+                Stat.InterruptArmour => InterruptArmor,
+                _                    => GetStatInteger(definition.Stat) ?? 0u
+            };
+        }
+
+        private bool TryModifyIntegerVital(VitalDefinition definition, float delta, IUnitEntity source)
+        {
+            uint current = GetIntegerVitalValue(definition);
+            double result = (double)current + delta;
+
+            if (definition.MaximumProperty != null)
+            {
+                float maximum = GetPropertyValue(definition.MaximumProperty.Value);
+                if (!float.IsFinite(maximum) || maximum < 0f || (double)maximum > uint.MaxValue)
+                    return false;
+
+                result = Math.Clamp(result, 0d, maximum);
+            }
+            else
+                result = Math.Max(result, 0d);
+
+            if (!double.IsFinite(result) || result > uint.MaxValue)
+                return false;
+
+            uint value;
+            try
+            {
+                value = checked((uint)Math.Truncate(result));
+            }
+            catch (OverflowException)
+            {
+                return false;
+            }
+
+            if (value == current)
+                return true;
+
+            switch (definition.Stat)
+            {
+                case Stat.Health:
+                    if (value > current)
+                        ModifyHealth(value - current, DamageType.Heal, source);
+                    else
+                        ModifyHealth(current - value, DamageType.Physical, source);
+                    break;
+                case Stat.Shield:
+                    Shield = value;
+                    break;
+                case Stat.InterruptArmour:
+                    InterruptArmor = value;
+                    break;
+                default:
+                    SetStat(definition.Stat, value);
+                    break;
+            }
+
+            return true;
+        }
+
         /// <summary>
         /// Initial stab at a timer to regenerate Health & Shield values.
         /// </summary>
