@@ -2,7 +2,7 @@
 {
     public enum CommunityPrivacyLevel
     {
-        Public  = 1,
-        Private = 2
+        Public  = 0,
+        Private = 1
     }
 }

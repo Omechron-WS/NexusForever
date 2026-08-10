@@ -82,5 +82,12 @@ namespace NexusForever.Game.Tests.Static
             Assert.Equal(0, (int)LootConditionType.None);
             Assert.Equal(8, (int)LootConditionType.QuestObjectiveActive);
         }
+
+        [Fact]
+        public void CommunityPrivacyLevel_FitsOneBitWireField()
+        {
+            Assert.Equal(0, (int)CommunityPrivacyLevel.Public);
+            Assert.Equal(1, (int)CommunityPrivacyLevel.Private);
+        }
     }
 }
