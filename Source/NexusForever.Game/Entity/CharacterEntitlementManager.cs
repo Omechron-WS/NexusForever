@@ -3,6 +3,7 @@ using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Entitlement;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Reward;
 using NexusForever.GameTable;
@@ -34,8 +35,16 @@ namespace NexusForever.Game.Entity
 
         public void Save(CharacterContext context)
         {
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage character entitlement changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
             foreach (ICharacterEntitlement entitlement in entitlements.Values)
-                entitlement.Save(context);
+                entitlement.Save(context, commitScope);
         }
 
         protected override bool CanUpdateEntitlement(EntitlementEntry entry, int value)

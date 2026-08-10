@@ -1,7 +1,9 @@
-﻿using NexusForever.Database.Auth;
+﻿using NexusForever.Database;
+using NexusForever.Database.Auth;
 using NexusForever.Database.Auth.Model;
 using NexusForever.Game.Abstract.Account;
 using NexusForever.Game.Abstract.Account.Currency;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.AccountInventory;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
@@ -34,8 +36,16 @@ namespace NexusForever.Game.Account.Currency
 
         public void Save(AuthContext context)
         {
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage account currency changes and acknowledge them after the authentication database commits.
+        /// </summary>
+        public void Save(AuthContext context, ISaveCommitScope commitScope)
+        {
             foreach (IAccountCurrency accountCurrency in currencies.Values)
-                accountCurrency.Save(context);
+                accountCurrency.Save(context, commitScope);
         }
 
         /// <summary>

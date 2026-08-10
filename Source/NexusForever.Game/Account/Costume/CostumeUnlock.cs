@@ -1,8 +1,10 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using NexusForever.Database;
 using NexusForever.Database.Auth;
 using NexusForever.Database.Auth.Model;
 using NexusForever.Game.Abstract.Account;
 using NexusForever.Game.Abstract.Account.Costume;
+using NexusForever.Game.Persistence;
 
 namespace NexusForever.Game.Account.Costume
 {
@@ -19,10 +21,10 @@ namespace NexusForever.Game.Account.Costume
         public uint ItemId { get; }
 
         private readonly uint accountId;
-        private CostumeUnlockSaveMask saveMask;
+        private readonly VersionedSaveMask<CostumeUnlockSaveMask> saveMask = new();
 
-        public bool PendingCreate => (saveMask & CostumeUnlockSaveMask.Create) != 0;
-        public bool PendingDelete => (saveMask & CostumeUnlockSaveMask.Delete) != 0;
+        public bool PendingCreate => (saveMask.Current & CostumeUnlockSaveMask.Create) != 0;
+        public bool PendingDelete => (saveMask.Current & CostumeUnlockSaveMask.Delete) != 0;
 
         /// <summary>
         /// Create a new <see cref="ICostumeUnlock"/> from an existing <see cref="AccountCostumeUnlockModel"/> database model.
@@ -40,12 +42,22 @@ namespace NexusForever.Game.Account.Costume
         {
             ItemId    = itemId;
             accountId = account.Id;
-            saveMask  = CostumeUnlockSaveMask.Create;
+            saveMask.Mark(CostumeUnlockSaveMask.Create);
         }
 
         public void Save(AuthContext context)
         {
-            if (saveMask == CostumeUnlockSaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage the costume unlock change and acknowledge it after the authentication database commits.
+        /// </summary>
+        public void Save(AuthContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<CostumeUnlockSaveMask> snapshot = saveMask.Capture();
+            CostumeUnlockSaveMask mask = snapshot.Mask;
+            if (mask == CostumeUnlockSaveMask.None)
                 return;
 
             var model = new AccountCostumeUnlockModel
@@ -54,12 +66,12 @@ namespace NexusForever.Game.Account.Costume
                 ItemId = ItemId
             };
 
-            if ((saveMask & CostumeUnlockSaveMask.Create) != 0)
+            if ((mask & CostumeUnlockSaveMask.Create) != 0)
                 context.Add(model);
             else
                 context.Entry(model).State = EntityState.Deleted;
 
-            saveMask = CostumeUnlockSaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         /// <summary>
@@ -68,9 +80,9 @@ namespace NexusForever.Game.Account.Costume
         public void EnqueueDelete(bool set)
         {
             if (set)
-                saveMask |= CostumeUnlockSaveMask.Delete;
+                saveMask.Mark(CostumeUnlockSaveMask.Delete);
             else
-                saveMask &= ~CostumeUnlockSaveMask.Delete;
+                saveMask.Clear(CostumeUnlockSaveMask.Delete);
         }
     }
 }

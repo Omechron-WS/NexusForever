@@ -1,8 +1,10 @@
 ﻿using System.Collections;
+using NexusForever.Database;
 using NexusForever.Database.Auth;
 using NexusForever.Database.Auth.Model;
 using NexusForever.Game.Abstract.Account;
 using NexusForever.Game.Abstract.Account.Unlock;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.GenericUnlock;
 using NexusForever.GameTable;
@@ -29,8 +31,16 @@ namespace NexusForever.Game.Account.Unlock
 
         public void Save(AuthContext context)
         {
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage generic unlock changes and acknowledge them after the authentication database commits.
+        /// </summary>
+        public void Save(AuthContext context, ISaveCommitScope commitScope)
+        {
             foreach (IGenericUnlock genericUnlock in unlocks.Values)
-                genericUnlock.Save(context);
+                genericUnlock.Save(context, commitScope);
         }
 
         /// <summary>

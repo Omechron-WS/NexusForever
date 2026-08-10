@@ -1,10 +1,12 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Auth;
 using NexusForever.Database.Auth.Model;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Option;
+using NexusForever.Game.Persistence;
 using NetworkBinding = NexusForever.Network.World.Message.Model.Shared.Binding;
 
 namespace NexusForever.Game.Option
@@ -50,14 +52,14 @@ namespace NexusForever.Game.Option
         /// <summary>
         /// Returns if <see cref="Keybinding"/> is enqueued to be deleted from the database.
         /// </summary>
-        public bool PendingCreate => (saveMask & BindingSaveMask.Create) != 0;
+        public bool PendingCreate => (saveMask.Current & BindingSaveMask.Create) != 0;
 
         /// <summary>
         /// Returns if <see cref="Keybinding"/> is enqueued to be deleted from the database.
         /// </summary>
-        public bool PendingDelete => (saveMask & BindingSaveMask.Delete) != 0;
+        public bool PendingDelete => (saveMask.Current & BindingSaveMask.Delete) != 0;
 
-        private BindingSaveMask saveMask;
+        private readonly VersionedSaveMask<BindingSaveMask> saveMask = new();
 
         /// <summary>
         /// Create a new <see cref="Keybinding"/> from an existing database model.
@@ -120,12 +122,25 @@ namespace NexusForever.Game.Option
             EventTypeEnum00 = networkBinding.EventTypeEnum00;
             EventTypeEnum01 = networkBinding.EventTypeEnum01;
             EventTypeEnum02 = networkBinding.EventTypeEnum02;
-            saveMask        = BindingSaveMask.Create;
+            saveMask.Mark(BindingSaveMask.Create);
         }
 
         public void Save(CharacterContext context)
         {
-            if ((saveMask & BindingSaveMask.Create) != 0)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage the character keybinding change and acknowledge it after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<BindingSaveMask> snapshot = saveMask.Capture();
+            BindingSaveMask mask = snapshot.Mask;
+            if (mask == BindingSaveMask.None)
+                return;
+
+            if ((mask & BindingSaveMask.Create) != 0)
             {
                 var model = new CharacterKeybindingModel
                 {
@@ -155,92 +170,106 @@ namespace NexusForever.Game.Option
                     InputActionId = InputActionId
                 };
 
-                if ((saveMask & BindingSaveMask.Delete) != 0)
+                if ((mask & BindingSaveMask.Delete) != 0)
                     context.Entry(model).State = EntityState.Deleted;
                 else
                 {
                     EntityEntry<CharacterKeybindingModel> entity = context.Attach(model);
 
-                    if ((saveMask & BindingSaveMask.DeviceEnum00) != 0)
+                    if ((mask & BindingSaveMask.DeviceEnum00) != 0)
                     {
                         model.DeviceEnum00 = DeviceEnum00;
                         entity.Property(p => p.DeviceEnum00).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.DeviceEnum01) != 0)
+                    if ((mask & BindingSaveMask.DeviceEnum01) != 0)
                     {
                         model.DeviceEnum01 = DeviceEnum01;
                         entity.Property(p => p.DeviceEnum01).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.DeviceEnum02) != 0)
+                    if ((mask & BindingSaveMask.DeviceEnum02) != 0)
                     {
                         model.DeviceEnum02 = DeviceEnum02;
                         entity.Property(p => p.DeviceEnum02).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.Code00) != 0)
+                    if ((mask & BindingSaveMask.Code00) != 0)
                     {
                         model.Code00 = Code00;
                         entity.Property(p => p.Code00).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.Code01) != 0)
+                    if ((mask & BindingSaveMask.Code01) != 0)
                     {
                         model.Code01 = Code01;
                         entity.Property(p => p.Code01).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.Code02) != 0)
+                    if ((mask & BindingSaveMask.Code02) != 0)
                     {
                         model.Code02 = Code02;
                         entity.Property(p => p.Code02).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.MetaKeys00) != 0)
+                    if ((mask & BindingSaveMask.MetaKeys00) != 0)
                     {
                         model.MetaKeys00 = MetaKeys00;
                         entity.Property(p => p.MetaKeys00).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.MetaKeys01) != 0)
+                    if ((mask & BindingSaveMask.MetaKeys01) != 0)
                     {
                         model.MetaKeys01 = MetaKeys01;
                         entity.Property(p => p.MetaKeys01).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.MetaKeys02) != 0)
+                    if ((mask & BindingSaveMask.MetaKeys02) != 0)
                     {
                         model.MetaKeys02 = MetaKeys02;
                         entity.Property(p => p.MetaKeys02).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.EventTypeEnum00) != 0)
+                    if ((mask & BindingSaveMask.EventTypeEnum00) != 0)
                     {
                         model.EventTypeEnum00 = EventTypeEnum00;
                         entity.Property(p => p.EventTypeEnum00).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.EventTypeEnum01) != 0)
+                    if ((mask & BindingSaveMask.EventTypeEnum01) != 0)
                     {
                         model.EventTypeEnum01 = EventTypeEnum01;
                         entity.Property(p => p.EventTypeEnum01).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.EventTypeEnum02) != 0)
+                    if ((mask & BindingSaveMask.EventTypeEnum02) != 0)
                     {
                         model.EventTypeEnum02 = EventTypeEnum02;
                         entity.Property(p => p.EventTypeEnum02).IsModified = true;
                     }
 
-                    saveMask = BindingSaveMask.None;
                 }
             }
+
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         public void Save(AuthContext context)
         {
-            if ((saveMask & BindingSaveMask.Create) != 0)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage the account keybinding change and acknowledge it after the authentication database commits.
+        /// </summary>
+        public void Save(AuthContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<BindingSaveMask> snapshot = saveMask.Capture();
+            BindingSaveMask mask = snapshot.Mask;
+            if (mask == BindingSaveMask.None)
+                return;
+
+            if ((mask & BindingSaveMask.Create) != 0)
             {
                 var model = new AccountKeybindingModel
                 {
@@ -270,87 +299,88 @@ namespace NexusForever.Game.Option
                     InputActionId   = InputActionId
                 };
 
-                if ((saveMask & BindingSaveMask.Delete) != 0)
+                if ((mask & BindingSaveMask.Delete) != 0)
                     context.Entry(model).State = EntityState.Deleted;
                 else
                 {
                     EntityEntry<AccountKeybindingModel> entity = context.Attach(model);
 
-                    if ((saveMask & BindingSaveMask.DeviceEnum00) != 0)
+                    if ((mask & BindingSaveMask.DeviceEnum00) != 0)
                     {
                         model.DeviceEnum00 = DeviceEnum00;
                         entity.Property(p => p.DeviceEnum00).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.DeviceEnum01) != 0)
+                    if ((mask & BindingSaveMask.DeviceEnum01) != 0)
                     {
                         model.DeviceEnum01 = DeviceEnum01;
                         entity.Property(p => p.DeviceEnum01).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.DeviceEnum02) != 0)
+                    if ((mask & BindingSaveMask.DeviceEnum02) != 0)
                     {
                         model.DeviceEnum02 = DeviceEnum02;
                         entity.Property(p => p.DeviceEnum02).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.Code00) != 0)
+                    if ((mask & BindingSaveMask.Code00) != 0)
                     {
                         model.Code00 = Code00;
                         entity.Property(p => p.Code00).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.Code01) != 0)
+                    if ((mask & BindingSaveMask.Code01) != 0)
                     {
                         model.Code01 = Code01;
                         entity.Property(p => p.Code01).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.Code02) != 0)
+                    if ((mask & BindingSaveMask.Code02) != 0)
                     {
                         model.Code02 = Code02;
                         entity.Property(p => p.Code02).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.MetaKeys00) != 0)
+                    if ((mask & BindingSaveMask.MetaKeys00) != 0)
                     {
                         model.MetaKeys00 = MetaKeys00;
                         entity.Property(p => p.MetaKeys00).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.MetaKeys01) != 0)
+                    if ((mask & BindingSaveMask.MetaKeys01) != 0)
                     {
                         model.MetaKeys01 = MetaKeys01;
                         entity.Property(p => p.MetaKeys01).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.MetaKeys02) != 0)
+                    if ((mask & BindingSaveMask.MetaKeys02) != 0)
                     {
                         model.MetaKeys02 = MetaKeys02;
                         entity.Property(p => p.MetaKeys02).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.EventTypeEnum00) != 0)
+                    if ((mask & BindingSaveMask.EventTypeEnum00) != 0)
                     {
                         model.EventTypeEnum00 = EventTypeEnum00;
                         entity.Property(p => p.EventTypeEnum00).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.EventTypeEnum01) != 0)
+                    if ((mask & BindingSaveMask.EventTypeEnum01) != 0)
                     {
                         model.EventTypeEnum01 = EventTypeEnum01;
                         entity.Property(p => p.EventTypeEnum01).IsModified = true;
                     }
 
-                    if ((saveMask & BindingSaveMask.EventTypeEnum02) != 0)
+                    if ((mask & BindingSaveMask.EventTypeEnum02) != 0)
                     {
                         model.EventTypeEnum02 = EventTypeEnum02;
                         entity.Property(p => p.EventTypeEnum02).IsModified = true;
                     }
 
-                    saveMask = BindingSaveMask.None;
                 }
             }
+
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         /// <summary>
@@ -359,9 +389,9 @@ namespace NexusForever.Game.Option
         public void EnqueueDelete(bool set)
         {
             if (set)
-                saveMask |= BindingSaveMask.Delete;
+                saveMask.Mark(BindingSaveMask.Delete);
             else
-                saveMask &= ~BindingSaveMask.Delete;
+                saveMask.Clear(BindingSaveMask.Delete);
         }
 
         /// <summary>
@@ -372,73 +402,73 @@ namespace NexusForever.Game.Option
             if (DeviceEnum00 != networkBinding.DeviceEnum00)
             {
                 DeviceEnum00 = networkBinding.DeviceEnum00;
-                saveMask |= BindingSaveMask.DeviceEnum00;
+                saveMask.Mark(BindingSaveMask.DeviceEnum00);
             }
 
             if (DeviceEnum01 != networkBinding.DeviceEnum01)
             {
                 DeviceEnum01 = networkBinding.DeviceEnum01;
-                saveMask |= BindingSaveMask.DeviceEnum01;
+                saveMask.Mark(BindingSaveMask.DeviceEnum01);
             }
 
             if (DeviceEnum02 != networkBinding.DeviceEnum02)
             {
                 DeviceEnum02 = networkBinding.DeviceEnum02;
-                saveMask |= BindingSaveMask.DeviceEnum02;
+                saveMask.Mark(BindingSaveMask.DeviceEnum02);
             }
 
             if (Code00 != networkBinding.Code00)
             {
                 Code00 = networkBinding.Code00;
-                saveMask |= BindingSaveMask.Code00;
+                saveMask.Mark(BindingSaveMask.Code00);
             }
 
             if (Code01 != networkBinding.Code01)
             {
                 Code01 = networkBinding.Code01;
-                saveMask |= BindingSaveMask.Code01;
+                saveMask.Mark(BindingSaveMask.Code01);
             }
 
             if (Code02 != networkBinding.Code02)
             {
                 Code02 = networkBinding.Code02;
-                saveMask |= BindingSaveMask.Code02;
+                saveMask.Mark(BindingSaveMask.Code02);
             }
 
             if (MetaKeys00 != networkBinding.MetaKeys00)
             {
                 MetaKeys00 = networkBinding.MetaKeys00;
-                saveMask |= BindingSaveMask.MetaKeys00;
+                saveMask.Mark(BindingSaveMask.MetaKeys00);
             }
 
             if (MetaKeys01 != networkBinding.MetaKeys01)
             {
                 MetaKeys01 = networkBinding.MetaKeys01;
-                saveMask |= BindingSaveMask.MetaKeys01;
+                saveMask.Mark(BindingSaveMask.MetaKeys01);
             }
 
             if (MetaKeys02 != networkBinding.MetaKeys02)
             {
                 MetaKeys02 = networkBinding.MetaKeys02;
-                saveMask |= BindingSaveMask.MetaKeys02;
+                saveMask.Mark(BindingSaveMask.MetaKeys02);
             }
 
             if (EventTypeEnum00 != networkBinding.EventTypeEnum00)
             {
                 EventTypeEnum00 = networkBinding.EventTypeEnum00;
-                saveMask |= BindingSaveMask.EventTypeEnum00;
+                saveMask.Mark(BindingSaveMask.EventTypeEnum00);
             }
 
             if (EventTypeEnum01 != networkBinding.EventTypeEnum01)
             {
                 EventTypeEnum01 = networkBinding.EventTypeEnum01;
-                saveMask |= BindingSaveMask.EventTypeEnum01;
+                saveMask.Mark(BindingSaveMask.EventTypeEnum01);
             }
 
             if (EventTypeEnum02 != networkBinding.EventTypeEnum02)
             {
                 EventTypeEnum02 = networkBinding.EventTypeEnum02;
-                saveMask |= BindingSaveMask.EventTypeEnum02;
+                saveMask.Mark(BindingSaveMask.EventTypeEnum02);
             }
         }
 

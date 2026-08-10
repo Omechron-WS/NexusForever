@@ -26,14 +26,14 @@ namespace NexusForever.Game.Entitlement
                 if (value > Entry.MaxCount)
                     value = Entry.MaxCount;
 
-                saveMask |= SaveMask.Amount;
+                saveMask.Mark(SaveMask.Amount);
                 amount = value;
             }
         }
 
         protected uint amount;
 
-        protected SaveMask saveMask;
+        protected readonly VersionedSaveMask<SaveMask> saveMask = new();
 
         /// <summary>
         /// Create a new <see cref="IEntitlement"/> with supplied <see cref="EntitlementEntry"/> and value.

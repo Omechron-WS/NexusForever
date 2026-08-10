@@ -1,9 +1,11 @@
 using System.Collections;
+using NexusForever.Database;
 using NexusForever.Database.Auth;
 using NexusForever.Database.Auth.Model;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Option;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Option;
 using NexusForever.Network.World.Message.Model.Option;
 using NetworkBinding = NexusForever.Network.World.Message.Model.Shared.Binding;
@@ -13,11 +15,18 @@ namespace NexusForever.Game.Option
     // TODO: split this further to seperate character and account keybind specific methods
     public class KeybindingSet : IKeybindingSet
     {
+        [Flags]
+        private enum KeybindingSetSaveMask
+        {
+            None     = 0x00,
+            Bindings = 0x01
+        }
+
         public ulong Owner { get; }
         public InputSets InputSet { get; }
         public uint Count => (uint)bindings.Count;
 
-        private bool isDirty;
+        private readonly VersionedSaveMask<KeybindingSetSaveMask> saveMask = new();
 
         private readonly Dictionary<ushort, IKeybinding> bindings = new();
 
@@ -47,34 +56,66 @@ namespace NexusForever.Game.Option
 
         public void Save(CharacterContext context)
         {
-            if (!isDirty)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage character keybinding changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<KeybindingSetSaveMask> snapshot = saveMask.Capture();
+            if (snapshot.Mask == KeybindingSetSaveMask.None)
                 return;
 
-            foreach (IKeybinding binding in bindings.Values.ToList())
-            {
-                if (binding.PendingDelete)
-                    bindings.Remove(binding.InputActionId);
+            List<IKeybinding> deletedBindings = bindings.Values
+                .Where(binding => binding.PendingDelete)
+                .ToList();
 
-                binding.Save(context);
-            }
+            foreach (IKeybinding binding in bindings.Values)
+                binding.Save(context, commitScope);
 
-            isDirty = false;
+            RegisterAcknowledgement(commitScope, snapshot, deletedBindings);
         }
 
         public void Save(AuthContext context)
         {
-            if (!isDirty)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage account keybinding changes and acknowledge them after the authentication database commits.
+        /// </summary>
+        public void Save(AuthContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<KeybindingSetSaveMask> snapshot = saveMask.Capture();
+            if (snapshot.Mask == KeybindingSetSaveMask.None)
                 return;
 
-            foreach (IKeybinding binding in bindings.Values.ToList())
+            List<IKeybinding> deletedBindings = bindings.Values
+                .Where(binding => binding.PendingDelete)
+                .ToList();
+
+            foreach (IKeybinding binding in bindings.Values)
+                binding.Save(context, commitScope);
+
+            RegisterAcknowledgement(commitScope, snapshot, deletedBindings);
+        }
+
+        private void RegisterAcknowledgement(
+            ISaveCommitScope commitScope,
+            VersionedSaveMaskSnapshot<KeybindingSetSaveMask> snapshot,
+            IEnumerable<IKeybinding> deletedBindings)
+        {
+            commitScope.Register(() =>
             {
-                if (binding.PendingDelete)
-                    bindings.Remove(binding.InputActionId);
+                foreach (IKeybinding deletedBinding in deletedBindings)
+                    if (bindings.TryGetValue(deletedBinding.InputActionId, out IKeybinding currentBinding)
+                        && ReferenceEquals(currentBinding, deletedBinding))
+                        bindings.Remove(deletedBinding.InputActionId);
 
-                binding.Save(context);
-            }
-
-            isDirty = false;
+                saveMask.Acknowledge(snapshot);
+            });
         }
 
         /// <summary>
@@ -85,7 +126,7 @@ namespace NexusForever.Game.Option
             if (bindings.Count + biInputKeySet.Bindings.Count == 0)
                 return;
 
-            isDirty = true;
+            saveMask.Mark(KeybindingSetSaveMask.Bindings);
 
             foreach (ushort inputActionId in bindings.Keys
                 .Except(biInputKeySet.Bindings.Select(b => b.InputActionId)))

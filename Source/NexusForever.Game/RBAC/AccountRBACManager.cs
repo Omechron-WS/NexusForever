@@ -5,6 +5,7 @@ using NexusForever.Database.Auth.Model;
 using NexusForever.Game.Abstract.Account;
 using NexusForever.Game.Abstract.RBAC;
 using NexusForever.Game.Configuration.Model;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.RBAC;
 using NexusForever.Shared.Configuration;
 
@@ -156,10 +157,11 @@ namespace NexusForever.Game.RBAC
         {
             var permissionSet = ImmutableHashSet.CreateBuilder<Permission>();
 
-            foreach (Permission permission in permissions.Keys)
-                permissionSet.Add(permission);
-            foreach (Permission permission in roles
-                .SelectMany(rolePair => rolePair.Value.Role.Permissions.Keys))
+            foreach (IAccountPermission accountPermission in permissions.Values.Where(permission => !permission.PendingDelete))
+                permissionSet.Add(accountPermission.Permission.Permission);
+            foreach (Permission permission in roles.Values
+                .Where(role => !role.PendingDelete)
+                .SelectMany(role => role.Role.Permissions.Keys))
                 permissionSet.Add(permission);
 
             return permissionSet.ToImmutable();
@@ -167,10 +169,47 @@ namespace NexusForever.Game.RBAC
 
         public void Save(AuthContext context)
         {
-            foreach (IAccountPermission permission in permissions.Values)
-                permission.Save(context);
-            foreach (IAccountRole role in roles.Values)
-                role.Save(context);
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage account access-control changes and acknowledge them after the authentication database commits.
+        /// </summary>
+        public void Save(AuthContext context, ISaveCommitScope commitScope)
+        {
+            var deletedPermissions = new List<(Permission Id, IAccountPermission Permission)>();
+            foreach ((Permission id, IAccountPermission permission) in permissions)
+            {
+                if (permission.PendingDelete)
+                    deletedPermissions.Add((id, permission));
+
+                permission.Save(context, commitScope);
+            }
+
+            var deletedRoles = new List<(Role Id, IAccountRole Role)>();
+            foreach ((Role id, IAccountRole role) in roles)
+            {
+                if (role.PendingDelete)
+                    deletedRoles.Add((id, role));
+
+                role.Save(context, commitScope);
+            }
+
+            if (deletedPermissions.Count == 0 && deletedRoles.Count == 0)
+                return;
+
+            commitScope.Register(() =>
+            {
+                foreach ((Permission id, IAccountPermission deletedPermission) in deletedPermissions)
+                    if (permissions.TryGetValue(id, out IAccountPermission currentPermission)
+                        && ReferenceEquals(currentPermission, deletedPermission))
+                        permissions.Remove(id);
+
+                foreach ((Role id, IAccountRole deletedRole) in deletedRoles)
+                    if (roles.TryGetValue(id, out IAccountRole currentRole)
+                        && ReferenceEquals(currentRole, deletedRole))
+                        roles.Remove(id);
+            });
         }
     }
 }

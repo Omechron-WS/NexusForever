@@ -4,6 +4,7 @@ using NexusForever.Database.Auth.Model;
 using NexusForever.Game.Abstract.Account;
 using NexusForever.Game.Abstract.Account.Entitlement;
 using NexusForever.Game.Entitlement;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Reward;
 using NexusForever.GameTable;
@@ -35,8 +36,16 @@ namespace NexusForever.Game.Account.Entitlement
 
         public void Save(AuthContext context)
         {
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage account entitlement changes and acknowledge them after the authentication database commits.
+        /// </summary>
+        public void Save(AuthContext context, ISaveCommitScope commitScope)
+        {
             foreach (IAccountEntitlement entitlement in entitlements.Values)
-                entitlement.Save(context);
+                entitlement.Save(context, commitScope);
         }
 
         protected override bool CanUpdateEntitlement(EntitlementEntry entry, int value)

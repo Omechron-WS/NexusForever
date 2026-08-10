@@ -1,4 +1,5 @@
-﻿using NexusForever.Database.Auth;
+﻿using NexusForever.Database;
+using NexusForever.Database.Auth;
 using NexusForever.Database.Auth.Model;
 using NexusForever.Game.Abstract.Account;
 using NexusForever.Game.Abstract.Account.Costume;
@@ -14,6 +15,7 @@ using NexusForever.Game.Account.Entitlement;
 using NexusForever.Game.Account.Option;
 using NexusForever.Game.Account.Reward;
 using NexusForever.Game.Account.Unlock;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.RBAC;
 using NexusForever.Game.Static;
 using NexusForever.Game.Static.RBAC;
@@ -61,12 +63,20 @@ namespace NexusForever.Game.Account
 
         public void Save(AuthContext context)
         {
-            RbacManager.Save(context);
-            GenericUnlockManager.Save(context);
-            CurrencyManager.Save(context);
-            EntitlementManager.Save(context);
-            CostumeManager.Save(context);
-            KeybindingManager.Save(context);
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage account changes and acknowledge them after the authentication database commits.
+        /// </summary>
+        public void Save(AuthContext context, ISaveCommitScope commitScope)
+        {
+            RbacManager.Save(context, commitScope);
+            GenericUnlockManager.Save(context, commitScope);
+            CurrencyManager.Save(context, commitScope);
+            EntitlementManager.Save(context, commitScope);
+            CostumeManager.Save(context, commitScope);
+            KeybindingManager.Save(context, commitScope);
         }
     }
 }

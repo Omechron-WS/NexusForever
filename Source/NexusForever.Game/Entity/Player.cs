@@ -24,6 +24,7 @@ using NexusForever.Game.Configuration.Model;
 using NexusForever.Game.Guild;
 using NexusForever.Game.Housing;
 using NexusForever.Game.Map;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Reputation;
 using NexusForever.Game.Static;
 using NexusForever.Game.Static.Chat;
@@ -76,7 +77,13 @@ namespace NexusForever.Game.Entity
             Flags       = 0x0020,
             Innate      = 0x0080,
             Sex         = 0x0100,
-            Race        = 0x0200,
+            Race        = 0x0200
+        }
+
+        private sealed class PlayerSaveCallback
+        {
+            public Action Success { get; init; }
+            public Action<Exception> Failure { get; init; }
         }
 
         private static readonly ILogger log = LogManager.GetCurrentClassLogger();
@@ -100,7 +107,7 @@ namespace NexusForever.Game.Entity
             set
             {
                 sex = value;
-                saveMask |= PlayerSaveMask.Sex;
+                saveMask.Mark(PlayerSaveMask.Sex);
 
                 SetVisualEmit(true);
             }
@@ -114,7 +121,7 @@ namespace NexusForever.Game.Entity
             set
             {
                 race = value;
-                saveMask |= PlayerSaveMask.Race;
+                saveMask.Mark(PlayerSaveMask.Race);
 
                 SetVisualEmit(true);
             }
@@ -130,7 +137,7 @@ namespace NexusForever.Game.Entity
             set
             {
                 flags = value;
-                saveMask |= PlayerSaveMask.Flags;
+                saveMask.Mark(PlayerSaveMask.Flags);
             }
         }
         private CharacterFlag flags;
@@ -142,7 +149,7 @@ namespace NexusForever.Game.Entity
             {
                 path = value;
                 PathActivatedTime = DateTime.UtcNow;
-                saveMask |= PlayerSaveMask.Path;
+                saveMask.Mark(PlayerSaveMask.Path);
             }
         }
         private Path path;
@@ -155,7 +162,7 @@ namespace NexusForever.Game.Entity
             set
             {
                 inputKeySet = value;
-                saveMask |= PlayerSaveMask.InputKeySet;
+                saveMask.Mark(PlayerSaveMask.InputKeySet);
             }
         }
         private InputSets inputKeySet;
@@ -166,7 +173,7 @@ namespace NexusForever.Game.Entity
             set
             {
                 innateIndex = value;
-                saveMask |= PlayerSaveMask.Innate;
+                saveMask.Mark(PlayerSaveMask.Innate);
             }
         }
         private byte innateIndex;
@@ -248,7 +255,10 @@ namespace NexusForever.Game.Entity
 
         private bool forceSave;
         private UpdateTimer saveTimer = new(SaveDuration);
-        private PlayerSaveMask saveMask;
+        private readonly VersionedSaveMask<PlayerSaveMask> saveMask = new();
+        private readonly object saveSyncRoot = new();
+        private readonly List<PlayerSaveCallback> saveCallbacks = new();
+        private readonly PlayerSaveSerialiser saveSerialiser = new();
 
         private Dictionary<Property, Dictionary<ItemSlot, /*value*/float>> itemProperties = new();
 
@@ -391,6 +401,7 @@ namespace NexusForever.Game.Entity
             SpellManager.Update(lastTick);
             CostumeManager.Update(lastTick);
             QuestManager.Update(lastTick);
+            MailManager.Update(lastTick);
 
             relocationTimer.Update(lastTick);
             if (relocationTimer.HasElapsed)
@@ -433,58 +444,30 @@ namespace NexusForever.Game.Entity
         /// Save <see cref="IPlayer"/> to the databases and invoke the supplied callback once both attempts complete successfully.
         /// </summary>
         /// <remarks>
-        /// This is a delayed save. <see cref="AuthContext"/> changes are attempted first, followed by <see cref="CharacterContext"/> changes.
+        /// This is a delayed save. <see cref="AuthContext"/> and <see cref="CharacterContext"/> changes are attempted independently.
         /// Failures are aggregated and passed to the optional failure callback.
         /// Packets for session will not be handled until save is complete.
         /// </remarks>
         public void Save(Action callback = null, Action<Exception> exceptionCallback = null)
         {
-            var exceptions = new List<Exception>();
-
-            void CompleteSave()
+            PlayerSavePass savePass;
+            lock (saveSyncRoot)
             {
-                Session.CanProcessIncomingPackets = true;
-                saveTimer.Resume();
-
-                if (exceptions.Count == 0)
+                saveCallbacks.Add(new PlayerSaveCallback
                 {
-                    callback?.Invoke();
+                    Success = callback,
+                    Failure = exceptionCallback
+                });
+
+                savePass = saveSerialiser.Request(() => StartSavePass(CancellationToken.None));
+                if (savePass == null)
                     return;
-                }
 
-                forceSave = true;
-                var exception = new AggregateException($"Failed to save player {CharacterId}.", exceptions);
-                if (exceptionCallback != null)
-                    exceptionCallback.Invoke(exception);
-                else
-                    log.Error(exception);
+                saveTimer.Reset(false);
+                Session.CanProcessIncomingPackets = false;
             }
 
-            void SaveCharacter()
-            {
-                Session.Events.EnqueueEvent(new TaskEvent(
-                    DatabaseManager.Instance.GetDatabase<CharacterDatabase>().Save(Save),
-                    CompleteSave,
-                    exception =>
-                    {
-                        exceptions.Add(exception);
-                        CompleteSave();
-                    }));
-            }
-
-            Session.Events.EnqueueEvent(new TaskEvent(
-                DatabaseManager.Instance.GetDatabase<AuthDatabase>().Save(Save),
-                SaveCharacter,
-                exception =>
-                {
-                    exceptions.Add(exception);
-                    SaveCharacter();
-                }));
-
-            saveTimer.Reset(false);
-
-            // prevent packets from being processed until asynchronous player save task is complete
-            Session.CanProcessIncomingPackets = false;
+            EnqueueSavePass(savePass);
         }
 
         /// <summary>
@@ -495,32 +478,118 @@ namespace NexusForever.Game.Entity
         /// </remarks>
         public async Task SaveDirectAsync(CancellationToken cancellationToken = default)
         {
-            var exceptions = new List<Exception>();
-            try
-            {
-                await DatabaseManager.Instance.GetDatabase<AuthDatabase>().Save(Save, cancellationToken);
-            }
-            catch (Exception exception)
-            {
-                exceptions.Add(exception);
-            }
+            PlayerSavePass pendingPass;
+            PlayerSavePass finalPass = null;
+            lock (saveSyncRoot)
+                pendingPass = saveSerialiser.BeginTakeover();
 
             try
             {
-                await DatabaseManager.Instance.GetDatabase<CharacterDatabase>().Save(Save, cancellationToken);
-            }
-            catch (Exception exception)
-            {
-                exceptions.Add(exception);
-            }
+                if (pendingPass != null)
+                {
+                    PlayerSavePassResult pendingResult = await pendingPass.Completion;
+                    pendingPass.TryAcknowledge(pendingResult, out _);
+                }
 
-            if (exceptions.Count == 0)
+                cancellationToken.ThrowIfCancellationRequested();
+
+                lock (saveSyncRoot)
+                    finalPass = saveSerialiser.StartTakeoverPass(() => StartSavePass(cancellationToken));
+
+                PlayerSavePassResult finalResult = await finalPass.Completion;
+                finalPass.TryAcknowledge(finalResult, out List<Exception> exceptions);
+
+                if (exceptions.Count == 0)
+                    return;
+
+                if (cancellationToken.IsCancellationRequested && exceptions.All(exception => exception is OperationCanceledException))
+                    throw new OperationCanceledException(cancellationToken);
+
+                throw new AggregateException($"Failed to save player {CharacterId}.", exceptions);
+            }
+            finally
+            {
+                lock (saveSyncRoot)
+                {
+                    saveSerialiser.EndTakeover(finalPass ?? pendingPass);
+                    saveCallbacks.Clear();
+                }
+            }
+        }
+
+        private PlayerSavePass StartSavePass(CancellationToken cancellationToken)
+        {
+            return PlayerSavePass.Start(
+                () => DatabaseManager.Instance
+                    .GetDatabase<AuthDatabase>()
+                    .SaveWithAcknowledgement((context, commitScope) => Save(context, commitScope), cancellationToken),
+                () => DatabaseManager.Instance
+                    .GetDatabase<CharacterDatabase>()
+                    .SaveWithAcknowledgement((context, commitScope) => Save(context, commitScope), cancellationToken));
+        }
+
+        private void EnqueueSavePass(PlayerSavePass savePass)
+        {
+            Session.Events.EnqueueEvent(new TaskGenericEvent<PlayerSavePassResult>(
+                savePass.Completion,
+                result => CompleteQueuedSavePass(savePass, result),
+                exception => CompleteQueuedSavePass(savePass, new PlayerSavePassResult
+                {
+                    Auth = new DatabaseSaveAttempt { Exception = exception },
+                    Character = new DatabaseSaveAttempt()
+                })));
+        }
+
+        private void CompleteQueuedSavePass(PlayerSavePass savePass, PlayerSavePassResult result)
+        {
+            if (!savePass.TryAcknowledge(result, out List<Exception> exceptions))
                 return;
 
-            if (cancellationToken.IsCancellationRequested && exceptions.All(exception => exception is OperationCanceledException))
-                throw new OperationCanceledException(cancellationToken);
+            PlayerSavePass followUpPass = null;
+            List<PlayerSaveCallback> callbacks = null;
 
-            throw new AggregateException($"Failed to save player {CharacterId}.", exceptions);
+            lock (saveSyncRoot)
+            {
+                PlayerSaveTransition transition = saveSerialiser.Complete(
+                    savePass,
+                    () => StartSavePass(CancellationToken.None));
+                if (!transition.IsHandled)
+                    return;
+
+                followUpPass = transition.FollowUp;
+                if (followUpPass == null)
+                {
+                    callbacks = saveCallbacks.ToList();
+                    saveCallbacks.Clear();
+                }
+            }
+
+            if (followUpPass != null)
+            {
+                EnqueueSavePass(followUpPass);
+                return;
+            }
+
+            Session.CanProcessIncomingPackets = true;
+            saveTimer.Resume();
+
+            if (exceptions.Count == 0)
+            {
+                foreach (PlayerSaveCallback saveCallback in callbacks)
+                    saveCallback.Success?.Invoke();
+
+                return;
+            }
+
+            forceSave = true;
+            var aggregateException = new AggregateException($"Failed to save player {CharacterId}.", exceptions);
+            foreach (PlayerSaveCallback saveCallback in callbacks)
+            {
+                if (saveCallback.Failure != null)
+                    saveCallback.Failure.Invoke(aggregateException);
+                else
+                    log.Error(aggregateException);
+            }
         }
 
         /// <summary>
@@ -528,13 +597,29 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void Save(AuthContext context)
         {
-            Account.Save(context);
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage account changes and acknowledge them after the authentication database commits.
+        /// </summary>
+        public void Save(AuthContext context, ISaveCommitScope commitScope)
+        {
+            Account.Save(context, commitScope);
         }
 
         /// <summary>
         /// Save database changes for <see cref="Player"/> to <see cref="CharacterContext"/>.
         /// </summary>
         public void Save(CharacterContext context)
+        {
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage character changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
         {
             var model = new CharacterModel
             {
@@ -543,9 +628,11 @@ namespace NexusForever.Game.Entity
 
             EntityEntry<CharacterModel> entity = context.Attach(model);
 
-            if (saveMask != PlayerSaveMask.None)
+            VersionedSaveMaskSnapshot<PlayerSaveMask> snapshot = saveMask.Capture();
+            PlayerSaveMask mask = snapshot.Mask;
+            if (mask != PlayerSaveMask.None)
             {
-                if ((saveMask & PlayerSaveMask.Location) != 0)
+                if ((mask & PlayerSaveMask.Location) != 0)
                 {
                     model.LocationX = Position.X;
                     entity.Property(p => p.LocationX).IsModified = true;
@@ -572,7 +659,7 @@ namespace NexusForever.Game.Entity
                     entity.Property(p => p.WorldZoneId).IsModified = true;
                 }
 
-                if ((saveMask & PlayerSaveMask.Path) != 0)
+                if ((mask & PlayerSaveMask.Path) != 0)
                 {
                     model.ActivePath = (uint)Path;
                     entity.Property(p => p.ActivePath).IsModified = true;
@@ -580,37 +667,37 @@ namespace NexusForever.Game.Entity
                     entity.Property(p => p.PathActivatedTimestamp).IsModified = true;
                 }
 
-                if ((saveMask & PlayerSaveMask.InputKeySet) != 0)
+                if ((mask & PlayerSaveMask.InputKeySet) != 0)
                 {
                     model.InputKeySet = (sbyte)InputKeySet;
                     entity.Property(p => p.InputKeySet).IsModified = true;
                 }
 
-                if ((saveMask & PlayerSaveMask.Flags) != 0)
+                if ((mask & PlayerSaveMask.Flags) != 0)
                 {
                     model.Flags = (uint)Flags;
                     entity.Property(p => p.Flags).IsModified = true;
                 }
 
-                if ((saveMask & PlayerSaveMask.Innate) != 0)
+                if ((mask & PlayerSaveMask.Innate) != 0)
                 {
                     model.InnateIndex = InnateIndex;
                     entity.Property(p => p.InnateIndex).IsModified = true;
                 }
 
-                if ((saveMask & PlayerSaveMask.Sex) != 0)
+                if ((mask & PlayerSaveMask.Sex) != 0)
                 {
                     model.Sex = (byte)Sex;
                     entity.Property(p => p.Sex).IsModified = true;                    
                 }
 
-                if ((saveMask & PlayerSaveMask.Race) != 0)
+                if ((mask & PlayerSaveMask.Race) != 0)
                 {
                     model.Race = (byte)Race;
                     entity.Property(p => p.Race).IsModified = true;
                 }
 
-                saveMask = PlayerSaveMask.None;
+                commitScope.Register(() => saveMask.Acknowledge(snapshot));
             }
 
             model.TimePlayedLevel = (uint)TimePlayedLevel;
@@ -628,27 +715,27 @@ namespace NexusForever.Game.Entity
             }
 
             foreach (IStatValue stat in stats.Values)
-                stat.SaveCharacter(CharacterId, context);
+                stat.SaveCharacter(CharacterId, context, commitScope);
 
-            Inventory.Save(context);
-            CurrencyManager.Save(context);
-            PathManager.Save(context);
-            TitleManager.Save(context);
-            CostumeManager.Save(context);
-            PetCustomisationManager.Save(context);
-            KeybindingManager.Save(context);
-            SpellManager.Save(context);
-            DatacubeManager.Save(context);
-            MailManager.Save(context);
-            ZoneMapManager.Save(context);
-            QuestManager.Save(context);
-            AchievementManager.Save(context);
-            SupplySatchelManager.Save(context);
-            XpManager.Save(context);
-            ReputationManager.Save(context);
-            GuildManager.Save(context);
-            EntitlementManager.Save(context);
-            AppearanceManager.Save(context);
+            Inventory.Save(context, commitScope);
+            CurrencyManager.Save(context, commitScope);
+            PathManager.Save(context, commitScope);
+            TitleManager.Save(context, commitScope);
+            CostumeManager.Save(context, commitScope);
+            PetCustomisationManager.Save(context, commitScope);
+            KeybindingManager.Save(context, commitScope);
+            SpellManager.Save(context, commitScope);
+            DatacubeManager.Save(context, commitScope);
+            MailManager.Save(context, commitScope);
+            ZoneMapManager.Save(context, commitScope);
+            QuestManager.Save(context, commitScope);
+            AchievementManager.Save(context, commitScope);
+            SupplySatchelManager.Save(context, commitScope);
+            XpManager.Save(context, commitScope);
+            ReputationManager.Save(context, commitScope);
+            GuildManager.Save(context, commitScope);
+            EntitlementManager.Save(context, commitScope);
+            AppearanceManager.Save(context, commitScope);
         }
 
         protected override IEntityModel BuildEntityModel()
@@ -727,7 +814,7 @@ namespace NexusForever.Game.Entity
         public override void OnRelocate(Vector3 vector)
         {
             base.OnRelocate(vector);
-            saveMask |= PlayerSaveMask.Location;
+            saveMask.Mark(PlayerSaveMask.Location);
 
             ZoneMapManager.OnRelocate(vector);
 

@@ -1,8 +1,10 @@
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Auth;
 using NexusForever.Database.Auth.Model;
 using NexusForever.Game.Abstract.Account;
 using NexusForever.Game.Abstract.Account.Currency;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.AccountInventory;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
@@ -29,13 +31,13 @@ namespace NexusForever.Game.Account.Currency
             private set
             {
                 amount = value;
-                saveMask |= AccountCurrencySaveMask.Amount;
+                saveMask.Mark(AccountCurrencySaveMask.Amount);
             }
         }
 
         private ulong amount;
 
-        private AccountCurrencySaveMask saveMask;
+        private readonly VersionedSaveMask<AccountCurrencySaveMask> saveMask = new();
 
         private readonly IAccount account;
 
@@ -46,10 +48,9 @@ namespace NexusForever.Game.Account.Currency
         {
             this.account = account;
             CurrencyId   = (AccountCurrencyType)model.CurrencyId;
-            Amount       = model.Amount;
+            amount       = model.Amount;
             Entry        = GameTableManager.Instance.AccountCurrencyType.GetEntry((ulong)CurrencyId);
 
-            saveMask = AccountCurrencySaveMask.None;
         }
 
         /// <summary>
@@ -62,12 +63,22 @@ namespace NexusForever.Game.Account.Currency
             Amount       = amount;
             Entry        = GameTableManager.Instance.AccountCurrencyType.GetEntry((ulong)CurrencyId);
 
-            saveMask = AccountCurrencySaveMask.Create;
+            saveMask.Mark(AccountCurrencySaveMask.Create);
         }
 
         public void Save(AuthContext context)
         {
-            if (saveMask == AccountCurrencySaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage account currency changes and acknowledge them after the authentication database commits.
+        /// </summary>
+        public void Save(AuthContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<AccountCurrencySaveMask> snapshot = saveMask.Capture();
+            AccountCurrencySaveMask mask = snapshot.Mask;
+            if (mask == AccountCurrencySaveMask.None)
                 return;
 
             var model = new AccountCurrencyModel
@@ -77,17 +88,17 @@ namespace NexusForever.Game.Account.Currency
                 Amount     = Amount
             };
 
-            if ((saveMask & AccountCurrencySaveMask.Create) != 0)
+            if ((mask & AccountCurrencySaveMask.Create) != 0)
             {
                 context.Add(model);
             }
-            else if ((saveMask & AccountCurrencySaveMask.Amount) != 0)
+            else if ((mask & AccountCurrencySaveMask.Amount) != 0)
             {
                 EntityEntry<AccountCurrencyModel> entity = context.Attach(model);
                 entity.Property(p => p.Amount).IsModified = true;
             }
 
-            saveMask = AccountCurrencySaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         /// <summary>

@@ -1,8 +1,10 @@
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Auth;
 using NexusForever.Database.Auth.Model;
 using NexusForever.Game.Abstract.Account;
 using NexusForever.Game.Abstract.Account.Entitlement;
+using NexusForever.Game.Persistence;
 using NexusForever.GameTable.Model;
 using NexusForever.Network.Message;
 using NexusForever.Network.World.Message.Model.AccountInventory;
@@ -29,12 +31,22 @@ namespace NexusForever.Game.Account.Entitlement
             : base(entry, value)
         {
             this.account = account;
-            saveMask |= SaveMask.Create;
+            saveMask.Mark(SaveMask.Create);
         }
 
         public void Save(AuthContext context)
         {
-            if (saveMask == SaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage the account entitlement change and acknowledge it after the authentication database commits.
+        /// </summary>
+        public void Save(AuthContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<SaveMask> snapshot = saveMask.Capture();
+            SaveMask mask = snapshot.Mask;
+            if (mask == SaveMask.None)
                 return;
 
             var model = new AccountEntitlementModel
@@ -44,7 +56,7 @@ namespace NexusForever.Game.Account.Entitlement
                 Amount        = amount
             };
 
-            if ((saveMask & SaveMask.Create) != 0)
+            if ((mask & SaveMask.Create) != 0)
                 context.Add(model);
             else
             {
@@ -52,7 +64,7 @@ namespace NexusForever.Game.Account.Entitlement
                 entity.Property(p => p.Amount).IsModified = true;
             }
 
-            saveMask = SaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         ServerAccountEntitlement INetworkBuildable<ServerAccountEntitlement>.Build()

@@ -1,8 +1,10 @@
-﻿using NexusForever.Database.Character;
+﻿using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Option;
 using NexusForever.Game.Option;
+using NexusForever.Game.Persistence;
 using NexusForever.Network.World.Message.Model.Option;
 
 namespace NexusForever.Game.Entity
@@ -20,7 +22,15 @@ namespace NexusForever.Game.Entity
 
         public void Save(CharacterContext context)
         {
-            bindingSet.Save(context);
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage character keybinding changes and acknowledge them after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            bindingSet.Save(context, commitScope);
         }
 
         public void Update(BiInputKeySet inputKeySet)

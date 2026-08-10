@@ -1,8 +1,10 @@
-﻿using NexusForever.Database.Auth;
+﻿using NexusForever.Database;
+using NexusForever.Database.Auth;
 using NexusForever.Database.Auth.Model;
 using NexusForever.Game.Abstract.Account;
 using NexusForever.Game.Abstract.Account.Costume;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Costume;
 using NexusForever.Game.Static.Entity;
 using NexusForever.GameTable;
@@ -29,8 +31,33 @@ namespace NexusForever.Game.Account.Costume
 
         public void Save(AuthContext context)
         {
-            foreach (ICostumeUnlock costumeItem in costumeUnlocks.Values)
-                costumeItem.Save(context);
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage costume unlock changes and acknowledge them after the authentication database commits.
+        /// </summary>
+        public void Save(AuthContext context, ISaveCommitScope commitScope)
+        {
+            var deletedUnlocks = new List<(uint ItemId, ICostumeUnlock Unlock)>();
+            foreach ((uint itemId, ICostumeUnlock costumeUnlock) in costumeUnlocks)
+            {
+                if (costumeUnlock.PendingDelete)
+                    deletedUnlocks.Add((itemId, costumeUnlock));
+
+                costumeUnlock.Save(context, commitScope);
+            }
+
+            if (deletedUnlocks.Count == 0)
+                return;
+
+            commitScope.Register(() =>
+            {
+                foreach ((uint itemId, ICostumeUnlock deletedUnlock) in deletedUnlocks)
+                    if (costumeUnlocks.TryGetValue(itemId, out ICostumeUnlock currentUnlock)
+                        && ReferenceEquals(currentUnlock, deletedUnlock))
+                        costumeUnlocks.Remove(itemId);
+            });
         }
 
         /// <summary>
@@ -110,7 +137,10 @@ namespace NexusForever.Game.Account.Costume
                 return;
             }
 
-            costumeUnlock.EnqueueDelete(true);
+            if (costumeUnlock.PendingCreate)
+                costumeUnlocks.Remove(itemId);
+            else
+                costumeUnlock.EnqueueDelete(true);
             SendCostumeItemUnlock(CostumeUnlockResult.ForgetItemSuccess, itemId);
         }
 

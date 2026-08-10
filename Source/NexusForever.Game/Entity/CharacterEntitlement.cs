@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Persistence;
 using NexusForever.GameTable.Model;
 using NexusForever.Network.World.Message.Model;
 
@@ -27,11 +29,22 @@ namespace NexusForever.Game.Entity
             : base(entry, value)
         {
             this.player = player;
+            saveMask.Mark(SaveMask.Create);
         }
 
         public void Save(CharacterContext context)
         {
-            if (saveMask == SaveMask.None)
+            Save(context, ImmediateSaveCommitScope.Instance);
+        }
+
+        /// <summary>
+        /// Stage the character entitlement change and acknowledge it after the character database commits.
+        /// </summary>
+        public void Save(CharacterContext context, ISaveCommitScope commitScope)
+        {
+            VersionedSaveMaskSnapshot<SaveMask> snapshot = saveMask.Capture();
+            SaveMask mask = snapshot.Mask;
+            if (mask == SaveMask.None)
                 return;
 
             var model = new CharacterEntitlementModel
@@ -41,7 +54,7 @@ namespace NexusForever.Game.Entity
                 Amount        = amount
             };
 
-            if ((saveMask & SaveMask.Create) != 0)
+            if ((mask & SaveMask.Create) != 0)
                 context.Add(model);
             else
             {
@@ -49,7 +62,7 @@ namespace NexusForever.Game.Entity
                 entity.Property(p => p.Amount).IsModified = true;
             }
 
-            saveMask = SaveMask.None;
+            commitScope.Register(() => saveMask.Acknowledge(snapshot));
         }
 
         public ServerEntitlement Build()
