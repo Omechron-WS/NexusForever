@@ -13,6 +13,9 @@ namespace NexusForever.Game.Combat
 {
     public sealed class DamageCalculator : IDamageCalculator
     {
+        private const float BaseCriticalSeverity = 1.5f;
+        private const float DefaultPowerCoefficient = 0.25f;
+
         #region Dependency Injection
 
         private readonly ILogger<DamageCalculator> log;
@@ -181,10 +184,10 @@ namespace NexusForever.Game.Combat
                         break;
                     // client defaults to a value of 0.25f if the game table entry is missing
                     case SpellEffectParameterType.AssaultPower:
-                        intermediateValue = GetProperty(Property.AssaultRating) * forumulaEntry?.Datafloat0 ?? 0.25f;
+                        intermediateValue = CalculatePowerContribution(GetProperty(Property.AssaultRating), forumulaEntry?.Datafloat0);
                         break;
                     case SpellEffectParameterType.SupportPower:
-                        intermediateValue = GetProperty(Property.SupportRating) * forumulaEntry?.Datafloat01 ?? 0.25f;
+                        intermediateValue = CalculatePowerContribution(GetProperty(Property.SupportRating), forumulaEntry?.Datafloat01);
                         break;
                 }
 
@@ -266,12 +269,9 @@ namespace NexusForever.Game.Combat
             float maximumArmorMitigation = (float)(armorFormulaEntry.Dataint01 * 0.01);
             float mitigationPct = (armorFormulaEntry.Datafloat0 / victim.Level * armorFormulaEntry.Datafloat01) * victim.GetPropertyValue(Property.Armor) / 100;
 
-            if (damageType == DamageType.Physical)
-                mitigationPct += victim.GetPropertyValue(Property.DamageMitigationPctOffsetMagic);
-            else if (damageType == DamageType.Tech)
-                mitigationPct += victim.GetPropertyValue(Property.DamageMitigationPctOffsetTech);
-            else if (damageType == DamageType.Magic)
-                mitigationPct += victim.GetPropertyValue(Property.DamageMitigationPctOffsetMagic);
+            Property? mitigationOffsetProperty = GetDamageMitigationOffsetProperty(damageType);
+            if (mitigationOffsetProperty.HasValue)
+                mitigationPct += victim.GetPropertyValue(mitigationOffsetProperty.Value);
 
             if (mitigationPct > 0f)
                 damage = (uint)Math.Round(damage * (1f - Math.Clamp(mitigationPct, 0f, maximumArmorMitigation)));
@@ -320,9 +320,39 @@ namespace NexusForever.Game.Combat
 
             bool crit = IsSuccessfulChance(critRate);
             if (crit)
-                damage = (uint)Math.Round(damage * GetRatingPercentMod(Property.RatingCritSeverityIncrease, attacker));
+                damage = CalculateCriticalDamage(damage, GetRatingPercentMod(Property.RatingCritSeverityIncrease, attacker));
 
             return crit;
+        }
+
+        /// <summary>
+        /// Calculates critical damage from the base critical severity and rating-derived bonus.
+        /// </summary>
+        internal static uint CalculateCriticalDamage(uint damage, float ratingBonus)
+        {
+            return (uint)Math.Round(damage * (BaseCriticalSeverity + ratingBonus));
+        }
+
+        /// <summary>
+        /// Calculates a rating's contribution using the client fallback coefficient when formula 1266 is unavailable.
+        /// </summary>
+        internal static float CalculatePowerContribution(float rating, float? coefficient)
+        {
+            return rating * (coefficient ?? DefaultPowerCoefficient);
+        }
+
+        /// <summary>
+        /// Returns the mitigation offset property for the supplied damage type.
+        /// </summary>
+        internal static Property? GetDamageMitigationOffsetProperty(DamageType damageType)
+        {
+            return damageType switch
+            {
+                DamageType.Physical => Property.DamageMitigationPctOffsetPhysical,
+                DamageType.Tech     => Property.DamageMitigationPctOffsetTech,
+                DamageType.Magic    => Property.DamageMitigationPctOffsetMagic,
+                _                   => null
+            };
         }
 
         /// <summary>
