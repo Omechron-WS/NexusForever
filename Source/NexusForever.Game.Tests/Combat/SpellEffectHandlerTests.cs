@@ -3,6 +3,7 @@ using NexusForever.Game.Abstract;
 using NexusForever.Game.Abstract.Combat;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Spell;
+using NexusForever.Game.Quest;
 using NexusForever.Game.Static.Combat;
 using NexusForever.Game.Spell;
 using NexusForever.Game.Static.Spell;
@@ -97,6 +98,92 @@ namespace NexusForever.Game.Tests.Combat
 
             spell.Verify(s => s.TrackProc(
                 It.IsAny<IUnitEntity>(), It.IsAny<IProcInfo>()), Times.Never);
+        }
+
+        [Fact]
+        public void HandleEffectQuestAdvanceObjective_AdvancesValidatedPlayerObjective()
+        {
+            var questManager = new Mock<IQuestManager>();
+            var player = new Mock<IPlayer>();
+            player.SetupGet(value => value.QuestManager).Returns(questManager.Object);
+            var info = new SpellTargetInfo.SpellTargetEffectInfo(1u, new Spell4EffectsEntry
+            {
+                EffectType = SpellEffectType.QuestAdvanceObjective,
+                DataBits00 = 10_643u,
+                DataBits01 = 7u
+            });
+
+            SpellHandler.HandleEffectQuestAdvanceObjective(Mock.Of<ISpell>(), player.Object, info);
+
+            questManager.Verify(manager => manager.QuestAchieveObjective(10_643, 7), Times.Once);
+        }
+
+        [Theory]
+        [InlineData(0u, 0u)]
+        [InlineData(0x8000u, 0u)]
+        [InlineData(100u, 255u)]
+        [InlineData(100u, 256u)]
+        public void HandleEffectQuestAdvanceObjective_InvalidPackedIdentifiersFailClosed(
+            uint questId,
+            uint objectiveIndex)
+        {
+            var questManager = new Mock<IQuestManager>();
+            var player = new Mock<IPlayer>();
+            player.SetupGet(value => value.QuestManager).Returns(questManager.Object);
+            var info = new SpellTargetInfo.SpellTargetEffectInfo(1u, new Spell4EffectsEntry
+            {
+                EffectType = SpellEffectType.QuestAdvanceObjective,
+                DataBits00 = questId,
+                DataBits01 = objectiveIndex
+            });
+
+            SpellHandler.HandleEffectQuestAdvanceObjective(Mock.Of<ISpell>(), player.Object, info);
+
+            questManager.Verify(
+                manager => manager.QuestAchieveObjective(It.IsAny<ushort>(), It.IsAny<byte>()),
+                Times.Never);
+        }
+
+        [Fact]
+        public void HandleEffectQuestAdvanceObjective_NonPlayerTargetIsIgnored()
+        {
+            var info = new SpellTargetInfo.SpellTargetEffectInfo(1u, new Spell4EffectsEntry
+            {
+                EffectType = SpellEffectType.QuestAdvanceObjective,
+                DataBits00 = 100u,
+                DataBits01 = 1u
+            });
+
+            SpellHandler.HandleEffectQuestAdvanceObjective(
+                Mock.Of<ISpell>(),
+                Mock.Of<IUnitEntity>(),
+                info);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void HandleEffectQuestAdvanceObjective_ExpectedQuestRejectionIsContained(
+            bool invalidStaticReference)
+        {
+            var questManager = new Mock<IQuestManager>();
+            questManager
+                .Setup(manager => manager.QuestAchieveObjective(100, 1))
+                .Throws(invalidStaticReference
+                    ? new ArgumentException("Invalid quest.")
+                    : new QuestException("Quest is not active."));
+            var player = new Mock<IPlayer>();
+            player.SetupGet(value => value.QuestManager).Returns(questManager.Object);
+            var info = new SpellTargetInfo.SpellTargetEffectInfo(1u, new Spell4EffectsEntry
+            {
+                EffectType = SpellEffectType.QuestAdvanceObjective,
+                DataBits00 = 100u,
+                DataBits01 = 1u
+            });
+
+            SpellHandler.HandleEffectQuestAdvanceObjective(Mock.Of<ISpell>(), player.Object, info);
+
+            questManager.Verify(manager => manager.QuestAchieveObjective(100, 1), Times.Once);
         }
 
         [Fact]

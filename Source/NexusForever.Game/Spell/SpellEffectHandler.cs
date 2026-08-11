@@ -6,6 +6,7 @@ using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Combat;
 using NexusForever.Game.Entity;
 using NexusForever.Game.Map;
+using NexusForever.Game.Quest;
 using NexusForever.Game.Static.Combat;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Spell;
@@ -18,6 +19,8 @@ namespace NexusForever.Game.Spell
 {
     public static class SpellHandler
     {
+        private const uint MaximumQuestId = 0x7FFFu;
+
         [SpellEffectHandler(SpellEffectType.Damage)]
         public static void HandleEffectDamage(ISpell spell, IUnitEntity target, ISpellTargetEffectInfo info)
         {
@@ -45,6 +48,36 @@ namespace NexusForever.Game.Spell
             var proc = new ProcInfo(target, info.Entry);
             if (target.ApplyProc(proc))
                 spell.TrackProc(target, proc);
+        }
+
+        [SpellEffectHandler(SpellEffectType.QuestAdvanceObjective)]
+        public static void HandleEffectQuestAdvanceObjective(
+            ISpell spell,
+            IUnitEntity target,
+            ISpellTargetEffectInfo info)
+        {
+            if (target is not IPlayer player
+                || player.QuestManager == null
+                || info?.Entry == null)
+                return;
+
+            uint questId = info.Entry.DataBits00;
+            uint objectiveIndex = info.Entry.DataBits01;
+            if (questId is 0u or > MaximumQuestId || objectiveIndex >= byte.MaxValue)
+                return;
+
+            try
+            {
+                player.QuestManager.QuestAchieveObjective((ushort)questId, (byte)objectiveIndex);
+            }
+            catch (QuestException)
+            {
+                // The effect can legitimately target a player without the referenced active objective.
+            }
+            catch (ArgumentException)
+            {
+                // Invalid static quest references fail this effect without aborting the owning spell.
+            }
         }
 
         [SpellEffectHandler(SpellEffectType.Heal)]
