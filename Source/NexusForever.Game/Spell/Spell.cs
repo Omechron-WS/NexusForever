@@ -171,7 +171,9 @@ namespace NexusForever.Game.Spell
 
             if (Caster is IPlayer player && !Parameters.IsThresholdChild)
                 if (Parameters.SpellInfo.GlobalCooldown != null)
-                    player.SpellManager.SetGlobalSpellCooldown(Parameters.SpellInfo.GlobalCooldown.CooldownTime / 1000d);
+                    player.SpellManager.SetGlobalSpellCooldown(
+                        Parameters.SpellInfo.Entry.GlobalCooldownEnum,
+                        Parameters.SpellInfo.GlobalCooldown.CooldownTime / 1000d);
 
             // It's assumed that non-player entities will be stood still to cast (most do).
             // TODO: There are a handful of telegraphs that are attached to moving units (specifically rotating units) which this needs to be updated to account for.
@@ -205,9 +207,7 @@ namespace NexusForever.Game.Spell
                 if (player.SpellManager.GetSpellCooldown(Parameters.SpellInfo.Entry.Id) > 0d)
                     return CastResult.SpellCooldown;
 
-                // this isn't entirely correct, research GlobalCooldownEnum
-                if (Parameters.SpellInfo.Entry.GlobalCooldownEnum == 0
-                    && player.SpellManager.GetGlobalSpellCooldown() > 0d)
+                if (player.SpellManager.GetGlobalSpellCooldown(Parameters.SpellInfo.Entry.GlobalCooldownEnum) > 0d)
                     return CastResult.SpellGlobalCooldown;
 
                 if (Parameters.CharacterSpell?.MaxAbilityCharges > 0 && Parameters.CharacterSpell?.AbilityCharges == 0)

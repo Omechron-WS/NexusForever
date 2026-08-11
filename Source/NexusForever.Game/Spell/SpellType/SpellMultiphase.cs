@@ -33,7 +33,9 @@ namespace NexusForever.Game.Spell.SpellType
 
             if (Caster is IPlayer player)
                 if (Parameters.SpellInfo.GlobalCooldown != null)
-                    player.SpellManager.SetGlobalSpellCooldown(Parameters.SpellInfo.GlobalCooldown.CooldownTime / 1000d);
+                    player.SpellManager.SetGlobalSpellCooldown(
+                        Parameters.SpellInfo.Entry.GlobalCooldownEnum,
+                        Parameters.SpellInfo.GlobalCooldown.CooldownTime / 1000d);
 
             if (Caster is not IPlayer)
                 InitialiseTelegraphs();

@@ -93,6 +93,72 @@ namespace NexusForever.Game.Tests.CSI
         }
 
         [Fact]
+        public void Cast_CommitsTypedGlobalCooldownOnceBeforeInteractionStart()
+        {
+            var lifecycle = new List<string>();
+            Mock<IClientSideInteraction> interaction = CreateInteraction(entry: null);
+            Mock<IPlayer> player = CreatePlayer(out Mock<IGameSession> session);
+            Mock<ISpellManager> spellManager = Mock.Get(player.Object.SpellManager);
+            spellManager.Setup(manager => manager.SetGlobalSpellCooldown(3u, 1.5d))
+                .Callback(() => lifecycle.Add("cooldown"));
+            session.Setup(value => value.EnqueueMessageEncrypted(
+                    It.IsAny<ServerSpellStartClientInteraction>()))
+                .Callback(() => lifecycle.Add("start"));
+            SpellParameters parameters = CreateParameters(
+                CastMethod.Normal,
+                interaction.Object,
+                new Spell4Entry
+                {
+                    Id                 = 123u,
+                    GlobalCooldownEnum = 3u
+                });
+            Mock.Get(parameters.SpellInfo).SetupGet(value => value.GlobalCooldown)
+                .Returns(new SpellCoolDownEntry { CooldownTime = 1500u });
+            var spell = new TestClientSideInteractionSpell(player.Object, parameters);
+
+            spell.Cast();
+            Assert.True(spell.SucceedClientInteraction());
+
+            Assert.Equal(["cooldown", "start"], lifecycle);
+            spellManager.Verify(manager => manager.GetGlobalSpellCooldown(3u), Times.Once);
+            spellManager.Verify(manager => manager.SetGlobalSpellCooldown(3u, 1.5d), Times.Once);
+        }
+
+        [Fact]
+        public void Cast_ActiveTypedGlobalCooldownFailsWithoutCommitOrInteractionStart()
+        {
+            var packets = new List<IWritable>();
+            Mock<IClientSideInteraction> interaction = CreateInteraction(entry: null);
+            Mock<IPlayer> player = CreatePlayer(out Mock<IGameSession> session, isLoading: false);
+            session.Setup(value => value.EnqueueMessageEncrypted(It.IsAny<IWritable>()))
+                .Callback<IWritable>(packets.Add);
+            Mock<ISpellManager> spellManager = Mock.Get(player.Object.SpellManager);
+            spellManager.Setup(manager => manager.GetGlobalSpellCooldown(3u)).Returns(1d);
+            SpellParameters parameters = CreateParameters(
+                CastMethod.Normal,
+                interaction.Object,
+                new Spell4Entry
+                {
+                    Id                 = 123u,
+                    GlobalCooldownEnum = 3u
+                });
+            var spell = new TestClientSideInteractionSpell(player.Object, parameters);
+
+            spell.Cast();
+
+            Assert.True(spell.IsFinishing);
+            ServerSpellCastResult result = Assert.IsType<ServerSpellCastResult>(Assert.Single(packets));
+            Assert.Equal(CastResult.SpellGlobalCooldown, result.CastResult);
+            spellManager.Verify(manager => manager.GetGlobalSpellCooldown(3u), Times.Once);
+            spellManager.Verify(
+                manager => manager.SetGlobalSpellCooldown(It.IsAny<uint>(), It.IsAny<double>()),
+                Times.Never);
+            session.Verify(value => value.EnqueueMessageEncrypted(
+                It.IsAny<ServerSpellStartClientInteraction>()), Times.Never);
+            interaction.Verify(value => value.TriggerFail(), Times.Once);
+        }
+
+        [Fact]
         public void ProxyCast_DedicatedStartPublishesOneFinishFromLateUpdate()
         {
             Mock<IClientSideInteraction> interaction = CreateInteraction(entry: null);

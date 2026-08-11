@@ -201,6 +201,7 @@ namespace NexusForever.Game.Tests.Spell
             characterSpell.SetupGet(spell => spell.AbilityCharges).Returns(1u);
             SpellParameters parameters = CreateRootParameters(CastMethod.RapidTap, thresholdTime: 1000u);
             parameters.CharacterSpell = characterSpell.Object;
+            parameters.SpellInfo.Entry.GlobalCooldownEnum = 3u;
             parameters.SpellInfo.Entry.InnateCostType0 = (uint)Vital.Focus;
             parameters.SpellInfo.Entry.InnateCost0 = 10u;
             parameters.SpellInfo.Entry.SpellCoolDown = 2000u;
@@ -225,7 +226,7 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Equal([(Vital.Focus, -10f)], mutations);
             characterSpell.Verify(character => character.UseCharge(), Times.Once);
             Mock.Get(player.Object.SpellManager).Verify(
-                manager => manager.SetGlobalSpellCooldown(1.5d), Times.Once);
+                manager => manager.SetGlobalSpellCooldown(3u, 1.5d), Times.Once);
             Mock.Get(player.Object.SpellManager).Verify(
                 manager => manager.SetSpellCooldown(RootSpellId, 2d), Times.Once);
         }
@@ -241,6 +242,9 @@ namespace NexusForever.Game.Tests.Spell
             };
             var mutations = new List<(Vital Vital, float Delta)>();
             Mock<IPlayer> player = CreatePlayer(lifecycle, out _, out _, values, mutations);
+            Mock.Get(player.Object.SpellManager)
+                .Setup(manager => manager.GetGlobalSpellCooldown(2u))
+                .Returns(1d);
             int effectCount = 0;
             RegisterEffectHandler(SpellEffectType.UNUSED039, (_, _, _) => effectCount++);
             var effect = new Spell4EffectsEntry
@@ -257,8 +261,10 @@ namespace NexusForever.Game.Tests.Spell
                 CastMethod.ChargeRelease,
                 thresholdTime: 500u,
                 userInitiated: true);
+            parameters.SpellInfo.Entry.GlobalCooldownEnum = 3u;
             ThresholdData data = CreateData(Row(1u, 0u, ChildSpellId, 100u));
             Spell4Entry childEntry = data.Spells[ChildSpellId].Entry;
+            childEntry.GlobalCooldownEnum = 2u;
             childEntry.InnateCostType0 = (uint)Vital.Resource1;
             childEntry.InnateCost0 = 25u;
             childEntry.SpellCoolDown = 2000u;
@@ -296,7 +302,12 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Equal([(Vital.Focus, -7f)], mutations);
             Assert.Equal(1, effectCount);
             Mock.Get(player.Object.SpellManager).Verify(
-                manager => manager.SetGlobalSpellCooldown(It.IsAny<double>()), Times.Never);
+                manager => manager.GetGlobalSpellCooldown(3u), Times.Once);
+            Mock.Get(player.Object.SpellManager).Verify(
+                manager => manager.GetGlobalSpellCooldown(2u), Times.Never);
+            Mock.Get(player.Object.SpellManager).Verify(
+                manager => manager.SetGlobalSpellCooldown(It.IsAny<uint>(), It.IsAny<double>()),
+                Times.Never);
             Mock.Get(player.Object.SpellManager).Verify(
                 manager => manager.SetSpellCooldown(ChildSpellId, It.IsAny<double>()), Times.Never);
         }

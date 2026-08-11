@@ -54,7 +54,25 @@ namespace NexusForever.Game.Abstract.Entity
         void SetSpellCooldown(uint spell4Id, double cooldown);
 
         void ResetAllSpellCooldowns();
+
+        /// <summary>
+        /// Return the global spell cooldown in seconds for the supplied game-table lane.
+        /// </summary>
+        double GetGlobalSpellCooldown(uint globalCooldownEnum);
+
+        /// <summary>
+        /// Set the global spell cooldown in seconds for the supplied game-table lane; zero clears that lane.
+        /// </summary>
+        void SetGlobalSpellCooldown(uint globalCooldownEnum, double cooldown);
+
+        /// <summary>
+        /// Return the legacy lane-0 global spell cooldown.
+        /// </summary>
         double GetGlobalSpellCooldown();
+
+        /// <summary>
+        /// Set the legacy lane-0 global spell cooldown.
+        /// </summary>
         void SetGlobalSpellCooldown(double cooldown);
 
         /// <summary>

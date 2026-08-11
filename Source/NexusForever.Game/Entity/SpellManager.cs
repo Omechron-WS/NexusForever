@@ -54,7 +54,7 @@ namespace NexusForever.Game.Entity
 
         private readonly Dictionary<uint /*spell4BaseId*/, ICharacterSpell> spells = new();
         private readonly Dictionary<uint /*spell4Id*/, double /*cooldown*/> spellCooldowns = new();
-        private double globalSpellCooldown;
+        private readonly Dictionary<uint /*globalCooldownEnum*/, double /*cooldown*/> globalSpellCooldowns = new();
 
         private readonly IActionSet[] actionSets = new ActionSet[ActionSet.MaxActionSets];
 
@@ -64,9 +64,8 @@ namespace NexusForever.Game.Entity
         /// Create a new <see cref="ISpellManager"/> from existing <see cref="CharacterModel"/> database model.
         /// </summary>
         public SpellManager(IPlayer owner, CharacterModel model)
+            : this(owner)
         {
-            player = owner;
-
             foreach (CharacterSpellModel spellModel in model.Spell)
             {
                 ISpellBaseInfo spellBaseInfo = GlobalSpellManager.Instance.GetSpellBaseInfo(spellModel.Spell4BaseId);
@@ -90,6 +89,14 @@ namespace NexusForever.Game.Entity
             }
 
             activeActionSet = model.ActiveSpec;
+        }
+
+        /// <summary>
+        /// Create a minimal manager suitable for exercising ephemeral cooldown state.
+        /// </summary>
+        internal SpellManager(IPlayer owner)
+        {
+            player = owner ?? throw new ArgumentNullException(nameof(owner));
         }
 
         public void GrantSpells()
@@ -128,16 +135,16 @@ namespace NexusForever.Game.Entity
 
         public void Update(double lastTick)
         {
-            // update global cooldown
-            if (globalSpellCooldown > 0d)
+            // update global cooldowns
+            foreach ((uint globalCooldownEnum, double cooldown) in globalSpellCooldowns.ToArray())
             {
-                if (globalSpellCooldown - lastTick <= 0d)
+                if (cooldown - lastTick <= 0d)
                 {
-                    globalSpellCooldown = 0d;
-                    log.Trace("Global spell cooldown has reset.");
+                    globalSpellCooldowns.Remove(globalCooldownEnum);
+                    log.Trace($"Global spell cooldown {globalCooldownEnum} has reset.");
                 }
                 else
-                    globalSpellCooldown -= lastTick;
+                    globalSpellCooldowns[globalCooldownEnum] = cooldown - lastTick;
             }
 
             // update spell cooldowns
@@ -338,15 +345,34 @@ namespace NexusForever.Game.Entity
                 SetSpellCooldown(spell4Id, 0d);
         }
 
+        /// <inheritdoc />
+        public double GetGlobalSpellCooldown(uint globalCooldownEnum)
+        {
+            return globalSpellCooldowns.TryGetValue(globalCooldownEnum, out double cooldown) ? cooldown : 0d;
+        }
+
+        /// <inheritdoc />
+        public void SetGlobalSpellCooldown(uint globalCooldownEnum, double cooldown)
+        {
+            if (!double.IsFinite(cooldown) || cooldown < 0d)
+                throw new ArgumentOutOfRangeException(nameof(cooldown));
+
+            if (cooldown == 0d)
+                globalSpellCooldowns.Remove(globalCooldownEnum);
+            else
+                globalSpellCooldowns[globalCooldownEnum] = cooldown;
+
+            log.Trace($"Global spell cooldown {globalCooldownEnum} set to {cooldown} seconds.");
+        }
+
         public double GetGlobalSpellCooldown()
         {
-            return globalSpellCooldown;
+            return GetGlobalSpellCooldown(0u);
         }
 
         public void SetGlobalSpellCooldown(double cooldown)
         {
-            globalSpellCooldown = cooldown;
-            log.Trace($"Global spell cooldown set to {cooldown} seconds.");
+            SetGlobalSpellCooldown(0u, cooldown);
         }
 
         /// <summary>

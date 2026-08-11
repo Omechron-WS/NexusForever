@@ -1,5 +1,7 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Entity.Movement;
 using NexusForever.Game.Abstract.Spell;
@@ -9,6 +11,8 @@ using NexusForever.Game.Spell.SpellType;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Spell;
 using NexusForever.Game.Tests.Combat;
+using NexusForever.GameTable;
+using NexusForever.GameTable.Configuration.Model;
 using NexusForever.GameTable.Model;
 using NexusForever.Network.Message;
 using NexusForever.Network.Session;
@@ -42,11 +46,21 @@ namespace NexusForever.Game.Tests.Spell
             typeof(EntityManager)
                 .GetMethod("InitialiseEntityStats", BindingFlags.Instance | BindingFlags.NonPublic)
                 .Invoke(entityManager, null);
+            var gameTableManager = new GameTableManager(Options.Create(new GameTableConfig()));
+            var spellPhaseTable = (GameTable<SpellPhaseEntry>)RuntimeHelpers.GetUninitializedObject(
+                typeof(GameTable<SpellPhaseEntry>));
+            typeof(GameTable<SpellPhaseEntry>)
+                .GetProperty(nameof(GameTable<SpellPhaseEntry>.Entries))
+                ?.SetValue(spellPhaseTable, Array.Empty<SpellPhaseEntry>());
+            typeof(GameTableManager)
+                .GetProperty(nameof(GameTableManager.SpellPhase))
+                ?.SetValue(gameTableManager, spellPhaseTable);
 
             serviceProvider = new ServiceCollection()
                 .AddSingleton(scriptManager.Object)
                 .AddSingleton(new GlobalSpellManager())
                 .AddSingleton(entityManager)
+                .AddSingleton(gameTableManager)
                 .BuildServiceProvider();
             LegacyServiceProvider.Provider = serviceProvider;
         }
@@ -99,6 +113,7 @@ namespace NexusForever.Game.Tests.Spell
                 new Spell4Entry
                 {
                     Id                            = 123u,
+                    GlobalCooldownEnum            = 3u,
                     SpellCoolDown                 = 1000u,
                     CasterInnateRequirement0      = (uint)Vital.Resource1,
                     CasterInnateRequirementValue0 = 50u,
@@ -115,11 +130,69 @@ namespace NexusForever.Game.Tests.Spell
             Assert.True(spell.IsFinishing);
             characterSpell.Verify(character => character.UseCharge(), Times.Never);
             Mock.Get(player.Object.SpellManager).Verify(
-                manager => manager.SetGlobalSpellCooldown(1.5d),
+                manager => manager.SetGlobalSpellCooldown(3u, 1.5d),
                 Times.Once);
             Mock.Get(player.Object.SpellManager).Verify(
                 manager => manager.SetSpellCooldown(It.IsAny<uint>(), It.IsAny<double>()),
                 Times.Never);
+        }
+
+        [Fact]
+        public void Cast_ActiveTypedGlobalCooldownRejectsEvenWithoutOwnTimingRow()
+        {
+            var packets = new List<IWritable>();
+            var session = new Mock<IGameSession>();
+            session.Setup(gameSession => gameSession.EnqueueMessageEncrypted(It.IsAny<IWritable>()))
+                .Callback<IWritable>(packets.Add);
+            Mock<IPlayer> player = CreatePlayer([], session: session, isLoading: false);
+            Mock<ISpellManager> spellManager = Mock.Get(player.Object.SpellManager);
+            spellManager.Setup(manager => manager.GetGlobalSpellCooldown(3u)).Returns(1d);
+            SpellParameters parameters = CreateParameters(
+                CastMethod.Normal,
+                new Spell4Entry
+                {
+                    Id                 = 1316u,
+                    GlobalCooldownEnum = 3u
+                });
+            var spell = new TestSpell(player.Object, parameters);
+
+            spell.Cast();
+
+            Assert.True(spell.IsFinishing);
+            ServerSpellCastResult result = Assert.IsType<ServerSpellCastResult>(Assert.Single(packets));
+            Assert.Equal(CastResult.SpellGlobalCooldown, result.CastResult);
+            spellManager.Verify(manager => manager.GetGlobalSpellCooldown(3u), Times.Once);
+            spellManager.Verify(
+                manager => manager.SetGlobalSpellCooldown(It.IsAny<uint>(), It.IsAny<double>()),
+                Times.Never);
+            player.Verify(
+                value => value.EnqueueToVisible(It.IsAny<ServerSpellStart>(), true),
+                Times.Never);
+        }
+
+        [Fact]
+        public void Cast_ActiveDifferentLaneAdmitsSprintShapedLaneAndCommitsOnce()
+        {
+            Mock<IPlayer> player = CreatePlayer([]);
+            Mock<ISpellManager> spellManager = Mock.Get(player.Object.SpellManager);
+            spellManager.Setup(manager => manager.GetGlobalSpellCooldown(It.IsAny<uint>()))
+                .Returns((uint globalCooldownEnum) => globalCooldownEnum == 0u ? 1d : 0d);
+            SpellParameters parameters = CreateParameters(
+                CastMethod.Normal,
+                new Spell4Entry
+                {
+                    Id                 = 1316u,
+                    GlobalCooldownEnum = 3u
+                },
+                globalCooldown: 1500u);
+            var spell = new TestSpell(player.Object, parameters);
+
+            spell.Cast();
+
+            Assert.True(spell.IsCasting);
+            spellManager.Verify(manager => manager.GetGlobalSpellCooldown(3u), Times.Once);
+            spellManager.Verify(manager => manager.GetGlobalSpellCooldown(0u), Times.Never);
+            spellManager.Verify(manager => manager.SetGlobalSpellCooldown(3u, 1.5d), Times.Once);
         }
 
         [Fact]
@@ -351,13 +424,15 @@ namespace NexusForever.Game.Tests.Spell
                 new Spell4Entry
                 {
                     Id                  = 123u,
+                    GlobalCooldownEnum  = 3u,
                     InnateCostType0     = (uint)Vital.Resource1,
                     InnateCost0         = 60u,
                     ChannelInitialDelay = 0u,
                     ChannelPulseTime    = 1000u,
                     ChannelMaxTime      = 2000u
                 },
-                characterSpell.Object);
+                characterSpell.Object,
+                globalCooldown: 1500u);
             NexusForever.Game.Spell.Spell spell = channeledField
                 ? new SpellChanneledField(player.Object, parameters)
                 : new SpellChanneled(player.Object, parameters);
@@ -370,9 +445,34 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Equal(40f, values[Vital.Resource1]);
             Assert.Equal([(Vital.Resource1, -60f)], mutations);
             characterSpell.Verify(character => character.UseCharge(), Times.Once);
+            Mock.Get(player.Object.SpellManager).Verify(
+                manager => manager.SetGlobalSpellCooldown(3u, 1.5d),
+                Times.Once);
 
             spell.LateUpdate(0d);
             Assert.True(spell.IsFinished);
+        }
+
+        [Fact]
+        public void MultiphaseCast_CommitsTypedGlobalCooldownOnce()
+        {
+            Mock<IPlayer> player = CreatePlayer([]);
+            SpellParameters parameters = CreateParameters(
+                CastMethod.Multiphase,
+                new Spell4Entry
+                {
+                    Id                 = 123u,
+                    GlobalCooldownEnum = 3u
+                },
+                globalCooldown: 1500u);
+            var spell = new SpellMultiphase(player.Object, parameters);
+
+            spell.Cast();
+
+            Assert.True(spell.IsCasting);
+            Mock.Get(player.Object.SpellManager).Verify(
+                manager => manager.SetGlobalSpellCooldown(3u, 1.5d),
+                Times.Once);
         }
 
         [Fact]
@@ -407,8 +507,9 @@ namespace NexusForever.Game.Tests.Spell
                 CastMethod.Aura,
                 new Spell4Entry
                 {
-                    Id            = 123u,
-                    SpellCoolDown = 1000u
+                    Id                 = 123u,
+                    GlobalCooldownEnum = 2u,
+                    SpellCoolDown      = 1000u
                 },
                 globalCooldown: 1500u);
             var spell = new SpellAura(player.Object, parameters);
@@ -420,7 +521,7 @@ namespace NexusForever.Game.Tests.Spell
                 manager => manager.SetSpellCooldown(123u, 1d),
                 Times.Once);
             Mock.Get(player.Object.SpellManager).Verify(
-                manager => manager.SetGlobalSpellCooldown(1.5d),
+                manager => manager.SetGlobalSpellCooldown(2u, 1.5d),
                 Times.Once);
         }
 

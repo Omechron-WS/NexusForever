@@ -74,7 +74,9 @@ namespace NexusForever.Game.Spell.SpellType
             {
                 try
                 {
-                    player.SpellManager.SetGlobalSpellCooldown(Parameters.SpellInfo.GlobalCooldown.CooldownTime / 1000d);
+                    player.SpellManager.SetGlobalSpellCooldown(
+                        Parameters.SpellInfo.Entry.GlobalCooldownEnum,
+                        Parameters.SpellInfo.GlobalCooldown.CooldownTime / 1000d);
                 }
                 catch (Exception exception)
                 {
