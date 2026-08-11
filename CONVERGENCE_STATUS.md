@@ -78,6 +78,7 @@ Remaining priority work:
 - Make cross-server lifecycle publication failures retryable; detached failures are now observable through error logging.
 - Add a durable quest reward outbox/completion record before enabling account reward domains; the current in-memory admission boundary cannot make a process crash atomic across inventory, character, and account stores.
 - Finish the remaining Phase 2 spell variants, broader unit-capable effect-prerequisite coverage, VitalModifier formula/range semantics, and effect-level persistence/suspend lifecycle before relying on formula-driven or long-lived effects for broader scripted combat content.
+- Keep `Spell4StackGroup` admission gated until authoritative evidence resolves `StackTypeEnum`, caster-versus-target ownership, and equal-priority refresh, rejection, replacement, and packet ordering. Sprint group 26 alone contains seven priority-100 open-ended roots with heterogeneous property, vital, proc, proxy, and counter effects, so its cap-one metadata is not a safe standalone rule.
 - Prove revision-producer and outbox concurrency behaviour, freshness/completeness, and group incarnation before using cached membership as the sole authority for group/raid loot allocation.
 
 RC4 remains required by the build-16042 STS protocol. It is treated as a compatibility exception and contained through SRP state enforcement, bounded inputs, secret redaction, and deployment isolation.
