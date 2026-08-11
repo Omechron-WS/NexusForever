@@ -8,10 +8,10 @@
   <ItemGroup>
     <PackageReference Include="CommandLineParser" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
-    <PackageReference Include="Nexus.Archive" />
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Nexus.Archive\Nexus.Archive.csproj" />
     <ProjectReference Include="..\NexusForever.GameTable\NexusForever.GameTable.csproj" />
     <ProjectReference Include="..\NexusForever.IO\NexusForever.IO.csproj" />
     <ProjectReference Include="..\NexusForever.Shared\NexusForever.Shared.csproj" />

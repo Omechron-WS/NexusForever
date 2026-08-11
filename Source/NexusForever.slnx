@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/Client/">
+    <Project Path="Nexus.Archive/Nexus.Archive.csproj" />
     <Project Path="NexusForever.ClientConnector/NexusForever.ClientConnector.csproj" />
     <Project Path="NexusForever.MapGenerator/NexusForever.MapGenerator.csproj" />
   </Folder>
@@ -60,6 +61,7 @@
     <File Path="Directory.Packages.props" />
   </Folder>
   <Folder Name="/Tests/">
+    <Project Path="NexusForever.Archive.Tests/NexusForever.Archive.Tests.csproj" />
     <Project Path="NexusForever.API.Tests/NexusForever.API.Tests.csproj" />
     <Project Path="NexusForever.Game.Tests/NexusForever.Game.Tests.csproj" />
     <Project Path="NexusForever.Network.Tests/NexusForever.Network.Tests.csproj" />
