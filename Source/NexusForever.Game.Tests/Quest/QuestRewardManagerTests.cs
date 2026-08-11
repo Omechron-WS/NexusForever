@@ -516,28 +516,34 @@ namespace NexusForever.Game.Tests.Quest
         public void QuestComplete_RejectedPlanKeepsAchievedQuestAndPushedItems()
         {
             CompletionFixture fixture = CreateFixture();
+            Mock<IQuest> observer = AddActiveObserver(fixture, 101);
             fixture.RewardManager.PrepareResult = false;
 
             fixture.Manager.QuestComplete(QuestId, 99, true);
 
             Assert.Equal(QuestState.Achieved, fixture.Quest.Object.State);
-            Assert.Same(fixture.Quest.Object, Assert.Single(fixture.Manager.GetActiveQuests()));
+            Assert.Same(fixture.Quest.Object, fixture.ActiveQuests[QuestId]);
+            Assert.Equal(2, fixture.Manager.GetActiveQuests().Count());
             fixture.Inventory.Verify(
                 inventory => inventory.ItemDelete(It.IsAny<uint>(), It.IsAny<uint>(), It.IsAny<ItemUpdateReason>()),
                 Times.Never);
             Assert.Equal(0, fixture.RewardManager.ApplyCount);
+            VerifyNoObjectiveUpdate(observer);
+            VerifyNoObjectiveUpdate(fixture.Quest);
         }
 
         [Fact]
         public void QuestComplete_InventoryDriftKeepsAchievedQuestWithoutCompletion()
         {
             CompletionFixture fixture = CreateFixture();
+            Mock<IQuest> observer = AddActiveObserver(fixture, 101);
             fixture.RewardManager.ApplyResult = false;
 
             fixture.Manager.QuestComplete(QuestId, 0, true);
 
             Assert.Equal(QuestState.Achieved, fixture.Quest.Object.State);
-            Assert.Same(fixture.Quest.Object, Assert.Single(fixture.Manager.GetActiveQuests()));
+            Assert.Same(fixture.Quest.Object, fixture.ActiveQuests[QuestId]);
+            Assert.Equal(2, fixture.Manager.GetActiveQuests().Count());
             Assert.Equal(1, fixture.RewardManager.ApplyCount);
             fixture.AchievementManager.Verify(
                 manager => manager.CheckAchievements(
@@ -547,18 +553,66 @@ namespace NexusForever.Game.Tests.Quest
                     It.IsAny<uint>(),
                     It.IsAny<uint>()),
                 Times.Never);
+            VerifyNoObjectiveUpdate(observer);
+            VerifyNoObjectiveUpdate(fixture.Quest);
+        }
+
+        [Fact]
+        public void QuestComplete_SuccessNotifiesObserversAfterSourceCommitAndBeforeAchievement()
+        {
+            DateTime completionTime = new(2026, 8, 10, 12, 0, 0, DateTimeKind.Utc);
+            DateTime expectedReset = new(2026, 8, 11, 10, 0, 0, DateTimeKind.Utc);
+            CompletionFixture fixture = CreateFixture(QuestRepeatPeriod.Daily, completionTime);
+            Mock<IQuest> observer = AddActiveObserver(fixture, 101);
+            var dispatchOrder = new List<string>();
+
+            observer
+                .Setup(quest => quest.ObjectiveUpdate(QuestObjectiveType.CompleteQuest, QuestId, 1u))
+                .Callback(() =>
+                {
+                    Assert.Equal(QuestState.Completed, fixture.Quest.Object.State);
+                    Assert.Equal(expectedReset, fixture.Quest.Object.Reset);
+                    Assert.False(fixture.ActiveQuests.ContainsKey(QuestId));
+                    Assert.True(fixture.CompletedQuests.TryGetValue(QuestId, out IQuest completedQuest));
+                    Assert.Same(fixture.Quest.Object, completedQuest);
+                    fixture.AchievementManager.Verify(
+                        manager => manager.CheckAchievements(
+                            fixture.Player.Object,
+                            AchievementType.QuestComplete,
+                            QuestId,
+                            0u,
+                            1u),
+                        Times.Never);
+                    dispatchOrder.Add("objective");
+                });
+            fixture.AchievementManager
+                .Setup(manager => manager.CheckAchievements(
+                    fixture.Player.Object,
+                    AchievementType.QuestComplete,
+                    QuestId,
+                    0u,
+                    1u))
+                .Callback(() => dispatchOrder.Add("achievement"));
+
+            fixture.Manager.QuestComplete(QuestId, 0, true);
+
+            Assert.Equal(new[] { "objective", "achievement" }, dispatchOrder);
+            VerifyCompletionObjectiveUpdate(observer, Times.Once());
+            VerifyNoObjectiveUpdate(fixture.Quest);
+            Assert.Empty(GetCompletingQuests(fixture.Manager));
         }
 
         [Fact]
         public void QuestComplete_SuccessfulRepeatPacketDoesNotReapplyRewards()
         {
             CompletionFixture fixture = CreateFixture();
+            Mock<IQuest> observer = AddActiveObserver(fixture, 101);
 
             fixture.Manager.QuestComplete(QuestId, 0, true);
 
             Assert.Throws<QuestException>(() => fixture.Manager.QuestComplete(QuestId, 0, true));
             Assert.Equal(QuestState.Completed, fixture.Quest.Object.State);
-            Assert.Empty(fixture.Manager.GetActiveQuests());
+            Assert.Same(observer.Object, Assert.Single(fixture.Manager.GetActiveQuests()));
             Assert.Equal(1, fixture.RewardManager.PrepareCount);
             Assert.Equal(1, fixture.RewardManager.ApplyCount);
             fixture.Quest.VerifySet(quest => quest.State = QuestState.Completed, Times.Once);
@@ -570,12 +624,14 @@ namespace NexusForever.Game.Tests.Quest
                     0u,
                     1u),
                 Times.Once);
+            VerifyCompletionObjectiveUpdate(observer, Times.Once());
         }
 
         [Fact]
         public void QuestComplete_ReentrantPacketCannotEnterRewardApplicationTwice()
         {
             CompletionFixture fixture = CreateFixture();
+            Mock<IQuest> observer = AddActiveObserver(fixture, 101);
             fixture.RewardManager.ApplyAction = () => Assert.Throws<QuestException>(
                 () => fixture.Manager.QuestComplete(QuestId, 0, true));
 
@@ -585,12 +641,14 @@ namespace NexusForever.Game.Tests.Quest
             Assert.Equal(1, fixture.RewardManager.PrepareCount);
             Assert.Equal(1, fixture.RewardManager.ApplyCount);
             fixture.Quest.VerifySet(quest => quest.State = QuestState.Completed, Times.Once);
+            VerifyCompletionObjectiveUpdate(observer, Times.Once());
         }
 
         [Fact]
         public void QuestComplete_ReentrantPacketCannotPrepareRewardsTwice()
         {
             CompletionFixture fixture = CreateFixture();
+            Mock<IQuest> observer = AddActiveObserver(fixture, 101);
             fixture.RewardManager.PrepareAction = () => Assert.Throws<QuestException>(
                 () => fixture.Manager.QuestComplete(QuestId, 0, true));
 
@@ -600,12 +658,14 @@ namespace NexusForever.Game.Tests.Quest
             Assert.Equal(1, fixture.RewardManager.PrepareCount);
             Assert.Equal(1, fixture.RewardManager.ApplyCount);
             fixture.Quest.VerifySet(quest => quest.State = QuestState.Completed, Times.Once);
+            VerifyCompletionObjectiveUpdate(observer, Times.Once());
         }
 
         [Fact]
         public void QuestComplete_UnexpectedApplyExceptionCannotBeRetriedInSession()
         {
             CompletionFixture fixture = CreateFixture();
+            Mock<IQuest> observer = AddActiveObserver(fixture, 101);
             fixture.RewardManager.ApplyAction = () => throw new InvalidOperationException();
 
             Assert.Throws<InvalidOperationException>(() => fixture.Manager.QuestComplete(QuestId, 0, true));
@@ -614,10 +674,62 @@ namespace NexusForever.Game.Tests.Quest
             Assert.Equal(QuestState.Achieved, fixture.Quest.Object.State);
             Assert.Equal(1, fixture.RewardManager.PrepareCount);
             Assert.Equal(1, fixture.RewardManager.ApplyCount);
+            VerifyNoObjectiveUpdate(observer);
+            VerifyNoObjectiveUpdate(fixture.Quest);
         }
 
-        private static CompletionFixture CreateFixture()
+        [Fact]
+        public void QuestComplete_ThrowingObserverDoesNotBlockLaterObserverAchievementOrGuardRelease()
         {
+            CompletionFixture fixture = CreateFixture();
+            Mock<IQuest> throwingObserver = AddActiveObserver(fixture, 101);
+            Mock<IQuest> laterObserver = AddActiveObserver(fixture, 102);
+            throwingObserver
+                .Setup(quest => quest.ObjectiveUpdate(QuestObjectiveType.CompleteQuest, QuestId, 1u))
+                .Throws(new InvalidOperationException("Test observer failure."));
+
+            Exception exception = Record.Exception(() => fixture.Manager.QuestComplete(QuestId, 0, true));
+
+            Assert.Null(exception);
+            Assert.Equal(QuestState.Completed, fixture.Quest.Object.State);
+            Assert.False(fixture.ActiveQuests.ContainsKey(QuestId));
+            Assert.Same(fixture.Quest.Object, fixture.CompletedQuests[QuestId]);
+            VerifyCompletionObjectiveUpdate(throwingObserver, Times.Once());
+            VerifyCompletionObjectiveUpdate(laterObserver, Times.Once());
+            fixture.AchievementManager.Verify(
+                manager => manager.CheckAchievements(
+                    fixture.Player.Object,
+                    AchievementType.QuestComplete,
+                    QuestId,
+                    0u,
+                    1u),
+                Times.Once);
+            Assert.Empty(GetCompletingQuests(fixture.Manager));
+        }
+
+        [Fact]
+        public void QuestComplete_ObserverRemovalSkipsStaleSnapshotEntry()
+        {
+            CompletionFixture fixture = CreateFixture();
+            Mock<IQuest> removingObserver = AddActiveObserver(fixture, 101);
+            Mock<IQuest> removedObserver = AddActiveObserver(fixture, 102);
+            removingObserver
+                .Setup(quest => quest.ObjectiveUpdate(QuestObjectiveType.CompleteQuest, QuestId, 1u))
+                .Callback(() => fixture.ActiveQuests.Remove(102));
+
+            fixture.Manager.QuestComplete(QuestId, 0, true);
+
+            VerifyCompletionObjectiveUpdate(removingObserver, Times.Once());
+            VerifyNoObjectiveUpdate(removedObserver);
+            Assert.False(fixture.ActiveQuests.ContainsKey(102));
+        }
+
+        private static CompletionFixture CreateFixture(
+            QuestRepeatPeriod repeatPeriod = QuestRepeatPeriod.None,
+            DateTime? completionTime = null)
+        {
+            DateTime now = completionTime
+                ?? new DateTime(2026, 8, 10, 12, 0, 0, DateTimeKind.Utc);
             var inventory = new Mock<IInventory>();
             var achievementManager = new Mock<ICharacterAchievementManager>();
             var player = new Mock<IPlayer>();
@@ -627,9 +739,10 @@ namespace NexusForever.Game.Tests.Quest
 
             Quest2Entry entry = new()
             {
-                Id = QuestId,
-                PushedItemIds = [],
-                PushedItemCounts = []
+                Id                    = QuestId,
+                QuestRepeatPeriodEnum = (uint)repeatPeriod,
+                PushedItemIds         = [],
+                PushedItemCounts      = []
             };
             var info = new Mock<IQuestInfo>();
             info.SetupGet(value => value.Entry).Returns(entry);
@@ -639,6 +752,7 @@ namespace NexusForever.Game.Tests.Quest
             quest.SetupGet(value => value.Id).Returns(QuestId);
             quest.SetupGet(value => value.Info).Returns(info.Object);
             quest.SetupProperty(value => value.State, QuestState.Achieved);
+            quest.SetupProperty(value => value.Reset, null);
 
             var globalQuestManager = new Mock<IGlobalQuestManager>();
             globalQuestManager.Setup(manager => manager.GetQuestInfo(QuestId)).Returns(info.Object);
@@ -654,9 +768,10 @@ namespace NexusForever.Game.Tests.Quest
                 },
                 globalQuestManager.Object,
                 rewardManager,
-                disableManager.Object);
-            FieldInfo field = typeof(QuestManager).GetField("activeQuests", BindingFlags.Instance | BindingFlags.NonPublic);
-            var activeQuests = (Dictionary<ushort, IQuest>)field.GetValue(manager);
+                disableManager.Object,
+                () => now);
+            Dictionary<ushort, IQuest> activeQuests = GetQuestDictionary(manager, "activeQuests");
+            Dictionary<ushort, IQuest> completedQuests = GetQuestDictionary(manager, "completedQuests");
             activeQuests.Add(QuestId, quest.Object);
 
             return new CompletionFixture(
@@ -665,7 +780,54 @@ namespace NexusForever.Game.Tests.Quest
                 inventory,
                 achievementManager,
                 quest,
-                rewardManager);
+                rewardManager,
+                activeQuests,
+                completedQuests);
+        }
+
+        private static Mock<IQuest> AddActiveObserver(CompletionFixture fixture, ushort questId)
+        {
+            var observer = new Mock<IQuest>();
+            observer.SetupGet(quest => quest.Id).Returns(questId);
+            fixture.ActiveQuests.Add(questId, observer.Object);
+            return observer;
+        }
+
+        private static void VerifyCompletionObjectiveUpdate(Mock<IQuest> quest, Times times)
+        {
+            quest.Verify(
+                observer => observer.ObjectiveUpdate(QuestObjectiveType.CompleteQuest, QuestId, 1u),
+                times);
+            quest.Verify(
+                observer => observer.ObjectiveUpdate(
+                    It.IsAny<QuestObjectiveType>(),
+                    It.IsAny<uint>(),
+                    It.IsAny<uint>()),
+                times);
+        }
+
+        private static void VerifyNoObjectiveUpdate(Mock<IQuest> quest)
+        {
+            quest.Verify(
+                observer => observer.ObjectiveUpdate(
+                    It.IsAny<QuestObjectiveType>(),
+                    It.IsAny<uint>(),
+                    It.IsAny<uint>()),
+                Times.Never);
+        }
+
+        private static Dictionary<ushort, IQuest> GetQuestDictionary(QuestManager manager, string fieldName)
+        {
+            FieldInfo field = typeof(QuestManager).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(field);
+            return Assert.IsType<Dictionary<ushort, IQuest>>(field.GetValue(manager));
+        }
+
+        private static HashSet<ushort> GetCompletingQuests(QuestManager manager)
+        {
+            FieldInfo field = typeof(QuestManager).GetField("completingQuests", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(field);
+            return Assert.IsType<HashSet<ushort>>(field.GetValue(manager));
         }
 
         private sealed class TestQuestRewardManager : IQuestRewardManager
@@ -701,6 +863,8 @@ namespace NexusForever.Game.Tests.Quest
             Mock<IInventory> Inventory,
             Mock<ICharacterAchievementManager> AchievementManager,
             Mock<IQuest> Quest,
-            TestQuestRewardManager RewardManager);
+            TestQuestRewardManager RewardManager,
+            Dictionary<ushort, IQuest> ActiveQuests,
+            Dictionary<ushort, IQuest> CompletedQuests);
     }
 }

@@ -815,13 +815,55 @@ namespace NexusForever.Game.Entity
                 activeQuests.Remove(questId);
                 completedQuests.Add(questId, quest);
 
-                player.AchievementManager.CheckAchievements(player, AchievementType.QuestComplete, questId);
+                // Final quest completion is the only event mapped here. Objective type 24 metadata is ambiguous
+                // about objective-level completion, so do not emit it from intermediate objective transitions.
                 releaseCompletionGuard = true;
+                NotifyFinalQuestCompletion(questId);
+                player.AchievementManager.CheckAchievements(player, AchievementType.QuestComplete, questId);
             }
             finally
             {
                 if (releaseCompletionGuard)
                     completingQuests.Remove(questId);
+            }
+        }
+
+        /// <summary>
+        /// Best-effort notification that a quest reached final completion.
+        /// </summary>
+        /// <remarks>
+        /// Snapshot identities are revalidated before dispatch because an earlier observer can remove or replace a
+        /// later active quest. The completed source has already left <see cref="activeQuests"/> before this runs.
+        /// </remarks>
+        private void NotifyFinalQuestCompletion(ushort sourceQuestId)
+        {
+            KeyValuePair<ushort, IQuest>[] activeQuestSnapshot;
+            try
+            {
+                activeQuestSnapshot = activeQuests.ToArray();
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to snapshot active quests after completing quest {sourceQuestId}.");
+                return;
+            }
+
+            foreach (KeyValuePair<ushort, IQuest> observerEntry in activeQuestSnapshot)
+            {
+                try
+                {
+                    if (!activeQuests.TryGetValue(observerEntry.Key, out IQuest activeQuest)
+                        || !ReferenceEquals(activeQuest, observerEntry.Value))
+                        continue;
+
+                    activeQuest.ObjectiveUpdate(QuestObjectiveType.CompleteQuest, sourceQuestId, 1u);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(
+                        exception,
+                        $"Failed to update quest {observerEntry.Key} after completing quest {sourceQuestId}.");
+                }
             }
         }
 
