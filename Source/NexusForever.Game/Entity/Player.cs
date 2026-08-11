@@ -983,6 +983,7 @@ namespace NexusForever.Game.Entity
 
         public override void OnRemoveFromMap()
         {
+            Unsit();
             DestroyDependents();
             base.OnRemoveFromMap();
         }
@@ -1028,6 +1029,9 @@ namespace NexusForever.Game.Entity
 
         public override void RemoveVisible(IGridEntity entity)
         {
+            if (currentChairGuid == entity.Guid)
+                Unsit();
+
             base.RemoveVisible(entity);
 
             if (entity is IWorldEntity && entity != this)
@@ -1335,24 +1339,41 @@ namespace NexusForever.Game.Entity
             if (!IsSitting)
                 return;
 
-            IWorldEntity currentChair = GetVisible<IWorldEntity>(currentChairGuid.Value);
-            if (currentChair == null)
-                throw new InvalidOperationException();
+            uint chairGuid = currentChairGuid.Value;
+            currentChairGuid = null;
+
+            IWorldEntity currentChair = GetVisible<IWorldEntity>(chairGuid);
 
             // TODO: Emit interactive state from the entity instance itself
-            currentChair.EnqueueToVisible(new ServerUnitInUse
+            if (currentChair != null)
             {
-                UnitId = currentChair.Guid,
-                InUse  = false
-            }, true);
-            EnqueueToVisible(new ServerUnitSetChair
-            {
-                UnitId      = Guid,
-                UnitIdChair = 0,
-                WaitForUnit = false
-            }, true);
+                try
+                {
+                    currentChair.EnqueueToVisible(new ServerUnitInUse
+                    {
+                        UnitId = chairGuid,
+                        InUse  = false
+                    }, true);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to broadcast chair {chairGuid} release for player {Guid}.");
+                }
+            }
 
-            currentChairGuid = null;
+            try
+            {
+                EnqueueToVisible(new ServerUnitSetChair
+                {
+                    UnitId      = Guid,
+                    UnitIdChair = 0,
+                    WaitForUnit = false
+                }, true);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to broadcast chair detach for player {Guid}.");
+            }
         }
 
         /// <summary>

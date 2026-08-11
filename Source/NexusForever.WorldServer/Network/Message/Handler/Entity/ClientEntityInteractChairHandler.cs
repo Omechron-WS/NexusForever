@@ -1,6 +1,5 @@
 ﻿using NexusForever.Game.Abstract.Entity;
-using NexusForever.GameTable;
-using NexusForever.GameTable.Model;
+using NexusForever.Game.CSI;
 using NexusForever.Network;
 using NexusForever.Network.Message;
 using NexusForever.Network.World.Message.Model;
@@ -9,26 +8,15 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Entity
 {
     public class ClientEntityInteractChairHandler : IMessageHandler<IWorldSession, ClientEntityInteractChair>
     {
-        #region Dependency Injection
-
-        private readonly IGameTableManager gameTableManager;
-
-        public ClientEntityInteractChairHandler(
-            IGameTableManager gameTableManager)
-        {
-            this.gameTableManager = gameTableManager;
-        }
-
-        #endregion
+        private const uint ChairActivationFlag = 0x200000u;
 
         public void HandleMessage(IWorldSession session, ClientEntityInteractChair entityInteractChair)
         {
             IWorldEntity chair = session.Player.GetVisible<IWorldEntity>(entityInteractChair.ChairUnitId);
-            if (chair == null)
+            if (!ClientSideInteractionValidator.IsValid(session.Player, chair))
                 throw new InvalidPacketValueException();
 
-            Creature2Entry creatureEntry = gameTableManager.Creature2.GetEntry(chair.CreatureId);
-            if ((creatureEntry.ActivationFlags & 0x200000) == 0)
+            if ((chair.CreatureEntry.ActivationFlags & ChairActivationFlag) == 0u)
                 throw new InvalidPacketValueException();
 
             session.Player.Sit(chair);
