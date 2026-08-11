@@ -41,7 +41,8 @@ namespace NexusForever.Game.Spell
         protected readonly ISpellEventManager events = new SpellEventManager();
         private readonly SpellEffectTimeline effectTimeline;
         private readonly Dictionary<ulong, EffectActivationSnapshot> effectActivationSnapshots = [];
-        private readonly HashSet<uint> unsupportedApplyPrerequisitesLogged = [];
+        private readonly HashSet<uint> unsupportedEffectPrerequisitesLogged = [];
+        private readonly HashSet<(uint EffectId, uint PrerequisiteId)> failedApplyPrerequisitesLogged = [];
 
         private IScriptCollection scriptCollection;
         private bool executionCommitted;
@@ -471,12 +472,11 @@ namespace NexusForever.Game.Spell
                 foreach (Spell4EffectsEntry effect in Parameters.SpellInfo.Effects
                     .Where(IsEffectInCurrentPhase))
                 {
-                    if (effect.PrerequisiteIdCasterApply != 0u
-                        || effect.PrerequisiteIdTargetApply != 0u)
+                    if (!CanEvaluateApplyPrerequisites(effect))
                     {
-                        if (unsupportedApplyPrerequisitesLogged.Add(effect.Id))
+                        if (unsupportedEffectPrerequisitesLogged.Add(effect.Id))
                         {
-                            log.Warn($"Spell {Parameters.SpellInfo.Entry.Id} effect {effect.Id} declares an apply prerequisite which cannot yet be evaluated for every unit type and was not activated.");
+                            log.Warn($"Spell {Parameters.SpellInfo.Entry.Id} effect {effect.Id} declares unsupported effect prerequisite data and was not activated.");
                         }
 
                         // Persistence and suspend prerequisites govern an already-applied effect and
@@ -643,7 +643,80 @@ namespace NexusForever.Game.Spell
         /// </summary>
         protected virtual bool CanApplyEffect(Spell4EffectsEntry effect, ISpellTargetInfo target)
         {
-            return true;
+            return MeetsApplyPrerequisite(
+                    effect,
+                    effect.PrerequisiteIdCasterApply,
+                    Caster)
+                && MeetsApplyPrerequisite(
+                    effect,
+                    effect.PrerequisiteIdTargetApply,
+                    target.Entity);
+        }
+
+        private bool CanEvaluateApplyPrerequisites(Spell4EffectsEntry effect)
+        {
+            // Persistence and suspend prerequisites govern an already-applied effect. Keep those
+            // rows gated until their lifecycle evaluation is implemented centrally.
+            if (effect.PrerequisiteIdCasterPersistence != 0u
+                || effect.PrerequisiteIdTargetPersistence != 0u
+                || effect.PrerequisiteIdTargetSuspend != 0u)
+                return false;
+
+            if (effect.PrerequisiteIdCasterApply == 0u
+                && effect.PrerequisiteIdTargetApply == 0u)
+                return true;
+
+            try
+            {
+                return (effect.PrerequisiteIdCasterApply == 0u
+                        || PrerequisiteManager.Instance.CanEvaluateForUnit(effect.PrerequisiteIdCasterApply))
+                    && (effect.PrerequisiteIdTargetApply == 0u
+                        || PrerequisiteManager.Instance.CanEvaluateForUnit(effect.PrerequisiteIdTargetApply));
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool MeetsApplyPrerequisite(
+            Spell4EffectsEntry effect,
+            uint prerequisiteId,
+            IUnitEntity unit)
+        {
+            if (prerequisiteId == 0u)
+                return true;
+
+            try
+            {
+                if (PrerequisiteManager.Instance.TryMeets(unit, prerequisiteId, out bool meets))
+                    return meets;
+            }
+            catch (Exception exception)
+            {
+                LogApplyPrerequisiteFailure(effect, prerequisiteId, exception);
+                return false;
+            }
+
+            LogApplyPrerequisiteFailure(effect, prerequisiteId, null);
+            return false;
+        }
+
+        private void LogApplyPrerequisiteFailure(
+            Spell4EffectsEntry effect,
+            uint prerequisiteId,
+            Exception exception)
+        {
+            if (!failedApplyPrerequisitesLogged.Add((effect.Id, prerequisiteId)))
+                return;
+
+            if (exception == null)
+            {
+                log.Warn($"Spell {Parameters.SpellInfo.Entry.Id} effect {effect.Id} failed to evaluate apply prerequisite {prerequisiteId} and rejected the affected target.");
+                return;
+            }
+
+            log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} effect {effect.Id} threw while evaluating apply prerequisite {prerequisiteId} and rejected the affected target.");
         }
 
         /// <summary>

@@ -71,11 +71,15 @@ namespace NexusForever.Game.Spell.SpellType
                 return false;
 
             if (effect.TickTime > 0u)
-                return target.TargetSelectionState is TargetSelectionState.New or TargetSelectionState.Existing;
+            {
+                return (target.TargetSelectionState is TargetSelectionState.New or TargetSelectionState.Existing)
+                    && base.CanApplyEffect(effect, target);
+            }
 
-            return activeNonTickEffects.Contains(effect)
+            bool hasUnattemptedOccupancy = activeNonTickEffects.Contains(effect)
                 && (!appliedTargets.TryGetValue(effect, out HashSet<IUnitEntity> targetsForEffect)
                     || !targetsForEffect.Contains(target.Entity));
+            return hasUnattemptedOccupancy && base.CanApplyEffect(effect, target);
         }
 
         protected override void OnEffectActivated(Spell4EffectsEntry effect)
