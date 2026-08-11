@@ -5,6 +5,7 @@ using NexusForever.Game.Abstract.Spell.Event;
 using NexusForever.Game.Prerequisite;
 using NexusForever.Game.Spell.Event;
 using NexusForever.Game.Static.Spell;
+using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
 using NexusForever.Network.World.Combat;
 using NexusForever.Network.World.Entity;
@@ -40,6 +41,8 @@ namespace NexusForever.Game.Spell
         protected readonly ISpellEventManager events = new SpellEventManager();
 
         private IScriptCollection scriptCollection;
+        private bool executionCommitted;
+        private bool? unsupportedThresholdVitalCost;
 
         protected byte currentPhase = 255;
 
@@ -119,7 +122,7 @@ namespace NexusForever.Game.Spell
             CastResult result = CheckCast();
             if (result != CastResult.Ok)
             {
-                SendSpellCastResult(result);
+                FailCast(result);
                 return;
             }
 
@@ -135,7 +138,7 @@ namespace NexusForever.Game.Spell
             SendSpellStart();
 
             // enqueue spell to be executed after cast time
-            events.EnqueueEvent(new SpellEvent(Parameters.SpellInfo.Entry.CastTime / 1000d, Execute));
+            events.EnqueueEvent(new SpellEvent(Parameters.SpellInfo.Entry.CastTime / 1000d, () => Execute()));
             status = SpellStatus.Casting;
 
             log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} has started casting.");
@@ -165,7 +168,55 @@ namespace NexusForever.Game.Spell
                     return CastResult.SpellNoCharges;
             }
 
-            return CastResult.Ok;
+            return CheckVitalConditions(VitalCostMode.Validate);
+        }
+
+        private CastResult CheckVitalConditions(VitalCostMode costMode)
+        {
+            Spell4Entry entry = Parameters.SpellInfo.Entry;
+            CastResult result = SpellVitalPolicy.CheckCasterRequirements(Caster, entry);
+            if (result != CastResult.Ok)
+                return result;
+
+            IUnitEntity target = Parameters.PrimaryTargetId == 0u
+                ? Caster
+                : Caster.GetVisible<IUnitEntity>(Parameters.PrimaryTargetId);
+            result = SpellVitalPolicy.CheckTargetRequirement(target, entry);
+            if (result != CastResult.Ok)
+                return result;
+
+            if (Caster is not IPlayer)
+                return CastResult.Ok;
+
+            if (costMode == VitalCostMode.Skip)
+                return CastResult.Ok;
+
+            if (HasUnsupportedThresholdVitalCost())
+                return CastResult.SpellBad;
+
+            return costMode == VitalCostMode.Consume
+                ? SpellVitalPolicy.TryConsumeCosts(Caster, entry)
+                : SpellVitalPolicy.CheckCosts(Caster, entry);
+        }
+
+        /// <summary>
+        /// Return whether this threshold spell declares vital costs which cannot be applied safely by
+        /// the current parent-only threshold implementation.
+        /// </summary>
+        protected virtual bool HasUnsupportedThresholdVitalCost()
+        {
+            CastMethod castMethod = (CastMethod)Parameters.SpellInfo.BaseInfo.Entry.CastMethod;
+            if (castMethod is not (CastMethod.RapidTap or CastMethod.ChargeRelease))
+                return false;
+
+            if (unsupportedThresholdVitalCost.HasValue)
+                return unsupportedThresholdVitalCost.Value;
+
+            Spell4Entry entry = Parameters.SpellInfo.Entry;
+            unsupportedThresholdVitalCost = SpellVitalPolicy.HasCost(entry)
+                || GameTableManager.Instance.Spell4Thresholds.Entries.Any(threshold =>
+                    threshold.Spell4IdParent == entry.Id && SpellVitalPolicy.HasCost(threshold));
+            return unsupportedThresholdVitalCost.Value;
         }
 
         private CastResult CheckPrerequisites()
@@ -236,19 +287,24 @@ namespace NexusForever.Game.Spell
             if (!IsCasting)
                 throw new InvalidOperationException();
 
-            if (Caster is IPlayer player && !player.IsLoading)
+            try
             {
-                player.Session.EnqueueMessageEncrypted(new Server07F9
+                if (Caster is IPlayer player && !player.IsLoading)
                 {
-                    ServerUniqueId = CastingId,
-                    CastResult     = result,
-                    CancelCast     = true
-                });
+                    player.Session.EnqueueMessageEncrypted(new Server07F9
+                    {
+                        ServerUniqueId = CastingId,
+                        CastResult     = result,
+                        CancelCast     = true
+                    });
+                }
             }
-
-            events.CancelEvents();
-            RemoveAllEffects();
-            status = SpellStatus.Executing;
+            finally
+            {
+                events.CancelEvents();
+                RemoveAllEffects();
+                status = SpellStatus.Executing;
+            }
 
             log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} cast was cancelled.");
         }
@@ -313,20 +369,131 @@ namespace NexusForever.Game.Spell
                 RemoveTrackedProcs(target);
         }
 
-        protected virtual void Execute()
+        protected virtual void Execute(bool consumeVitalCost = true)
         {
+            VitalCostMode initialCostMode = consumeVitalCost && executionCommitted
+                ? VitalCostMode.Consume
+                : consumeVitalCost
+                    ? VitalCostMode.Validate
+                    : VitalCostMode.Skip;
+            CastResult result = CheckVitalConditions(initialCostMode);
+            if (result != CastResult.Ok)
+            {
+                FailExecution(result);
+                return;
+            }
+
+            if (!executionCommitted)
+            {
+                result = CheckExecutionCommit();
+                if (result != CastResult.Ok)
+                {
+                    FailExecution(result);
+                    return;
+                }
+
+                if (!TryCommitAbilityCharge())
+                {
+                    FailExecution(CastResult.SpellBad);
+                    return;
+                }
+
+                if (consumeVitalCost)
+                {
+                    result = CheckVitalConditions(VitalCostMode.Consume);
+                    if (result != CastResult.Ok)
+                    {
+                        if (Parameters.CharacterSpell?.MaxAbilityCharges > 0u)
+                            log.Error($"Spell {Parameters.SpellInfo.Entry.Id} vital transaction failed after its ability charge was committed.");
+
+                        FailExecution(result);
+                        return;
+                    }
+                }
+
+                if (!TryCommitSpellCooldown())
+                {
+                    FailExecution(CastResult.SpellBad);
+                    return;
+                }
+
+                executionCommitted = true;
+            }
+
             status = SpellStatus.Executing;
             log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} has started executing.");
 
-            if (Caster is IPlayer player)
-                if (Parameters.SpellInfo.Entry.SpellCoolDown != 0u)
-                    player.SpellManager.SetSpellCooldown(Parameters.SpellInfo.Entry.Id, Parameters.SpellInfo.Entry.SpellCoolDown / 1000d);
-
             SelectTargets();
             ExecuteEffects();
-            CostSpell();
 
             SendSpellGo();
+        }
+
+        private CastResult CheckExecutionCommit()
+        {
+            if (Caster is IPlayer player
+                && player.SpellManager.GetSpellCooldown(Parameters.SpellInfo.Entry.Id) > 0d)
+                return CastResult.SpellCooldown;
+
+            if (Parameters.CharacterSpell?.MaxAbilityCharges > 0u
+                && Parameters.CharacterSpell.AbilityCharges == 0u)
+                return CastResult.SpellNoCharges;
+
+            return CastResult.Ok;
+        }
+
+        private bool TryCommitAbilityCharge()
+        {
+            ICharacterSpell characterSpell = Parameters.CharacterSpell;
+            if (characterSpell?.MaxAbilityCharges is not > 0u)
+                return true;
+
+            uint previousCharges = characterSpell.AbilityCharges;
+            try
+            {
+                CostSpell();
+                return true;
+            }
+            catch (Exception exception)
+            {
+                // CharacterSpell decrements before notifying the client. A notification failure must
+                // not turn an already-committed charge into a failed cast or a duplicate retry.
+                if (characterSpell.AbilityCharges < previousCharges)
+                {
+                    log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} committed an ability charge but failed to notify the client.");
+                    return true;
+                }
+
+                log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} failed to commit an ability charge.");
+                return false;
+            }
+        }
+
+        private bool TryCommitSpellCooldown()
+        {
+            if (Caster is not IPlayer player || Parameters.SpellInfo.Entry.SpellCoolDown == 0u)
+                return true;
+
+            try
+            {
+                player.SpellManager.SetSpellCooldown(
+                    Parameters.SpellInfo.Entry.Id,
+                    Parameters.SpellInfo.Entry.SpellCoolDown / 1000d);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                // SpellManager records the cooldown before sending its packet. Treat a recorded value
+                // as committed so an isolated notification failure cannot spend costs without effects.
+                if (player.SpellManager.GetSpellCooldown(Parameters.SpellInfo.Entry.Id) > 0d)
+                {
+                    log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} committed its cooldown but failed to notify the client.");
+                    return true;
+                }
+
+                log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} failed to commit its cooldown.");
+                return false;
+            }
         }
 
         protected void CostSpell()
@@ -393,6 +560,75 @@ namespace NexusForever.Game.Spell
             return Parameters.SpellInfo.Entry.CastTime > 0;
         }
 
+        /// <summary>
+        /// Fail a spell before it begins casting and make it eligible for pending-spell cleanup.
+        /// </summary>
+        protected void FailCast(CastResult castResult)
+        {
+            if (castResult == CastResult.Ok)
+                throw new ArgumentOutOfRangeException(nameof(castResult));
+
+            try
+            {
+                SendSpellCastResult(castResult);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to publish cast failure for spell {Parameters.SpellInfo.Entry.Id}.");
+            }
+            finally
+            {
+                try
+                {
+                    events.CancelEvents();
+                    RemoveAllEffects();
+                }
+                finally
+                {
+                    status = SpellStatus.Finishing;
+                }
+            }
+        }
+
+        private void FailExecution(CastResult castResult)
+        {
+            try
+            {
+                try
+                {
+                    SendSpellCastResult(castResult);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to publish execution failure for spell {Parameters.SpellInfo.Entry.Id}.");
+                }
+            }
+            finally
+            {
+                try
+                {
+                    try
+                    {
+                        if (IsCasting)
+                            CancelCast(castResult);
+                        else
+                        {
+                            events.CancelEvents();
+                            RemoveAllEffects();
+                        }
+                    }
+                    catch (Exception exception)
+                    {
+                        log.Error(exception, $"Failed to publish cancellation for spell {Parameters.SpellInfo.Entry.Id}.");
+                    }
+                }
+                finally
+                {
+                    status = SpellStatus.Finishing;
+                }
+            }
+        }
+
         protected void SendSpellCastResult(CastResult castResult)
         {
             if (castResult == CastResult.Ok)
@@ -408,6 +644,13 @@ namespace NexusForever.Game.Spell
                     CastResult = castResult
                 });
             }
+        }
+
+        private enum VitalCostMode
+        {
+            Skip,
+            Validate,
+            Consume
         }
 
         protected void SendSpellStart()

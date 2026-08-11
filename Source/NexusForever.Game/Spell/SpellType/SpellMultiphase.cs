@@ -27,7 +27,7 @@ namespace NexusForever.Game.Spell.SpellType
             CastResult result = CheckCast();
             if (result != CastResult.Ok)
             {
-                SendSpellCastResult(result);
+                FailCast(result);
                 return;
             }
 
@@ -56,7 +56,7 @@ namespace NexusForever.Game.Spell.SpellType
                 {
                     currentPhase = (byte)phase.OrderIndex;
                     targets.Clear();
-                    Execute();
+                    Execute(phaseIndex == 0);
 
                     if (phaseIndex == phases.Count - 1)
                         status = SpellStatus.Finishing;

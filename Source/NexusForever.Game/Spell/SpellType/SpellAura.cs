@@ -31,7 +31,7 @@ namespace NexusForever.Game.Spell.SpellType
             CastResult result = CheckCast();
             if (result != CastResult.Ok)
             {
-                SendSpellCastResult(result);
+                FailCast(result);
                 return;
             }
 
@@ -47,11 +47,6 @@ namespace NexusForever.Game.Spell.SpellType
             uint castTime = Parameters.SpellInfo.Entry.CastTime;
             events.EnqueueEvent(new SpellEvent(castTime / 1000d, () =>
             {
-                if (Caster is IPlayer p)
-                    if (Parameters.SpellInfo.Entry.SpellCoolDown != 0u)
-                        p.SpellManager.SetSpellCooldown(Parameters.SpellInfo.Entry.Id, Parameters.SpellInfo.Entry.SpellCoolDown / 1000d);
-
-                // CostSpell is called inside base.Execute(), no need to call it here
                 Execute();
             }));
 

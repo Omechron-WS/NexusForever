@@ -29,7 +29,7 @@ namespace NexusForever.Game.Spell.SpellType
             CastResult result = CheckCast();
             if (result != CastResult.Ok)
             {
-                SendSpellCastResult(result);
+                FailCast(result);
                 return;
             }
 

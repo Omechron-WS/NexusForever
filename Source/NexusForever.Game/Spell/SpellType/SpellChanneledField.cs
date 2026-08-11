@@ -5,14 +5,12 @@ using NexusForever.Game.Static.Spell;
 namespace NexusForever.Game.Spell.SpellType
 {
     [SpellType(CastMethod.ChanneledField)]
-    public class SpellChanneledField : Spell
+    public class SpellChanneledField : SpellChanneled
     {
         public SpellChanneledField(IUnitEntity caster, ISpellParameters parameters)
             : base(caster, parameters)
         {
         }
 
-        // Channeled field uses default Spell behaviour for now.
-        // Full implementation deferred until field-type channels are needed.
     }
 }
