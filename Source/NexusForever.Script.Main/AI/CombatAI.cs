@@ -16,19 +16,33 @@ using NexusForever.Script.Template.Filter;
 namespace NexusForever.Script.Main.AI
 {
     /// <summary>
-    /// Minimal, reactive combat pilot for the build-16042 Tangleclaw Ravenok profile.
+    /// Minimal, reactive combat profiles for the build-16042 Ravenok pilot and provisional Scrab mapping.
     /// </summary>
-    [ScriptFilterCreatureId(33932u)]
+    [ScriptFilterCreatureId(33932u, 24054u)]
     public class CombatAI : IOwnedScript<ICreatureEntity>, IUnitScript
     {
-        private const uint PilotCreatureId = 33932u;
+        private const uint RavenokCreatureId = 33932u;
+        private const uint ScrabCreatureId = 24054u;
         private const string LoggerCategory = "NexusForever.Script.Main.AI.CombatAI";
 
-        private static readonly CombatProfile pilotProfile = new(
-            PilotCreatureId,
+        private static readonly CombatProfile ravenokProfile = new(
+            RavenokCreatureId,
             65812u,
             1.5d,
             5f,
+            15f,
+            0.25d,
+            1f,
+            0.2f,
+            7f,
+            15f);
+
+        // Provisional Scrab mapping and 1.5-second policy: build 16042 identifies the attack but not retail cadence.
+        private static readonly CombatProfile scrabProfile = new(
+            ScrabCreatureId,
+            65785u,
+            1.5d,
+            10f,
             15f,
             0.25d,
             1f,
@@ -78,7 +92,7 @@ namespace NexusForever.Script.Main.AI
             ArgumentNullException.ThrowIfNull(owner);
 
             this.owner = owner;
-            profile = owner.CreatureId == pilotProfile.CreatureId ? pilotProfile : null;
+            profile = GetProfile(owner.CreatureId);
             state = profile != null ? CombatAIState.Detached : CombatAIState.Disabled;
 
             // Source hot reload creates a replacement script for the existing collection, but map lifecycle
@@ -148,7 +162,7 @@ namespace NexusForever.Script.Main.AI
                 return;
             }
 
-            if (!IsPilotOwner() || owner.Spline != null)
+            if (!IsProfiledOwner() || owner.Spline != null)
             {
                 DisableActivePilot();
                 return;
@@ -284,7 +298,7 @@ namespace NexusForever.Script.Main.AI
                 return false;
             }
 
-            if (!IsPilotOwner()
+            if (!IsProfiledOwner()
                 || map == null
                 || !ReferenceEquals(owner.Map, map)
                 || owner.Spline != null)
@@ -837,12 +851,21 @@ namespace NexusForever.Script.Main.AI
             movementCleanupPending = false;
         }
 
-        private bool IsPilotOwner()
+        private static CombatProfile GetProfile(uint creatureId)
+        {
+            return creatureId switch
+            {
+                RavenokCreatureId => ravenokProfile,
+                ScrabCreatureId => scrabProfile,
+                _ => null
+            };
+        }
+
+        private bool IsProfiledOwner()
         {
             return owner != null
                 && profile != null
-                && owner.CreatureId == profile.CreatureId
-                && profile.CreatureId == PilotCreatureId;
+                && owner.CreatureId == profile.CreatureId;
         }
 
         private bool TryGetMovementSpeed(float profileMultiplier, out float speed)

@@ -23,13 +23,13 @@ namespace NexusForever.Game.Tests.AI
     public class CombatAITests
     {
         [Fact]
-        public void Profile_IsFilteredAndRuntimeGatedToTangleclawOnly()
+        public void Profile_IsFilteredAndRuntimeGatedToSupportedCreatureIds()
         {
             ScriptFilterCreatureIdAttribute filter = typeof(CombatAI)
                 .GetCustomAttribute<ScriptFilterCreatureIdAttribute>();
 
             Assert.NotNull(filter);
-            Assert.Equal(new uint[] { 33932u }, filter.CreatureId);
+            Assert.Equal(new uint[] { 33932u, 24054u }, filter.CreatureId);
 
             var harness = new CombatAIHarness(33931u);
             TargetHarness target = harness.AddTarget(2u, new Vector3(4f, 0f, 0f));
@@ -66,10 +66,12 @@ namespace NexusForever.Game.Tests.AI
                 Times.Once);
         }
 
-        [Fact]
-        public void VisibilityAndRangeCallbacks_DoNotCreateReactiveCombat()
+        [Theory]
+        [InlineData(33932u)]
+        [InlineData(24054u)]
+        public void VisibilityAndRangeCallbacks_DoNotCreateReactiveCombat(uint creatureId)
         {
-            var harness = new CombatAIHarness();
+            var harness = new CombatAIHarness(creatureId);
             TargetHarness target = harness.AddTarget(2u, new Vector3(4f, 0f, 0f));
             var script = (IGridEntityScript)harness.AI;
 
@@ -187,6 +189,62 @@ namespace NexusForever.Game.Tests.AI
 
             harness.AI.Update(double.MaxValue);
             Assert.Equal(2, harness.Casts.Count);
+        }
+
+        [Fact]
+        public void ScrabAtTenMetres_CastsOnly65785AtOnePointFiveSecondCadence()
+        {
+            var harness = new CombatAIHarness(24054u);
+            TargetHarness target = harness.AddTarget(2u, new Vector3(10f, 0f, 0f));
+            harness.AddThreat(target, 10u);
+
+            harness.AI.Update(0.1d);
+            harness.AI.Update(1.49d);
+            Assert.Empty(harness.Casts);
+            Assert.Empty(harness.MovementLaunches);
+
+            harness.AI.Update(0.01d);
+            Assert.Single(harness.Casts);
+            Assert.Equal(65785u, harness.Casts[0].SpellId);
+            Assert.Equal(2u, harness.Casts[0].Parameters.PrimaryTargetId);
+
+            harness.AI.Update(0.01d);
+            Assert.Single(harness.Casts);
+
+            harness.AI.Update(double.MaxValue);
+            Assert.Equal(2, harness.Casts.Count);
+            Assert.All(harness.Casts, cast => Assert.Equal(65785u, cast.SpellId));
+            Assert.Empty(harness.MovementLaunches);
+        }
+
+        [Fact]
+        public void ScrabBeyondTenMetres_ChasesWithoutCasting()
+        {
+            var harness = new CombatAIHarness(24054u);
+            TargetHarness target = harness.AddTarget(2u, new Vector3(10.01f, 0f, 0f));
+            harness.AddThreat(target, 10u);
+
+            harness.AI.Update(0.1d);
+            harness.AI.Update(1.5d);
+
+            Assert.NotEmpty(harness.MovementLaunches);
+            Assert.All(harness.MovementLaunches, movement => Assert.Equal(target.Position, movement.Final));
+            Assert.Empty(harness.Casts);
+        }
+
+        [Fact]
+        public void RavenokAtSixMetres_RemainsOutsideUnchangedFiveMetreRange()
+        {
+            var harness = new CombatAIHarness();
+            TargetHarness target = harness.AddTarget(2u, new Vector3(6f, 0f, 0f));
+            harness.AddThreat(target, 10u);
+
+            harness.AI.Update(0.1d);
+            harness.AI.Update(1.5d);
+
+            Assert.NotEmpty(harness.MovementLaunches);
+            Assert.All(harness.MovementLaunches, movement => Assert.Equal(target.Position, movement.Final));
+            Assert.Empty(harness.Casts);
         }
 
         [Fact]
@@ -646,10 +704,12 @@ namespace NexusForever.Game.Tests.AI
             Assert.Empty(respawned.MovementLaunches);
         }
 
-        [Fact]
-        public void SplineBackedPilot_FailsClosed()
+        [Theory]
+        [InlineData(33932u)]
+        [InlineData(24054u)]
+        public void SplineBackedProfile_FailsClosed(uint creatureId)
         {
-            var harness = new CombatAIHarness(spline: new EntitySplineModel());
+            var harness = new CombatAIHarness(creatureId, new EntitySplineModel());
             TargetHarness target = harness.AddTarget(2u, new Vector3(4f, 0f, 0f));
             harness.AddThreat(target, 10u);
 
