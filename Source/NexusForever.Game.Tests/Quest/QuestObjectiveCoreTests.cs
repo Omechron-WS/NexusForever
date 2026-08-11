@@ -832,6 +832,106 @@ namespace NexusForever.Game.Tests.Quest
         }
 
         [Fact]
+        public void QuestManager_ObjectiveUpdate_TypeFanoutContainsFailureAndRevalidatesSnapshot()
+        {
+            QuestManager manager = CreateEmptyQuestManager();
+            Dictionary<ushort, IQuest> activeQuests = GetActiveQuests(manager);
+            var first = new Mock<IQuest>();
+            var removed = new Mock<IQuest>();
+            var replaced = new Mock<IQuest>();
+            var replacement = new Mock<IQuest>();
+            var removedAndReadded = new Mock<IQuest>();
+            var addedAfterSnapshot = new Mock<IQuest>();
+            first.Setup(quest => quest.ObjectiveUpdate(
+                    QuestObjectiveType.ActivateEntity, 77u, 2u))
+                .Callback(() =>
+                {
+                    activeQuests.Remove(2);
+                    activeQuests[3] = replacement.Object;
+                    activeQuests.Remove(4);
+                    activeQuests.Add(4, removedAndReadded.Object);
+                    activeQuests.Add(5, addedAfterSnapshot.Object);
+                })
+                .Throws(new InvalidOperationException("Test observer failure."));
+            activeQuests.Add(1, first.Object);
+            activeQuests.Add(2, removed.Object);
+            activeQuests.Add(3, replaced.Object);
+            activeQuests.Add(4, removedAndReadded.Object);
+
+            Exception exception = Record.Exception(() => manager.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity, 77u, 2u));
+
+            Assert.Null(exception);
+            first.Verify(quest => quest.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity, 77u, 2u), Times.Once);
+            removed.Verify(quest => quest.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity, 77u, 2u), Times.Never);
+            replaced.Verify(quest => quest.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity, 77u, 2u), Times.Never);
+            replacement.Verify(quest => quest.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity, 77u, 2u), Times.Never);
+            removedAndReadded.Verify(quest => quest.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity, 77u, 2u), Times.Once);
+            addedAfterSnapshot.Verify(quest => quest.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity, 77u, 2u), Times.Never);
+        }
+
+        [Fact]
+        public void QuestManager_ObjectiveUpdate_ExcludedFanoutPreservesArgumentsAndContainsFailure()
+        {
+            QuestManager manager = CreateEmptyQuestManager();
+            Dictionary<ushort, IQuest> activeQuests = GetActiveQuests(manager);
+            var excludedObjectiveIds = new HashSet<uint> { 10u, 20u };
+            var first = new Mock<IQuest>();
+            var second = new Mock<IQuest>();
+            first.Setup(quest => quest.ObjectiveUpdate(
+                    QuestObjectiveType.ActivateEntity,
+                    77u,
+                    2u,
+                    excludedObjectiveIds))
+                .Throws(new InvalidOperationException("Test observer failure."));
+            activeQuests.Add(1, first.Object);
+            activeQuests.Add(2, second.Object);
+
+            Exception exception = Record.Exception(() => manager.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity,
+                77u,
+                2u,
+                excludedObjectiveIds));
+
+            Assert.Null(exception);
+            first.Verify(quest => quest.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity,
+                77u,
+                2u,
+                It.Is<IReadOnlySet<uint>>(value => ReferenceEquals(value, excludedObjectiveIds))), Times.Once);
+            second.Verify(quest => quest.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity,
+                77u,
+                2u,
+                It.Is<IReadOnlySet<uint>>(value => ReferenceEquals(value, excludedObjectiveIds))), Times.Once);
+        }
+
+        [Fact]
+        public void QuestManager_ObjectiveUpdate_IdFanoutPreservesArgumentsAndContainsFailure()
+        {
+            QuestManager manager = CreateEmptyQuestManager();
+            Dictionary<ushort, IQuest> activeQuests = GetActiveQuests(manager);
+            var first = new Mock<IQuest>();
+            var second = new Mock<IQuest>();
+            first.Setup(quest => quest.ObjectiveUpdate(123u, 4u))
+                .Throws(new InvalidOperationException("Test observer failure."));
+            activeQuests.Add(1, first.Object);
+            activeQuests.Add(2, second.Object);
+
+            Exception exception = Record.Exception(() => manager.ObjectiveUpdate(123u, 4u));
+
+            Assert.Null(exception);
+            first.Verify(quest => quest.ObjectiveUpdate(123u, 4u), Times.Once);
+            second.Verify(quest => quest.ObjectiveUpdate(123u, 4u), Times.Once);
+        }
+
+        [Fact]
         public void Constructor_EmptyQuestIsImmediatelyAchieved()
         {
             QuestFixture fixture = CreateQuest();
@@ -905,6 +1005,17 @@ namespace NexusForever.Game.Tests.Quest
                 dependencies.ScriptManager.Object,
                 dependencies.AssetManager.Object);
             return new QuestFixture(quest, dependencies.Session);
+        }
+
+        private static QuestManager CreateEmptyQuestManager()
+        {
+            QuestDependencies dependencies = CreateDependencies();
+            return new QuestManager(
+                dependencies.Player.Object,
+                new CharacterModel(),
+                dependencies.GlobalQuestManager.Object,
+                null,
+                Mock.Of<IDisableManager>());
         }
 
         private static QuestDependencies CreateDependencies()

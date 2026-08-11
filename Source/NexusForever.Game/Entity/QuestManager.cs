@@ -1350,8 +1350,9 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void ObjectiveUpdate(QuestObjectiveType type, uint data, uint progress)
         {
-            foreach (IQuest quest in activeQuests.Values)
-                quest.ObjectiveUpdate(type, data, progress);
+            UpdateActiveQuests(
+                quest => quest.ObjectiveUpdate(type, data, progress),
+                $"objective type {type}, data {data}, progress {progress}");
         }
 
         /// <summary>
@@ -1363,8 +1364,9 @@ namespace NexusForever.Game.Entity
             uint progress,
             IReadOnlySet<uint> excludedObjectiveIds)
         {
-            foreach (IQuest quest in activeQuests.Values)
-                quest.ObjectiveUpdate(type, data, progress, excludedObjectiveIds);
+            UpdateActiveQuests(
+                quest => quest.ObjectiveUpdate(type, data, progress, excludedObjectiveIds),
+                $"objective type {type}, data {data}, progress {progress} with exclusions");
         }
 
         /// <summary>
@@ -1372,8 +1374,39 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void ObjectiveUpdate(uint id, uint progress)
         {
-            foreach (IQuest quest in activeQuests.Values)
-                quest.ObjectiveUpdate(id, progress);
+            UpdateActiveQuests(
+                quest => quest.ObjectiveUpdate(id, progress),
+                $"objective {id}, progress {progress}");
+        }
+
+        private void UpdateActiveQuests(Action<IQuest> update, string context)
+        {
+            KeyValuePair<ushort, IQuest>[] activeQuestSnapshot;
+            try
+            {
+                activeQuestSnapshot = activeQuests.ToArray();
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to snapshot active quests while updating {context}.");
+                return;
+            }
+
+            foreach (KeyValuePair<ushort, IQuest> entry in activeQuestSnapshot)
+            {
+                try
+                {
+                    if (!activeQuests.TryGetValue(entry.Key, out IQuest activeQuest)
+                        || !ReferenceEquals(activeQuest, entry.Value))
+                        continue;
+
+                    update(activeQuest);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to update active quest {entry.Key} for {context}.");
+                }
+            }
         }
 
         /// <summary>
