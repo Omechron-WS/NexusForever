@@ -10,6 +10,7 @@ using NexusForever.Game.Tests.Combat;
 using NexusForever.GameTable.Model;
 using NexusForever.Network.Message;
 using NexusForever.Network.Session;
+using NexusForever.Network.World.Combat;
 using NexusForever.Network.World.Message.Model;
 using NexusForever.Network.World.Message.Static;
 using NexusForever.Script;
@@ -69,6 +70,103 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Equal(expectedInvocations, context.Mutations.Count);
             Assert.All(context.Mutations, mutation =>
                 Assert.Equal((Vital.Resource1, -10f), mutation));
+        }
+
+        [Theory]
+        [InlineData(false, 1, 90f)]
+        [InlineData(true, 3, 70f)]
+        public void VitalModifier_DelayedOrPeriodicActivationMutatesAndPublishesCombatLog(
+            bool periodic,
+            int expectedInvocations,
+            float expectedValue)
+        {
+            using var context = new EffectExecutionContext(100f);
+            Spell4EffectsEntry effect = CreateVitalModifierEffect(
+                21u,
+                Vital.Resource1,
+                -10,
+                delayTime: periodic ? 0u : 100u,
+                tickTime: periodic ? 100u : 0u,
+                durationTime: periodic ? 300u : 0u);
+            TestEffectSpell spell = context.CreateSpell([effect]);
+
+            spell.ExecuteForTest();
+            Assert.Empty(context.Mutations);
+            context.VisiblePackets.Clear();
+
+            spell.Update(periodic ? 0.3d : 0.1d);
+
+            Assert.Equal(expectedValue, context.Values[Vital.Resource1]);
+            Assert.Equal(expectedInvocations, context.Mutations.Count);
+            Assert.All(context.Mutations, mutation =>
+                Assert.Equal((Vital.Resource1, -10f), mutation));
+            CombatLogVitalModifier[] combatLogs = context.VisiblePackets
+                .OfType<ServerCombatLog>()
+                .Select(packet => Assert.IsType<CombatLogVitalModifier>(packet.CombatLog))
+                .ToArray();
+            Assert.Equal(expectedInvocations, combatLogs.Length);
+            Assert.All(combatLogs, combatLog =>
+            {
+                Assert.Equal(-10f, combatLog.Amount);
+                Assert.Equal(Vital.Resource1, combatLog.VitalModified);
+                Assert.True(combatLog.BShowCombatLog);
+                Assert.Equal(7u, combatLog.CastData.CasterId);
+                Assert.Equal(7u, combatLog.CastData.TargetId);
+                Assert.Equal(123u, combatLog.CastData.SpellId);
+            });
+            Assert.Equal(expectedInvocations, context.VisiblePackets.OfType<Server07F8>().Count());
+        }
+
+        [Theory]
+        [InlineData(0, false)]
+        [InlineData(10, false)]
+        [InlineData(5, true)]
+        public void VitalModifier_FailedOrNoChangeActivationPublishesNoLogOrFollowUp(
+            int amount,
+            bool unsupportedShape)
+        {
+            using var context = new EffectExecutionContext(100f);
+            Spell4EffectsEntry effect = CreateVitalModifierEffect(
+                22u,
+                Vital.Resource1,
+                amount,
+                delayTime: 100u);
+            if (unsupportedShape)
+                effect.DataBits03 = 1u;
+            TestEffectSpell spell = context.CreateSpell([effect]);
+
+            spell.ExecuteForTest();
+            context.VisiblePackets.Clear();
+            spell.Update(0.1d);
+
+            Assert.Equal(100f, context.Values[Vital.Resource1]);
+            Assert.Empty(context.Mutations);
+            Assert.DoesNotContain(context.VisiblePackets, packet => packet is ServerCombatLog);
+            Assert.DoesNotContain(context.VisiblePackets, packet => packet is Server07F8);
+        }
+
+        [Fact]
+        public void VitalModifier_PostMutationNotificationExceptionStillPublishesConfirmedActivation()
+        {
+            using var context = new EffectExecutionContext(10f);
+            context.ThrowAfterMutation = (vital, delta) =>
+                vital == Vital.Resource1 && delta == 5f;
+            Spell4EffectsEntry effect = CreateVitalModifierEffect(
+                23u,
+                Vital.Resource1,
+                5,
+                delayTime: 100u);
+            TestEffectSpell spell = context.CreateSpell([effect]);
+
+            spell.ExecuteForTest();
+            context.VisiblePackets.Clear();
+            Exception exception = Record.Exception(() => spell.Update(0.1d));
+
+            Assert.Null(exception);
+            Assert.Equal(15f, context.Values[Vital.Resource1]);
+            ServerCombatLog packet = Assert.Single(context.VisiblePackets.OfType<ServerCombatLog>());
+            Assert.Equal(5f, Assert.IsType<CombatLogVitalModifier>(packet.CombatLog).Amount);
+            Assert.Single(context.VisiblePackets.OfType<Server07F8>());
         }
 
         [Fact]
@@ -376,6 +474,34 @@ namespace NexusForever.Game.Tests.Spell
             };
         }
 
+        private static Spell4EffectsEntry CreateVitalModifierEffect(
+            uint id,
+            Vital vital,
+            int amount,
+            uint delayTime = 0u,
+            uint tickTime = 0u,
+            uint durationTime = 0u)
+        {
+            uint rawAmount = unchecked((uint)amount);
+            return new Spell4EffectsEntry
+            {
+                Id             = id,
+                SpellId        = 123u,
+                EffectType     = SpellEffectType.VitalModifier,
+                TargetFlags    = (uint)SpellEffectTargetFlags.Caster,
+                PhaseFlags     = 1u,
+                DelayTime      = delayTime,
+                TickTime       = tickTime,
+                DurationTime   = durationTime,
+                DataBits00     = (uint)vital,
+                DataBits01     = rawAmount,
+                DataBits02     = rawAmount,
+                DataBits09     = 1u,
+                ParameterType  = new SpellEffectParameterType[4],
+                ParameterValue = new float[4]
+            };
+        }
+
         private static void AssertVitalFailurePackets(
             IReadOnlyList<IWritable> packets,
             ISpell spell,
@@ -405,6 +531,7 @@ namespace NexusForever.Game.Tests.Spell
             public Mock<IBaseMap> Map { get; } = new();
 
             public Dictionary<Vital, float> Values { get; } = [];
+            public Dictionary<Vital, float> Maxima { get; } = [];
             public List<(Vital Vital, float Delta)> Mutations { get; } = [];
             public List<(ISpell Spell, IUnitEntity Target, ISpellTargetEffectInfo Effect)> Invocations { get; } = [];
             public List<IWritable> SessionPackets { get; } = [];
@@ -412,6 +539,7 @@ namespace NexusForever.Game.Tests.Spell
             public Action<ISpell, IUnitEntity, ISpellTargetEffectInfo> Handler { get; set; }
             public Func<Vital, int, bool> ThrowOnRead { get; set; }
             public Func<Vital, float, bool> ThrowBeforeMutation { get; set; }
+            public Func<Vital, float, bool> ThrowAfterMutation { get; set; }
 
             private readonly List<IUnitEntity> selectedTargets = [];
             private readonly Dictionary<Vital, int> vitalReadAttempts = [];
@@ -421,8 +549,12 @@ namespace NexusForever.Game.Tests.Spell
             public EffectExecutionContext(float resource1, float? focus = null)
             {
                 Values[Vital.Resource1] = resource1;
+                Maxima[Vital.Resource1] = 100f;
                 if (focus.HasValue)
+                {
                     Values[Vital.Focus] = focus.Value;
+                    Maxima[Vital.Focus] = 100f;
+                }
 
                 previousProvider = LegacyServiceProvider.Provider;
 
@@ -442,6 +574,7 @@ namespace NexusForever.Game.Tests.Spell
                     Invocations.Add((spell, target, effect));
                     Handler?.Invoke(spell, target, effect);
                 });
+                handlers.Add(SpellEffectType.VitalModifier, SpellHandler.HandleEffectVitalModifier);
 
                 serviceProvider = new ServiceCollection()
                     .AddSingleton(scriptManager.Object)
@@ -472,11 +605,8 @@ namespace NexusForever.Game.Tests.Spell
                 Player.Setup(entity => entity.TryGetVitalMaximum(
                         It.IsAny<Vital>(),
                         out It.Ref<float>.IsAny))
-                    .Returns(new TryGetVitalMaximum((Vital _, out float maximum) =>
-                    {
-                        maximum = 0f;
-                        return false;
-                    }));
+                    .Returns(new TryGetVitalMaximum((Vital vital, out float maximum) =>
+                        Maxima.TryGetValue(Canonical(vital), out maximum)));
                 Player.Setup(entity => entity.TryModifyVital(
                         It.IsAny<Vital>(),
                         It.IsAny<float>(),
@@ -492,6 +622,9 @@ namespace NexusForever.Game.Tests.Spell
 
                         Mutations.Add((vital, delta));
                         Values[canonical] = current + delta;
+                        if (ThrowAfterMutation?.Invoke(canonical, delta) == true)
+                            throw new InvalidOperationException("Test post-mutation notification failure.");
+
                         return true;
                     });
                 Player.Setup(entity => entity.EnqueueToVisible(
