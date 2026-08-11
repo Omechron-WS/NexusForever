@@ -14,8 +14,9 @@ namespace NexusForever.Game.Spell.SpellType
     {
         private static readonly ILogger log = LogManager.GetCurrentClassLogger();
 
-        private readonly UpdateTimer auraExecuteTimer = new(0.1d);
-        private readonly Dictionary<uint, double> effectRetriggerTimers = new();
+        private readonly UpdateTimer auraTargetTimer = new(0.1d);
+        private readonly HashSet<Spell4EffectsEntry> activeNonTickEffects = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<Spell4EffectsEntry, HashSet<IUnitEntity>> appliedTargets = new(ReferenceEqualityComparer.Instance);
         private bool telegraphsInitialised;
 
         public SpellAura(IUnitEntity caster, ISpellParameters parameters)
@@ -25,42 +26,14 @@ namespace NexusForever.Game.Spell.SpellType
 
         public override void Cast()
         {
-            if (status != SpellStatus.Initiating)
-                throw new InvalidOperationException();
-
-            CastResult result = CheckCast();
-            if (result != CastResult.Ok)
-            {
-                FailCast(result);
+            base.Cast();
+            if (status != SpellStatus.Casting)
                 return;
-            }
 
-            if (Caster is IPlayer player)
-                if (Parameters.SpellInfo.GlobalCooldown != null)
-                    player.SpellManager.SetGlobalSpellCooldown(Parameters.SpellInfo.GlobalCooldown.CooldownTime / 1000d);
-
-            if (Caster is not IPlayer)
-                InitialiseTelegraphs();
-
-            SendSpellStart();
-
-            uint castTime = Parameters.SpellInfo.Entry.CastTime;
-            events.EnqueueEvent(new SpellEvent(castTime / 1000d, () =>
-            {
-                Execute();
-            }));
-
-            // Initialise retrigger timers for ticking effects
-            foreach (Spell4EffectsEntry effect in Parameters.SpellInfo.Effects)
-                if (effect.TickTime > 0)
-                    effectRetriggerTimers[effect.Id] = effect.TickTime / 1000d;
-
-            // Schedule finish at spell duration if set
             uint spellDuration = Parameters.SpellInfo.Entry.SpellDuration;
-            if (spellDuration > 0 && spellDuration < uint.MaxValue)
+            if (spellDuration is > 0u and < uint.MaxValue)
                 events.EnqueueEvent(new SpellEvent(spellDuration / 1000d, Finish));
 
-            status = SpellStatus.Casting;
             log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} has started as aura.");
         }
 
@@ -71,97 +44,65 @@ namespace NexusForever.Game.Spell.SpellType
             if (status != SpellStatus.Executing)
                 return;
 
-            auraExecuteTimer.Update(lastTick);
-            if (!auraExecuteTimer.HasElapsed)
+            auraTargetTimer.Update(lastTick);
+            if (!auraTargetTimer.HasElapsed)
                 return;
 
-            // Re-evaluate targets (New/Existing/Old state tracking)
-            targets.ForEach(t => t.Effects.Clear());
+            RefreshTargets();
+            if (activeNonTickEffects.Count != 0)
+                ExecuteEffects(activeNonTickEffects);
+
+            auraTargetTimer.Reset();
+        }
+
+        protected override void RefreshTargets()
+        {
+            foreach (ISpellTargetInfo target in targets)
+                target.Effects.Clear();
+
             SelectTargets();
-
-            // Apply effects only to New targets (initial application)
-            ExecuteEffectsForNewTargets();
-
-            // Remove Old targets (exited AoE)
-            for (int i = targets.Count - 1; i >= 0; i--)
-            {
-                if (targets[i].TargetSelectionState == TargetSelectionState.Old)
-                {
-                    RemoveEffects(targets[i]);
-                    targets.RemoveAt(i);
-                }
-            }
-
-            // Handle effect retrigger timers — fire ticking effects when their timer expires
-            foreach (uint effectId in effectRetriggerTimers.Keys.ToList())
-            {
-                effectRetriggerTimers[effectId] -= auraExecuteTimer.Duration;
-                if (effectRetriggerTimers[effectId] <= 0d)
-                {
-                    Spell4EffectsEntry effect = Parameters.SpellInfo.Effects.FirstOrDefault(e => e.Id == effectId);
-                    if (effect != null)
-                    {
-                        ExecuteTickEffect(effect);
-                        effectRetriggerTimers[effectId] = effect.TickTime / 1000d;
-                    }
-                }
-            }
-
-            auraExecuteTimer.Reset();
         }
 
-        /// <summary>
-        /// Apply non-ticking effects to New targets only (initial application when entering AoE).
-        /// </summary>
-        private void ExecuteEffectsForNewTargets()
+        protected override bool UsesDynamicEffectTargets => true;
+
+        protected override bool CanApplyEffect(Spell4EffectsEntry effect, ISpellTargetInfo target)
         {
-            foreach (Spell4EffectsEntry spell4EffectsEntry in Parameters.SpellInfo.Effects)
-            {
-                // Skip ticking effects — they fire on their own retrigger timer
-                if (spell4EffectsEntry.TickTime > 0)
-                    continue;
+            if (target.TargetSelectionState == TargetSelectionState.Old)
+                return false;
 
-                List<ISpellTargetInfo> effectTargets = targets
-                    .Where(t => t.TargetSelectionState == TargetSelectionState.New
-                        && (t.Flags & (SpellEffectTargetFlags)spell4EffectsEntry.TargetFlags) != 0)
-                    .ToList();
+            if (effect.TickTime > 0u)
+                return target.TargetSelectionState is TargetSelectionState.New or TargetSelectionState.Existing;
 
-                SpellEffectDelegate handler = GlobalSpellManager.Instance.GetEffectHandler((SpellEffectType)spell4EffectsEntry.EffectType);
-                if (handler == null)
-                    continue;
-
-                uint effectId = GlobalSpellManager.Instance.NextEffectId;
-                foreach (SpellTargetInfo effectTarget in effectTargets)
-                {
-                    var info = new SpellTargetInfo.SpellTargetEffectInfo(effectId, spell4EffectsEntry);
-                    effectTarget.Effects.Add(info);
-                    handler.Invoke(this, effectTarget.Entity, info);
-                }
-            }
+            return activeNonTickEffects.Contains(effect)
+                && (!appliedTargets.TryGetValue(effect, out HashSet<IUnitEntity> targetsForEffect)
+                    || !targetsForEffect.Contains(target.Entity));
         }
 
-        /// <summary>
-        /// Apply a specific ticking effect to both New and Existing targets.
-        /// </summary>
-        private void ExecuteTickEffect(Spell4EffectsEntry spell4EffectsEntry)
+        protected override void OnEffectActivated(Spell4EffectsEntry effect)
         {
-            List<ISpellTargetInfo> effectTargets = targets
-                .Where(t => (t.TargetSelectionState == TargetSelectionState.New
-                          || t.TargetSelectionState == TargetSelectionState.Existing)
-                    && (t.Flags & (SpellEffectTargetFlags)spell4EffectsEntry.TargetFlags) != 0)
-                .ToList();
+            if (effect.TickTime == 0u)
+                activeNonTickEffects.Add(effect);
+        }
 
-            SpellEffectDelegate handler = GlobalSpellManager.Instance.GetEffectHandler((SpellEffectType)spell4EffectsEntry.EffectType);
-            if (handler == null)
+        protected override void OnEffectAttempted(Spell4EffectsEntry effect, ISpellTargetInfo target)
+        {
+            if (effect.TickTime > 0u)
                 return;
 
-            uint effectId = GlobalSpellManager.Instance.NextEffectId;
-            foreach (SpellTargetInfo effectTarget in effectTargets)
+            if (!appliedTargets.TryGetValue(effect, out HashSet<IUnitEntity> targetsForEffect))
             {
-                var info = new SpellTargetInfo.SpellTargetEffectInfo(effectId, spell4EffectsEntry);
-                effectTarget.Effects.Add(info);
-                handler.Invoke(this, effectTarget.Entity, info);
+                targetsForEffect = new HashSet<IUnitEntity>(ReferenceEqualityComparer.Instance);
+                appliedTargets.Add(effect, targetsForEffect);
             }
+
+            targetsForEffect.Add(target.Entity);
+        }
+
+        protected override void OnEffectExpired(Spell4EffectsEntry effect)
+        {
+            base.OnEffectExpired(effect);
+            activeNonTickEffects.Remove(effect);
+            appliedTargets.Remove(effect);
         }
 
         protected override void SelectTargets()
@@ -169,40 +110,37 @@ namespace NexusForever.Game.Spell.SpellType
             List<ISpellTargetInfo> previousTargets = targets.ToList();
             targets.Clear();
 
-            // Initialise telegraphs once (not every tick)
+            // Initialise telegraphs once because an aura refreshes its target set continuously.
             if (!telegraphsInitialised && Caster is IPlayer)
             {
                 InitialiseTelegraphs();
                 telegraphsInitialised = true;
             }
 
-            // Add caster
             SpellEffectTargetFlags casterFlags = SpellEffectTargetFlags.Caster;
-            if (Parameters.PrimaryTargetId == 0)
+            if (Parameters.PrimaryTargetId == 0u)
                 casterFlags |= SpellEffectTargetFlags.Target;
 
             targets.Add(new SpellTargetInfo(casterFlags, Caster));
 
-            // Add primary target
-            if (Parameters.PrimaryTargetId != 0)
+            if (Parameters.PrimaryTargetId != 0u)
             {
                 IUnitEntity primaryTargetEntity = Caster.GetVisible<IUnitEntity>(Parameters.PrimaryTargetId);
                 if (primaryTargetEntity != null)
                     targets.Add(new SpellTargetInfo(SpellEffectTargetFlags.Target, primaryTargetEntity));
             }
 
-            // Add telegraph targets
             foreach (ITelegraph telegraph in telegraphs)
             {
                 foreach (IUnitEntity entity in telegraph.GetTargets())
                     targets.Add(new SpellTargetInfo(SpellEffectTargetFlags.Telegraph, entity));
             }
 
-            // Mark existing targets by comparing with previous tick
             foreach (ISpellTargetInfo previousTarget in previousTargets)
             {
-                ISpellTargetInfo existingTarget = targets.FirstOrDefault(t =>
-                    t.Entity.Guid == previousTarget.Entity.Guid && t.Flags == previousTarget.Flags);
+                ISpellTargetInfo existingTarget = targets.FirstOrDefault(target =>
+                    ReferenceEquals(target.Entity, previousTarget.Entity)
+                    && target.Flags == previousTarget.Flags);
 
                 if (existingTarget != null)
                 {
@@ -210,18 +148,33 @@ namespace NexusForever.Game.Spell.SpellType
                     continue;
                 }
 
-                // Caster-only effects stay (don't mark as Old)
+                // A caster-only target is represented independently from a telegraph target.
                 if (previousTarget.Flags.HasFlag(SpellEffectTargetFlags.Caster)
                     && !previousTarget.Flags.HasFlag(SpellEffectTargetFlags.Telegraph))
                     continue;
 
-                // Target left AoE — mark as Old for removal next tick
                 previousTarget.TargetSelectionState = TargetSelectionState.Old;
                 targets.Add(previousTarget);
             }
 
-            // Sort: Existing first, then New, then Old
-            targets.Sort((a, b) => a.TargetSelectionState.CompareTo(b.TargetSelectionState));
+            foreach (ISpellTargetInfo oldTarget in targets
+                .Where(target => target.TargetSelectionState == TargetSelectionState.Old)
+                .ToArray())
+            {
+                bool entityRemainsTargeted = targets.Any(target =>
+                    target.TargetSelectionState != TargetSelectionState.Old
+                    && ReferenceEquals(target.Entity, oldTarget.Entity));
+                if (!entityRemainsTargeted)
+                {
+                    RemoveEffects(oldTarget);
+                    foreach (HashSet<IUnitEntity> targetsForEffect in appliedTargets.Values)
+                        targetsForEffect.Remove(oldTarget.Entity);
+                }
+
+                targets.Remove(oldTarget);
+            }
+
+            targets.Sort((left, right) => left.TargetSelectionState.CompareTo(right.TargetSelectionState));
         }
 
         protected override bool IsCastingInternal()

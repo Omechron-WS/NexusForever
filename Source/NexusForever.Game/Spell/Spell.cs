@@ -39,10 +39,14 @@ namespace NexusForever.Game.Spell
         private readonly Dictionary<IUnitEntity, List<IProcInfo>> trackedProcs = new(ReferenceEqualityComparer.Instance);
 
         protected readonly ISpellEventManager events = new SpellEventManager();
+        private readonly SpellEffectTimeline effectTimeline;
+        private readonly Dictionary<ulong, EffectActivationSnapshot> effectActivationSnapshots = [];
+        private readonly HashSet<uint> unsupportedApplyPrerequisitesLogged = [];
 
         private IScriptCollection scriptCollection;
         private bool executionCommitted;
         private bool? unsupportedThresholdVitalCost;
+        private ulong nextEffectActivationId;
 
         protected byte currentPhase = 255;
 
@@ -54,6 +58,7 @@ namespace NexusForever.Game.Spell
             status     = SpellStatus.Initiating;
 
             parameters.RootSpellInfo ??= parameters.SpellInfo;
+            effectTimeline = new SpellEffectTimeline(parameters.SpellInfo.Entry.SpellDuration);
 
             scriptCollection = ScriptManager.Instance.InitialiseOwnedScripts<ISpell>(this, parameters.SpellInfo.Entry.Id);
         }
@@ -71,6 +76,7 @@ namespace NexusForever.Game.Spell
         public virtual void Update(double lastTick)
         {
             scriptCollection.Invoke<IUpdate>(s => s.Update(lastTick));
+            ProcessEffectTimeline(effectTimeline.Advance(lastTick));
             events.Update(lastTick);
         }
 
@@ -92,10 +98,14 @@ namespace NexusForever.Game.Spell
         /// </summary>
         protected virtual bool CanFinish()
         {
-            if (status == SpellStatus.Executing && !events.HasPendingEvent)
+            if (status == SpellStatus.Executing
+                && !events.HasPendingEvent
+                && !effectTimeline.HasPendingEffect)
                 return true;
 
-            if (status == SpellStatus.Finishing && !events.HasPendingEvent)
+            if (status == SpellStatus.Finishing
+                && !events.HasPendingEvent
+                && !effectTimeline.HasPendingEffect)
                 return true;
 
             return false;
@@ -294,8 +304,14 @@ namespace NexusForever.Game.Spell
             finally
             {
                 events.CancelEvents();
-                RemoveAllEffects();
-                status = SpellStatus.Executing;
+                try
+                {
+                    RemoveAllEffects();
+                }
+                finally
+                {
+                    status = SpellStatus.Executing;
+                }
             }
 
             log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} cast was cancelled.");
@@ -306,12 +322,18 @@ namespace NexusForever.Game.Spell
         /// </summary>
         public virtual void Finish()
         {
-            if (status is SpellStatus.Finished or SpellStatus.Finishing)
+            if (status == SpellStatus.Finished)
                 return;
 
             events.CancelEvents();
-            RemoveAllEffects();
-            status = SpellStatus.Finishing;
+            try
+            {
+                RemoveAllEffects();
+            }
+            finally
+            {
+                status = SpellStatus.Finishing;
+            }
         }
 
         /// <summary>
@@ -355,8 +377,26 @@ namespace NexusForever.Game.Spell
                 target.RemoveProc(proc);
         }
 
+        private void RemoveTrackedProcs(uint effectId)
+        {
+            foreach ((IUnitEntity target, List<IProcInfo> procs) in trackedProcs.ToArray())
+            {
+                foreach (IProcInfo proc in procs.Where(proc => proc.EffectId == effectId).ToArray())
+                {
+                    target.RemoveProc(proc);
+                    procs.Remove(proc);
+                }
+
+                if (procs.Count == 0)
+                    trackedProcs.Remove(target);
+            }
+        }
+
         private void RemoveAllEffects()
         {
+            effectTimeline.Cancel();
+            effectActivationSnapshots.Clear();
+
             foreach (IUnitEntity target in trackedProcs.Keys.ToArray())
                 RemoveTrackedProcs(target);
         }
@@ -415,10 +455,75 @@ namespace NexusForever.Game.Spell
             status = SpellStatus.Executing;
             log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} has started executing.");
 
-            SelectTargets();
-            ExecuteEffects();
+            ulong activationId = nextEffectActivationId++;
+            try
+            {
+                RefreshTargets();
+                var snapshot = new EffectActivationSnapshot(
+                    currentPhase,
+                    targets.Select(target => new EffectTargetSnapshot(
+                        target.Flags,
+                        target.Entity,
+                        target.TargetSelectionState)).ToArray());
+                effectActivationSnapshots.Add(activationId, snapshot);
 
-            SendSpellGo();
+                List<Spell4EffectsEntry> registeredEffects = [];
+                foreach (Spell4EffectsEntry effect in Parameters.SpellInfo.Effects
+                    .Where(IsEffectInCurrentPhase))
+                {
+                    if (effect.PrerequisiteIdCasterApply != 0u
+                        || effect.PrerequisiteIdTargetApply != 0u)
+                    {
+                        if (unsupportedApplyPrerequisitesLogged.Add(effect.Id))
+                        {
+                            log.Warn($"Spell {Parameters.SpellInfo.Entry.Id} effect {effect.Id} declares an apply prerequisite which cannot yet be evaluated for every unit type and was not activated.");
+                        }
+
+                        // Persistence and suspend prerequisites govern an already-applied effect and
+                        // remain deferred until their lifecycle evaluation is implemented centrally.
+                        continue;
+                    }
+
+                    if (GlobalSpellManager.Instance.GetEffectHandler(effect.EffectType) == null)
+                    {
+                        log.Warn($"Unhandled spell effect {effect.EffectType}");
+                        continue;
+                    }
+
+                    SpellEffectRegistrationResult registration = effectTimeline.Register(
+                        effect,
+                        currentPhase,
+                        activationId);
+                    if (registration == SpellEffectRegistrationResult.UnsupportedOpenEnded)
+                    {
+                        log.Warn($"Spell {Parameters.SpellInfo.Entry.Id} effect {effect.Id} has an open timeline without a finite root duration or client cancellation flag and was not activated.");
+                        continue;
+                    }
+
+                    registeredEffects.Add(effect);
+                }
+
+                IReadOnlyList<SpellEffectTimelineEvent> dueEvents = effectTimeline.Advance(0d);
+                SpellEffectActivation[] initialActivations = dueEvents
+                    .OfType<SpellEffectActivation>()
+                    .Where(activation => activation.ActivationId == activationId)
+                    .ToArray();
+                ProcessEffectTimeline(dueEvents.Where(timelineEvent =>
+                    timelineEvent is not SpellEffectActivation activation
+                    || activation.ActivationId != activationId));
+
+                RestoreTargetSnapshot(snapshot);
+                PublishInitialEffectSnapshot(
+                    registeredEffects,
+                    initialActivations.SelectMany(activation => activation.Effects).ToArray(),
+                    currentPhase);
+                CleanupCompletedEffectSnapshots();
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} failed to initialise its effect timeline.");
+                FailExecution(CastResult.SpellBad);
+            }
         }
 
         private CastResult CheckExecutionCommit()
@@ -512,39 +617,328 @@ namespace NexusForever.Game.Spell
             if (Caster is IPlayer)
                 InitialiseTelegraphs();
 
-            foreach (ITelegraph telegraph in telegraphs)
+            foreach (ITelegraph telegraph in telegraphs.Where(IsTelegraphInCurrentPhase))
             {
                 foreach (IUnitEntity entity in telegraph.GetTargets())
                     targets.Add(new SpellTargetInfo(SpellEffectTargetFlags.Telegraph, entity));
             }
         }
 
-        protected void ExecuteEffects()
+        /// <summary>
+        /// Clears prior packet state and selects a fresh target snapshot for one effect activation.
+        /// </summary>
+        protected virtual void RefreshTargets()
         {
-            foreach (Spell4EffectsEntry spell4EffectsEntry in Parameters.SpellInfo.Effects)
+            targets.Clear();
+            SelectTargets();
+        }
+
+        /// <summary>
+        /// Returns whether due activations should refresh membership instead of using registration-time targets.
+        /// </summary>
+        protected virtual bool UsesDynamicEffectTargets => false;
+
+        /// <summary>
+        /// Returns whether an effect may be applied to a target in the current activation snapshot.
+        /// </summary>
+        protected virtual bool CanApplyEffect(Spell4EffectsEntry effect, ISpellTargetInfo target)
+        {
+            return true;
+        }
+
+        /// <summary>
+        /// Invoked immediately before a timeline activation selects its targets.
+        /// </summary>
+        protected virtual void OnEffectActivated(Spell4EffectsEntry effect)
+        {
+        }
+
+        /// <summary>
+        /// Invoked after an effect handler attempts to process one target.
+        /// </summary>
+        protected virtual void OnEffectAttempted(Spell4EffectsEntry effect, ISpellTargetInfo target)
+        {
+        }
+
+        /// <summary>
+        /// Invoked when a finite effect lifetime ends.
+        /// </summary>
+        protected virtual void OnEffectExpired(Spell4EffectsEntry effect)
+        {
+            RemoveTrackedProcs(effect.Id);
+        }
+
+        /// <summary>
+        /// Applies the supplied effects to the current target snapshot and publishes successful later activations.
+        /// </summary>
+        protected bool ExecuteEffects(IEnumerable<Spell4EffectsEntry> effects)
+        {
+            bool applied = false;
+            foreach (Spell4EffectsEntry spell4EffectsEntry in effects)
             {
                 // select targets for effect
                 List<ISpellTargetInfo> effectTargets = targets
                     .Where(t => (t.Flags & (SpellEffectTargetFlags)spell4EffectsEntry.TargetFlags) != 0)
+                    .Where(t => CanApplyEffect(spell4EffectsEntry, t))
                     .ToList();
 
-                SpellEffectDelegate handler = GlobalSpellManager.Instance.GetEffectHandler((SpellEffectType)spell4EffectsEntry.EffectType);
+                SpellEffectDelegate handler = GlobalSpellManager.Instance.GetEffectHandler(spell4EffectsEntry.EffectType);
                 if (handler == null)
-                    log.Warn($"Unhandled spell effect {(SpellEffectType)spell4EffectsEntry.EffectType}");
-                else
                 {
-                    uint effectId = GlobalSpellManager.Instance.NextEffectId;
-                    foreach (SpellTargetInfo effectTarget in effectTargets)
-                    {
-                        var info = new SpellTargetInfo.SpellTargetEffectInfo(effectId, spell4EffectsEntry);
-                        effectTarget.Effects.Add(info);
+                    log.Warn($"Unhandled spell effect {spell4EffectsEntry.EffectType}");
+                    continue;
+                }
 
-                        // TODO: if there is an unhandled exception in the handler, there will be an infinite loop on Execute()
-                        handler.Invoke(this, effectTarget.Entity, info);
-                    }
+                uint effectId = GlobalSpellManager.Instance.NextEffectId;
+                foreach (SpellTargetInfo effectTarget in effectTargets)
+                {
+                    var info = new SpellTargetInfo.SpellTargetEffectInfo(effectId, spell4EffectsEntry);
+                    effectTarget.Effects.Add(info);
+
+                    bool handlerSucceeded = TryInvokeEffectHandler(
+                        handler,
+                        spell4EffectsEntry,
+                        effectTarget,
+                        info);
+                    TrySendSpellGoEffect(effectTarget.Entity, info, handlerSucceeded);
+                    if (handlerSucceeded && !info.DropEffect)
+                        applied = true;
                 }
             }
+
+            return applied;
         }
+
+        private bool IsEffectInCurrentPhase(Spell4EffectsEntry effect)
+        {
+            CastMethod castMethod = (CastMethod)Parameters.SpellInfo.BaseInfo.Entry.CastMethod;
+            if (castMethod != CastMethod.Multiphase || currentPhase == byte.MaxValue)
+                return true;
+
+            if (currentPhase >= 32u)
+                return false;
+
+            if (effect.PhaseFlags is 1u or uint.MaxValue)
+                return true;
+
+            return (effect.PhaseFlags & (1u << currentPhase)) != 0u;
+        }
+
+        private bool IsTelegraphInCurrentPhase(ITelegraph telegraph)
+        {
+            CastMethod castMethod = (CastMethod)Parameters.SpellInfo.BaseInfo.Entry.CastMethod;
+            if (castMethod != CastMethod.Multiphase || currentPhase == byte.MaxValue)
+                return true;
+
+            if (currentPhase >= 32u)
+                return false;
+
+            uint phaseFlags = telegraph.TelegraphDamage.PhaseFlags;
+            if (phaseFlags is 1u or uint.MaxValue)
+                return true;
+
+            return (phaseFlags & (1u << currentPhase)) != 0u;
+        }
+
+        private void PublishInitialEffectSnapshot(
+            IReadOnlyList<Spell4EffectsEntry> registeredEffects,
+            IReadOnlyList<Spell4EffectsEntry> immediateEffects,
+            byte phase)
+        {
+            var immediate = new HashSet<Spell4EffectsEntry>(immediateEffects, ReferenceEqualityComparer.Instance);
+            foreach (Spell4EffectsEntry effect in immediate)
+            {
+                try
+                {
+                    OnEffectActivated(effect);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} effect {effect.Id} activation hook failed.");
+                }
+            }
+
+            foreach (Spell4EffectsEntry effect in registeredEffects)
+            {
+                SpellEffectDelegate handler = GlobalSpellManager.Instance.GetEffectHandler(effect.EffectType);
+                if (handler == null)
+                    continue;
+
+                bool executeImmediately = immediate.Contains(effect);
+                List<ISpellTargetInfo> effectTargets = targets
+                    .Where(target => target.TargetSelectionState != TargetSelectionState.Old)
+                    .Where(target => (target.Flags & (SpellEffectTargetFlags)effect.TargetFlags) != 0)
+                    .Where(target => !executeImmediately || CanApplyEffect(effect, target))
+                    .ToList();
+
+                uint effectId = GlobalSpellManager.Instance.NextEffectId;
+                foreach (SpellTargetInfo effectTarget in effectTargets)
+                {
+                    var info = new SpellTargetInfo.SpellTargetEffectInfo(effectId, effect);
+                    effectTarget.Effects.Add(info);
+
+                    if (executeImmediately)
+                        TryInvokeEffectHandler(handler, effect, effectTarget, info);
+                }
+            }
+
+            try
+            {
+                SendSpellGo(phase);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} failed to publish its initial effect snapshot.");
+            }
+        }
+
+        private void ProcessEffectTimeline(IEnumerable<SpellEffectTimelineEvent> timelineEvents)
+        {
+            foreach (SpellEffectTimelineEvent timelineEvent in timelineEvents)
+            {
+                if (timelineEvent is SpellEffectExpiration expiration)
+                {
+                    if (!effectTimeline.HasPendingEntry(expiration.Effect))
+                    {
+                        try
+                        {
+                            OnEffectExpired(expiration.Effect);
+                        }
+                        catch (Exception exception)
+                        {
+                            log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} effect {expiration.Effect.Id} expiration cleanup failed.");
+                        }
+                    }
+
+                    continue;
+                }
+
+                if (timelineEvent is SpellEffectActivation activation)
+                    ActivateTimelineSnapshot(activation);
+            }
+
+            CleanupCompletedEffectSnapshots();
+        }
+
+        private void ActivateTimelineSnapshot(SpellEffectActivation activation)
+        {
+            if (!effectActivationSnapshots.TryGetValue(
+                activation.ActivationId,
+                out EffectActivationSnapshot snapshot))
+            {
+                log.Warn($"Spell {Parameters.SpellInfo.Entry.Id} discarded activation {activation.ActivationId} because its target snapshot is unavailable.");
+                return;
+            }
+
+            if (snapshot.Phase != activation.Phase)
+            {
+                log.Warn($"Spell {Parameters.SpellInfo.Entry.Id} discarded activation {activation.ActivationId} because its captured phase does not match.");
+                return;
+            }
+
+            byte previousPhase = currentPhase;
+            currentPhase = activation.Phase;
+
+            try
+            {
+                if (UsesDynamicEffectTargets)
+                    RefreshTargets();
+                else
+                    RestoreTargetSnapshot(snapshot);
+
+                foreach (Spell4EffectsEntry effect in activation.Effects)
+                {
+                    try
+                    {
+                        OnEffectActivated(effect);
+                    }
+                    catch (Exception exception)
+                    {
+                        log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} effect {effect.Id} activation hook failed.");
+                    }
+                }
+
+                ExecuteEffects(activation.Effects);
+            }
+            catch (Exception exception)
+            {
+                // Target selection and snapshot restoration failures consume this due activation so
+                // one malformed row cannot retry forever or block later timeline work.
+                log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} failed to prepare activation {activation.ActivationId}.");
+            }
+            finally
+            {
+                currentPhase = previousPhase;
+            }
+        }
+
+        private bool TryInvokeEffectHandler(
+            SpellEffectDelegate handler,
+            Spell4EffectsEntry effect,
+            SpellTargetInfo target,
+            SpellTargetInfo.SpellTargetEffectInfo info)
+        {
+            bool succeeded = false;
+            try
+            {
+                handler.Invoke(this, target.Entity, info);
+                succeeded = true;
+            }
+            catch (Exception exception)
+            {
+                info.DropEffect = true;
+                log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} effect {effect.Id} failed for target {target.Entity.Guid}.");
+            }
+            finally
+            {
+                try
+                {
+                    OnEffectAttempted(effect, target);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} effect {effect.Id} post-attempt hook failed for target {target.Entity.Guid}.");
+                }
+            }
+
+            return succeeded;
+        }
+
+        private void RestoreTargetSnapshot(EffectActivationSnapshot snapshot)
+        {
+            targets.Clear();
+            var casterMap = Caster.Map;
+            if (!Caster.InWorld || casterMap == null)
+                return;
+
+            foreach (EffectTargetSnapshot target in snapshot.Targets)
+            {
+                if (!target.Entity.InWorld
+                    || !ReferenceEquals(target.Entity.Map, casterMap))
+                    continue;
+
+                targets.Add(new SpellTargetInfo(target.Flags, target.Entity)
+                {
+                    TargetSelectionState = target.SelectionState
+                });
+            }
+        }
+
+        private void CleanupCompletedEffectSnapshots()
+        {
+            foreach (ulong activationId in effectActivationSnapshots.Keys.ToArray())
+                if (!effectTimeline.HasPendingActivation(activationId))
+                    effectActivationSnapshots.Remove(activationId);
+        }
+
+        private sealed record EffectActivationSnapshot(
+            byte Phase,
+            IReadOnlyList<EffectTargetSnapshot> Targets);
+
+        private sealed record EffectTargetSnapshot(
+            SpellEffectTargetFlags Flags,
+            IUnitEntity Entity,
+            TargetSelectionState SelectionState);
 
         public virtual bool IsMovingInterrupted()
         {
@@ -713,7 +1107,7 @@ namespace NexusForever.Game.Spell
 
             foreach (IUnitEntity unit in unitsCasting)
             {
-                foreach (ITelegraph telegraph in telegraphs)
+                foreach (ITelegraph telegraph in telegraphs.Where(IsTelegraphInCurrentPhase))
                 {
                     spellStart.TelegraphPositionData.Add(new ServerSpellStart.TelegraphPosition
                     {
@@ -740,7 +1134,51 @@ namespace NexusForever.Game.Spell
             }, true);
         }
 
-        protected void SendSpellGo()
+        private void TrySendSpellGoEffect(
+            IUnitEntity target,
+            ISpellTargetEffectInfo effectInfo,
+            bool handlerSucceeded)
+        {
+            foreach (ICombatLog combatLog in effectInfo.CombatLogs)
+            {
+                try
+                {
+                    Caster.EnqueueToVisible(new ServerCombatLog
+                    {
+                        CombatLog = combatLog
+                    }, true);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} effect {effectInfo.Entry.Id} failed to publish a combat log for target {target.Guid}.");
+                }
+            }
+
+            if (!handlerSucceeded
+                || effectInfo.DropEffect
+                || effectInfo.Entry.EffectType == SpellEffectType.Proxy)
+                return;
+
+            var packet = new Server07F8
+            {
+                CastingId     = CastingId,
+                Spell4EffectId = effectInfo.Entry.Id,
+                TargetId       = target.Guid
+            };
+            if (effectInfo.Damage != null)
+                packet.DamageDescriptionData.Add(BuildDamageDescription(effectInfo.Damage));
+
+            try
+            {
+                target.EnqueueToVisible(packet, true);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} effect {effectInfo.Entry.Id} activated for target {target.Guid} but its follow-up packet failed.");
+            }
+        }
+
+        protected void SendSpellGo(byte phase)
         {
             List<ICombatLog> combatLogs = [];
 
@@ -748,9 +1186,10 @@ namespace NexusForever.Game.Spell
             {
                 ServerUniqueId     = CastingId,
                 PrimaryDestination = new Position(Caster.Position),
-                Phase              = -1
+                Phase              = phase == byte.MaxValue ? (sbyte)-1 : checked((sbyte)phase)
             };
 
+            byte targetIndex = 0;
             foreach (ISpellTargetInfo targetInfo in targets
                 .Where(t => t.Effects.Count > 0))
             {
@@ -763,7 +1202,8 @@ namespace NexusForever.Game.Spell
                 var networkTargetInfo = new TargetInfo
                 {
                     UnitId        = targetInfo.Entity.Guid,
-                    TargetFlags   = 1,
+                    Ndx           = targetIndex++,
+                    TargetFlags   = checked((byte)targetInfo.Flags),
                     InstanceCount = 1,
                     CombatResult  = CombatResult.Hit
                 };
@@ -783,24 +1223,14 @@ namespace NexusForever.Game.Spell
                     {
                         Spell4EffectId = targetEffectInfo.Entry.Id,
                         EffectUniqueId = targetEffectInfo.EffectId,
-                        TimeRemaining  = -1
+                        DelayTime      = targetEffectInfo.Entry.DelayTime,
+                        TimeRemaining  = GetEffectTimeRemaining(targetEffectInfo.Entry)
                     };
 
                     if (targetEffectInfo.Damage != null)
                     {
                         networkTargetEffectInfo.InfoType = 1;
-                        networkTargetEffectInfo.DamageDescriptionData = new TargetInfo.EffectInfo.DamageDescription
-                        {
-                            RawDamage          = targetEffectInfo.Damage.RawDamage,
-                            RawScaledDamage    = targetEffectInfo.Damage.RawScaledDamage,
-                            AbsorbedAmount     = targetEffectInfo.Damage.AbsorbedAmount,
-                            ShieldAbsorbAmount = targetEffectInfo.Damage.ShieldAbsorbAmount,
-                            AdjustedDamage     = targetEffectInfo.Damage.AdjustedDamage,
-                            OverkillAmount     = targetEffectInfo.Damage.OverkillAmount,
-                            KilledTarget       = targetEffectInfo.Damage.KilledTarget,
-                            CombatResult       = targetEffectInfo.Damage.CombatResult,
-                            DamageType         = targetEffectInfo.Damage.DamageType
-                        };
+                        networkTargetEffectInfo.DamageDescriptionData = BuildDamageDescription(targetEffectInfo.Damage);
                     }
 
                     networkTargetInfo.EffectInfoData.Add(networkTargetEffectInfo);
@@ -829,7 +1259,7 @@ namespace NexusForever.Game.Spell
 
             foreach (IUnitEntity unit in unitsCasting)
             {
-                foreach (ITelegraph telegraph in telegraphs)
+                foreach (ITelegraph telegraph in telegraphs.Where(IsTelegraphInCurrentPhase))
                 {
                     serverSpellGo.TelegraphPositionData.Add(new TelegraphPosition
                     {
@@ -844,14 +1274,53 @@ namespace NexusForever.Game.Spell
 
             foreach (ICombatLog combatLog in combatLogs)
             {
-                Caster.EnqueueToVisible(new ServerCombatLog
+                try
                 {
-                    CombatLog = combatLog
-                }, true);
+                    Caster.EnqueueToVisible(new ServerCombatLog
+                    {
+                        CombatLog = combatLog
+                    }, true);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} failed to publish an initial combat log.");
+                }
             }
 
             Caster.EnqueueToVisible(serverSpellGo, true);
 
+        }
+
+        private int GetEffectTimeRemaining(Spell4EffectsEntry effect)
+        {
+            if (effect.DurationTime is > 0u and <= int.MaxValue)
+                return (int)effect.DurationTime;
+
+            bool hasOpenLifetime = effect.DurationTime == uint.MaxValue
+                || effect.TickTime > 0u
+                || ((SpellEffectFlags)effect.Flags & SpellEffectFlags.CancelOnly) != 0;
+            uint rootDuration = Parameters.SpellInfo.Entry.SpellDuration;
+            if (hasOpenLifetime && rootDuration is > 0u and <= int.MaxValue)
+                return (int)rootDuration;
+
+            return -1;
+        }
+
+        private static TargetInfo.EffectInfo.DamageDescription BuildDamageDescription(
+            IDamageDescription damage)
+        {
+            return new TargetInfo.EffectInfo.DamageDescription
+            {
+                RawDamage          = damage.RawDamage,
+                RawScaledDamage    = damage.RawScaledDamage,
+                AbsorbedAmount     = damage.AbsorbedAmount,
+                ShieldAbsorbAmount = damage.ShieldAbsorbAmount,
+                AdjustedDamage     = damage.AdjustedDamage,
+                OverkillAmount     = damage.OverkillAmount,
+                KilledTarget       = damage.KilledTarget,
+                CombatResult       = damage.CombatResult,
+                DamageType         = damage.DamageType
+            };
         }
 
         protected void SendRemoveBuff(uint unitId)
