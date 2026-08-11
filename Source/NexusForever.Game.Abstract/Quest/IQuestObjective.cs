@@ -30,6 +30,16 @@ namespace NexusForever.Game.Abstract.Quest
         bool IsComplete();
 
         /// <summary>
+        /// Return if the objective stores progress as a checklist bitmask.
+        /// </summary>
+        bool IsChecklist();
+
+        /// <summary>
+        /// Return if the supplied identifier is a direct or expanded objective target.
+        /// </summary>
+        bool IsTarget(uint id);
+
+        /// <summary>
         /// Update object progress with supplied update.
         /// </summary>
         void ObjectiveUpdate(uint update);

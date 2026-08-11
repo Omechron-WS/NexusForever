@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore.ChangeTracking;
 using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
+using NexusForever.Game.Abstract;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Quest;
 using NexusForever.Game.Persistence;
@@ -14,11 +15,14 @@ using NexusForever.Script.Template;
 using NexusForever.Script.Template.Collection;
 using NexusForever.Shared;
 using NexusForever.Shared.Game;
+using NLog;
 
 namespace NexusForever.Game.Quest
 {
     public class Quest : IQuest
     {
+        private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+
         [Flags]
         private enum QuestSaveMask
         {
@@ -99,6 +103,9 @@ namespace NexusForever.Game.Quest
         private readonly VersionedSaveMask<QuestSaveMask> saveMask;
 
         private readonly IPlayer player;
+        private readonly IGlobalQuestManager globalQuestManager;
+        private readonly IScriptManager scriptManager;
+        private readonly IAssetManager assetManager;
         private readonly List<IQuestObjective> objectives = new();
 
         private UpdateTimer questTimer;
@@ -109,48 +116,118 @@ namespace NexusForever.Game.Quest
         /// Create a new <see cref="IQuest"/> from an existing database model.
         /// </summary>
         public Quest(IPlayer owner, IQuestInfo info, CharacterQuestModel model)
+            : this(owner, info, model, null, null, null)
         {
-            player = owner;
-            Info   = info;
-            state  = (QuestState)model.State;
-            flags  = (QuestStateFlags)model.Flags;
-            timer  = model.Timer;
-            reset  = model.Reset;
+        }
+
+        internal Quest(
+            IPlayer owner,
+            IQuestInfo info,
+            CharacterQuestModel model,
+            IGlobalQuestManager globalQuestManager,
+            IScriptManager scriptManager,
+            IAssetManager assetManager)
+        {
+            player                  = owner;
+            Info                    = info;
+            this.globalQuestManager = globalQuestManager;
+            this.scriptManager      = scriptManager;
+            this.assetManager       = assetManager;
+            state                   = (QuestState)model.State;
+            flags                   = (QuestStateFlags)model.Flags;
+            timer                   = model.Timer;
+            reset                   = model.Reset;
             saveMask = new VersionedSaveMask<QuestSaveMask>();
 
             if (timer != null)
                 questTimer = new UpdateTimer(timer.Value);
 
-            foreach (CharacterQuestObjectiveModel objectiveModel in model.QuestObjective)
-                objectives.Add(new QuestObjective(player, info, info.Objectives[objectiveModel.Index], objectiveModel));
+            ValidateObjectiveCount(info);
+            var objectiveModels = new Dictionary<byte, CharacterQuestObjectiveModel>();
+            foreach (CharacterQuestObjectiveModel objectiveModel in model.QuestObjective.OrderBy(objective => objective.Index))
+            {
+                if (objectiveModel.Index >= info.Objectives.Count)
+                {
+                    log.Error($"Quest {Id} has an invalid persisted objective index {objectiveModel.Index}.");
+                    continue;
+                }
 
-            scriptCollection = ScriptManager.Instance.InitialiseOwnedScripts<IQuest>(this, info.Entry.Id);
+                if (!objectiveModels.TryAdd(objectiveModel.Index, objectiveModel))
+                {
+                    log.Error($"Quest {Id} has a duplicate persisted objective index {objectiveModel.Index}.");
+                    continue;
+                }
+            }
+
+            for (int index = 0; index < info.Objectives.Count; index++)
+            {
+                byte objectiveIndex = (byte)index;
+                if (objectiveModels.TryGetValue(objectiveIndex, out CharacterQuestObjectiveModel objectiveModel))
+                    objectives.Add(new QuestObjective(player, info, info.Objectives[index], objectiveModel, assetManager));
+                else
+                {
+                    log.Warn($"Quest {Id} is missing persisted objective index {objectiveIndex}; recreating it.");
+                    objectives.Add(new QuestObjective(player, info, info.Objectives[index], objectiveIndex, assetManager));
+                }
+            }
+
+            if (objectives.Count == 0 && state == QuestState.Accepted)
+            {
+                state = QuestState.Achieved;
+                saveMask.Mark(QuestSaveMask.State);
+            }
+
+            scriptCollection = GetScriptManager().InitialiseOwnedScripts<IQuest>(this, info.Entry.Id);
         }
 
         /// <summary>
         /// Create a new <see cref="IQuest"/> from supplied <see cref="IQuestInfo"/>.
         /// </summary>
         public Quest(IPlayer owner, IQuestInfo info)
+            : this(owner, info, null, null, null)
         {
-            player = owner;
-            Info   = info;
-            state  = QuestState.Accepted;
+        }
 
-            for (byte i = 0; i < info.Objectives.Count; i++)
-                objectives.Add(new QuestObjective(player, info, info.Objectives[i], i));
+        internal Quest(
+            IPlayer owner,
+            IQuestInfo info,
+            IGlobalQuestManager globalQuestManager,
+            IScriptManager scriptManager,
+            IAssetManager assetManager)
+        {
+            player                  = owner;
+            Info                    = info;
+            this.globalQuestManager = globalQuestManager;
+            this.scriptManager      = scriptManager;
+            this.assetManager       = assetManager;
+            state                   = QuestState.Accepted;
+
+            ValidateObjectiveCount(info);
+            for (int index = 0; index < info.Objectives.Count; index++)
+            {
+                byte objectiveIndex = (byte)index;
+                objectives.Add(new QuestObjective(player, info, info.Objectives[index], objectiveIndex, assetManager));
+            }
 
             if (objectives.Count == 0)
                 state = QuestState.Achieved;
 
             saveMask = new VersionedSaveMask<QuestSaveMask>(QuestSaveMask.Create);
 
-            scriptCollection = ScriptManager.Instance.InitialiseOwnedScripts<IQuest>(this, info.Entry.Id);
+            scriptCollection = GetScriptManager().InitialiseOwnedScripts<IQuest>(this, info.Entry.Id);
+        }
+
+        private static void ValidateObjectiveCount(IQuestInfo info)
+        {
+            ArgumentNullException.ThrowIfNull(info);
+            if (info.Objectives == null || info.Objectives.Count > byte.MaxValue)
+                throw new InvalidDataException($"Quest {info.Entry?.Id ?? 0u} has an invalid objective count.");
         }
 
         public void Dispose()
         {
             if (scriptCollection != null)
-                ScriptManager.Instance.Unload(scriptCollection);
+                GetScriptManager().Unload(scriptCollection);
 
             scriptCollection = null;
         }
@@ -359,31 +436,18 @@ namespace NexusForever.Game.Quest
             if (State == QuestState.Achieved)
                 return;
 
-            // Order in reverse Index so that sequential steps don't completed by the same action
+            Dictionary<IQuestObjective, uint> previousProgress = CaptureObjectiveProgress();
+
+            // Process in descending index order so one event cannot complete consecutive sequential objectives.
             foreach (IQuestObjective objective in objectives
-                .Where(o => o.ObjectiveInfo.Entry.Type == (uint)type && o.ObjectiveInfo.Entry.Data == data)
+                .Where(o => o.ObjectiveInfo.Type == type && o.IsTarget(data))
                 .OrderByDescending(o => o.Index))
-            {
-                if (objective.IsComplete())
-                    continue;
+                UpdateObjective(objective, progress);
 
-                if (!CanUpdateObjective(objective))
-                    continue;
+            bool requiredObjectivesComplete = RequiredObjectivesComplete();
+            SendChangedObjectives(previousProgress);
 
-                uint oldProgress = objective.Progress;
-                objective.ObjectiveUpdate(progress);
-
-                if (objective.Progress != oldProgress)
-                    SendQuestObjectiveUpdate(objective);
-
-                scriptCollection?.Invoke<IQuestScript>(s => s.OnObjectiveUpdate(objective));
-            }
-
-            // TODO: Should you be able to complete optional objectives after required are completed?
-            if (RequiredObjectivesComplete())
-                CompleteOptionalObjectives();
-
-            if (objectives.All(o => o.IsComplete()))
+            if (requiredObjectivesComplete)
                 State = QuestState.Achieved;
         }
 
@@ -402,26 +466,30 @@ namespace NexusForever.Game.Quest
             if (objective == null)
                 return;
 
-            if (objective.IsComplete())
-                return;
+            Dictionary<IQuestObjective, uint> previousProgress = CaptureObjectiveProgress();
+            UpdateObjective(objective, progress);
 
-            if (!CanUpdateObjective(objective))
-                return;
+            bool requiredObjectivesComplete = RequiredObjectivesComplete();
+            SendChangedObjectives(previousProgress);
 
-            uint oldProgress = objective.Progress;
-            objective.ObjectiveUpdate(progress);
-
-            if (objective.Progress != oldProgress)
-                SendQuestObjectiveUpdate(objective);
-
-            scriptCollection?.Invoke<IQuestScript>(s => s.OnObjectiveUpdate(objective));
-
-            // TODO: Should you be able to complete optional objectives after required are completed?
-            if (RequiredObjectivesComplete())
-                CompleteOptionalObjectives();
-
-            if (objectives.All(o => o.IsComplete()))
+            if (requiredObjectivesComplete)
                 State = QuestState.Achieved;
+        }
+
+        private Dictionary<IQuestObjective, uint> CaptureObjectiveProgress()
+        {
+            return objectives.ToDictionary(objective => objective, objective => objective.Progress);
+        }
+
+        private void UpdateObjective(IQuestObjective objective, uint progress)
+        {
+            if (objective.IsComplete() || !CanUpdateObjective(objective))
+                return;
+
+            uint previousProgress = objective.Progress;
+            objective.ObjectiveUpdate(progress);
+            if (objective.Progress != previousProgress)
+                scriptCollection?.Invoke<IQuestScript>(script => script.OnObjectiveUpdate(objective));
         }
 
         private bool CanUpdateObjective(IQuestObjective objective)
@@ -429,7 +497,7 @@ namespace NexusForever.Game.Quest
             if (objective.ObjectiveInfo.IsSequential())
             {
                 for (int i = 0; i < objective.Index; i++)
-                    if (!objectives[i].IsComplete())
+                    if (!objectives[i].ObjectiveInfo.IsOptional() && !objectives[i].IsComplete())
                         return false;
             }
 
@@ -439,19 +507,66 @@ namespace NexusForever.Game.Quest
 
         private bool RequiredObjectivesComplete()
         {
-            return objectives
-                .Where(o => !o.ObjectiveInfo.IsOptional())
-                .All(o => o.IsComplete());
+            if (objectives.Count == 0)
+                return true;
+
+            IQuestObjective[] requiredObjectives = objectives
+                .Where(objective => !objective.ObjectiveInfo.IsOptional())
+                .ToArray();
+            return requiredObjectives.Length == 0
+                ? objectives.All(objective => objective.IsComplete())
+                : requiredObjectives.All(objective => objective.IsComplete());
         }
 
-        private void CompleteOptionalObjectives()
+        /// <summary>
+        /// Complete the objective with the supplied identifier using its exact completion representation.
+        /// </summary>
+        public void ObjectiveComplete(uint id)
         {
-            foreach (IQuestObjective objective in objectives
-                .Where(o => o.ObjectiveInfo.IsOptional() && !o.IsComplete()))
+            IQuestObjective objective = objectives.SingleOrDefault(value => value.ObjectiveInfo.Id == id);
+            if (objective == null)
+                return;
+
+            CompleteObjectives([objective]);
+        }
+
+        /// <summary>
+        /// Complete every objective using its exact completion representation.
+        /// </summary>
+        public void ObjectivesComplete()
+        {
+            CompleteObjectives(objectives);
+        }
+
+        private void CompleteObjectives(IEnumerable<IQuestObjective> selectedObjectives)
+        {
+            if (PendingDelete || State != QuestState.Accepted)
+                return;
+
+            Dictionary<IQuestObjective, uint> previousProgress = CaptureObjectiveProgress();
+            foreach (IQuestObjective objective in selectedObjectives.OrderBy(value => value.Index))
             {
+                if (objective.IsComplete())
+                    continue;
+
                 objective.Complete();
-                SendQuestObjectiveUpdate(objective);
+                if (objective.Progress != previousProgress[objective])
+                    scriptCollection?.Invoke<IQuestScript>(script => script.OnObjectiveUpdate(objective));
             }
+
+            bool requiredObjectivesComplete = RequiredObjectivesComplete();
+            SendChangedObjectives(previousProgress);
+
+            if (requiredObjectivesComplete)
+                State = QuestState.Achieved;
+        }
+
+        private void SendChangedObjectives(IReadOnlyDictionary<IQuestObjective, uint> previousProgress)
+        {
+            foreach (IQuestObjective objective in objectives.OrderBy(objective => objective.Index))
+                if (previousProgress.TryGetValue(objective, out uint progress)
+                    && objective.Progress != progress)
+                    SendQuestObjectiveUpdate(objective);
         }
 
         private void SendQuestObjectiveUpdate(IQuestObjective objective)
@@ -480,11 +595,21 @@ namespace NexusForever.Game.Quest
             });
 
             // check if this quest and state is a trigger for a new communicator message
-            foreach (ICommunicatorMessage message in GlobalQuestManager.Instance.GetQuestCommunicatorQuestStateTriggers(Id, state))
+            foreach (ICommunicatorMessage message in GetGlobalQuestManager().GetQuestCommunicatorQuestStateTriggers(Id, state))
                 if (message.Meets(player))
                     player.QuestManager.QuestMention(message.QuestId);
 
             scriptCollection?.Invoke<IQuestScript>(s => s.OnQuestStateChange(State, oldState));
+        }
+
+        private IGlobalQuestManager GetGlobalQuestManager()
+        {
+            return globalQuestManager ?? GlobalQuestManager.Instance;
+        }
+
+        private IScriptManager GetScriptManager()
+        {
+            return scriptManager ?? ScriptManager.Instance;
         }
 
         public IEnumerator<IQuestObjective> GetEnumerator()

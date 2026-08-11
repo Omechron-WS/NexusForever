@@ -5,6 +5,7 @@ using NexusForever.Database.Character;
 using NexusForever.Database.World;
 using NexusForever.Database.World.Model;
 using NexusForever.Game.Abstract;
+using NexusForever.Game.Quest;
 using NexusForever.Game.Static;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Quest;
@@ -30,6 +31,7 @@ namespace NexusForever.Game
 
         private ImmutableDictionary</*zoneId*/uint, /*tutorialId*/uint> zoneTutorials;
         private ImmutableDictionary</*creatureId*/uint, /*targetGroupIds*/ImmutableList<uint>> creatureAssociatedTargetGroups;
+        private ImmutableDictionary</*questObjectiveId*/uint, /*creatureIds*/ImmutableList<uint>> questObjectiveTargets;
 
         private ImmutableDictionary<AccountTier, ImmutableList<RewardPropertyPremiumModifierEntry>> rewardPropertiesByTier;
 
@@ -41,6 +43,7 @@ namespace NexusForever.Game
             CacheItemDisplaySourceEntries();
             CacheTutorials();
             CacheCreatureTargetGroups();
+            CacheQuestObjectiveTargetGroups();
             CacheRewardPropertiesByTier();
         }
 
@@ -90,22 +93,70 @@ namespace NexusForever.Game
 
         private void CacheCreatureTargetGroups()
         {
-            var entries = ImmutableDictionary.CreateBuilder<uint, List<uint>>();
-            foreach (TargetGroupEntry entry in GameTableManager.Instance.TargetGroup.Entries)
+            TargetGroupEntry[] targetGroups = GameTableManager.Instance.TargetGroup.Entries;
+            var resolver = new TargetGroupResolver(targetGroups);
+            var entries = new Dictionary<uint, HashSet<uint>>();
+            foreach (TargetGroupEntry entry in targetGroups.Where(IsConcreteTargetGroup))
             {
-                if ((TargetGroupType)entry.Type != TargetGroupType.CreatureIdGroup)
-                    continue;
-
-                foreach (uint creatureId in entry.DataEntries)
+                foreach (uint creatureId in resolver.ResolveCreatureIds(entry.Id))
                 {
-                    if (!entries.ContainsKey(creatureId))
-                        entries.Add(creatureId, new List<uint>());
+                    if (!entries.TryGetValue(creatureId, out HashSet<uint> targetGroupIds))
+                    {
+                        targetGroupIds = [];
+                        entries.Add(creatureId, targetGroupIds);
+                    }
 
-                    entries[creatureId].Add(entry.Id);
+                    targetGroupIds.Add(entry.Id);
                 }
             }
 
-            creatureAssociatedTargetGroups = entries.ToImmutableDictionary(e => e.Key, e => e.Value.ToImmutableList());
+            creatureAssociatedTargetGroups = entries.ToImmutableDictionary(
+                pair => pair.Key,
+                pair => pair.Value.Order().ToImmutableList());
+        }
+
+        private void CacheQuestObjectiveTargetGroups()
+        {
+            TargetGroupEntry[] targetGroups = GameTableManager.Instance.TargetGroup.Entries;
+            var targetGroupsById = targetGroups.ToDictionary(entry => entry.Id);
+            var resolver = new TargetGroupResolver(targetGroups);
+            var entries = ImmutableDictionary.CreateBuilder<uint, ImmutableList<uint>>();
+
+            foreach (QuestObjectiveEntry objective in GameTableManager.Instance.QuestObjective.Entries)
+            {
+                uint targetGroupId = GetQuestObjectiveTargetGroupId(objective);
+                if (targetGroupId == 0u)
+                    continue;
+
+                if (!targetGroupsById.ContainsKey(targetGroupId)
+                    && objective.TargetGroupIdRewardPane != 0u)
+                    targetGroupId = objective.TargetGroupIdRewardPane;
+
+                entries[objective.Id] = resolver.ResolveCreatureIds(targetGroupId);
+            }
+
+            questObjectiveTargets = entries.ToImmutable();
+        }
+
+        private static bool IsConcreteTargetGroup(TargetGroupEntry entry)
+        {
+            return (TargetGroupType)entry.Type is TargetGroupType.CreatureIdGroup
+                or TargetGroupType.OtherTargetGroup
+                or TargetGroupType.OtherTargetGroupCreatures;
+        }
+
+        private static uint GetQuestObjectiveTargetGroupId(QuestObjectiveEntry entry)
+        {
+            QuestObjectiveType type = (QuestObjectiveType)entry.Type;
+            if (type is QuestObjectiveType.KillTargetGroups
+                or QuestObjectiveType.Unknown10
+                or QuestObjectiveType.ActivateTargetGroupChecklist
+                or QuestObjectiveType.KillTargetGroup
+                or QuestObjectiveType.TalkToTargetGroup
+                or QuestObjectiveType.ActivateTargetGroup)
+                return entry.Data != 0u ? entry.Data : entry.TargetGroupIdRewardPane;
+
+            return entry.TargetGroupIdRewardPane;
         }
 
         private void CacheRewardPropertiesByTier()
@@ -149,7 +200,17 @@ namespace NexusForever.Game
         /// </summary>
         public ImmutableList<uint> GetTargetGroupsForCreatureId(uint creatureId)
         {
-            return creatureAssociatedTargetGroups.TryGetValue(creatureId, out ImmutableList<uint> entries) ? entries : null;
+            return creatureAssociatedTargetGroups.TryGetValue(creatureId, out ImmutableList<uint> entries)
+                ? entries : ImmutableList<uint>.Empty;
+        }
+
+        /// <summary>
+        /// Returns the concrete creature identifiers targeted by the supplied quest objective.
+        /// </summary>
+        public ImmutableList<uint> GetQuestObjectiveTargetIds(uint questObjectiveId)
+        {
+            return questObjectiveTargets.TryGetValue(questObjectiveId, out ImmutableList<uint> entries)
+                ? entries : ImmutableList<uint>.Empty;
         }
 
         /// <summary>

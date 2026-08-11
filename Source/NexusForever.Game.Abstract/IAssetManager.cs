@@ -29,6 +29,11 @@ namespace NexusForever.Game.Abstract
         ImmutableList<uint> GetTargetGroupsForCreatureId(uint creatureId);
 
         /// <summary>
+        /// Returns the concrete creature identifiers targeted by the supplied quest objective.
+        /// </summary>
+        ImmutableList<uint> GetQuestObjectiveTargetIds(uint questObjectiveId);
+
+        /// <summary>
         /// Returns an <see cref="ImmutableList{T}"/> containing all <see cref="RewardPropertyPremiumModifierEntry"/> for the given <see cref="AccountTier"/>.
         /// </summary>
         ImmutableList<RewardPropertyPremiumModifierEntry> GetRewardPropertiesForTier(AccountTier tier);

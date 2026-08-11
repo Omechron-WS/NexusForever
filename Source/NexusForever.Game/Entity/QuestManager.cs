@@ -74,7 +74,7 @@ namespace NexusForever.Game.Entity
                     continue;
                 }
 
-                var quest = new Quest.Quest(player, info, questModel);
+                var quest = new Quest.Quest(player, info, questModel, GetGlobalQuestManager(), null, null);
                 switch (quest.State)
                 {
                     case QuestState.Completed:
@@ -182,11 +182,13 @@ namespace NexusForever.Game.Entity
                         State      = q.State,
                         Flags      = q.Flags,
                         QuestTimeElapsed      = q.Timer ?? 0u,
-                        Objectives = q.Select(o => new ServerQuestInit.QuestActive.Objective
-                        {
-                            Progress = o.Progress,
-                            TimeElapsed    = 0u
-                        }).ToList()
+                        Objectives = q
+                            .OrderBy(objective => objective.Index)
+                            .Select(objective => new ServerQuestInit.QuestActive.Objective
+                            {
+                                Progress    = objective.Progress,
+                                TimeElapsed = 0u
+                            }).ToList()
                     }).ToList()
             });
         }
@@ -252,7 +254,7 @@ namespace NexusForever.Game.Entity
         {
             IQuest quest = GetQuest((ushort)info.Entry.Id);
             if (quest == null)
-                quest = new Quest.Quest(player, info);
+                quest = new Quest.Quest(player, info, GetGlobalQuestManager(), null, null);
             else
                 QuestRemove(quest);
 
@@ -354,7 +356,7 @@ namespace NexusForever.Game.Entity
             {
                 GameFormulaEntry entry = GameTableManager.Instance.GameFormula.GetEntry(655);
                 // client also hard codes 40 if entry doesn't exist
-                if (activeQuests.Count > (entry?.Dataint0 ?? 40u))
+                if (!HasActiveQuestCapacity(entry?.Dataint0 ?? 40u))
                     return false;
             }
             else
@@ -389,17 +391,23 @@ namespace NexusForever.Game.Entity
 
             IQuest quest = GetQuest((ushort)info.Entry.Id);
             if (quest == null)
-                quest = new Quest.Quest(player, info);
+                quest = new Quest.Quest(player, info, GetGlobalQuestManager(), null, null);
             else
                 QuestRemove(quest);
 
             quest.Flags |= QuestStateFlags.Tracked;
-            quest.State = QuestState.Accepted;
+            QuestState initialState = quest.Any() ? QuestState.Accepted : QuestState.Achieved;
+            quest.State = initialState;
             activeQuests.Add((ushort)info.Entry.Id, quest);
 
             quest.InitialiseTimer();
 
             log.Trace($"Accepted new quest {info.Entry.Id}.");
+        }
+
+        internal bool HasActiveQuestCapacity(uint maximum)
+        {
+            return activeQuests.Count < maximum;
         }
 
         private void QuestRemove(IQuest quest)
@@ -508,8 +516,7 @@ namespace NexusForever.Game.Entity
             if (quest.State != QuestState.Accepted)
                 throw new QuestException($"Player {player.CharacterId} tried to achieve quest {questId} with invalid state!");
 
-            foreach (IQuestObjectiveInfo info in quest.Info.Objectives)
-                quest.ObjectiveUpdate(info.Type, info.Entry.Data, info.Entry.Count);
+            quest.ObjectivesComplete();
         }
 
         /// <summary>
@@ -531,7 +538,7 @@ namespace NexusForever.Game.Entity
             if (objective == null)
                 throw new QuestException();
 
-            quest.ObjectiveUpdate(objective.ObjectiveInfo.Type, objective.ObjectiveInfo.Entry.Data, objective.ObjectiveInfo.Entry.Count);
+            quest.ObjectiveComplete(objective.ObjectiveInfo.Id);
         }
 
         /// <summary>
@@ -655,7 +662,7 @@ namespace NexusForever.Game.Entity
 
             IQuest quest = GetQuest((ushort)questInfo.Entry.Id);
             if (quest == null)
-                quest = new Quest.Quest(player, questInfo); // Add quest so we can set it to ignored.
+                quest = new Quest.Quest(player, questInfo, GetGlobalQuestManager(), null, null); // Add quest so we can set it to ignored.
             else
                 QuestRemove(quest); // Removes from quest log. Might not be the cleanest way to do this?
 

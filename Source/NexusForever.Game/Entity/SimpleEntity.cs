@@ -2,6 +2,7 @@ using NexusForever.Database.World.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Entity.Movement;
 using NexusForever.Game.Static.Entity;
+using NexusForever.Game.Static.Quest;
 using NexusForever.Network.World.Entity;
 using NexusForever.Network.World.Entity.Model;
 
@@ -45,33 +46,46 @@ namespace NexusForever.Game.Entity
 
         public override void OnActivateCast(IPlayer activator)
         {
-            uint progress = (uint)(1 << QuestChecklistIdx);
-
-            if (CreatureEntry.DatacubeId != 0u)
+            if (QuestChecklistIdx < 32)
             {
-                IDatacube datacube = activator.DatacubeManager.GetDatacube((ushort)CreatureEntry.DatacubeId, DatacubeType.Datacube);
-                if (datacube == null)
-                    activator.DatacubeManager.AddDatacube((ushort)CreatureEntry.DatacubeId, progress);
-                else
+                uint progress = 1u << QuestChecklistIdx;
+
+                if (CreatureEntry.DatacubeId != 0u)
                 {
-                    datacube.Progress |= progress;
-                    activator.DatacubeManager.SendDatacube(datacube);
+                    IDatacube datacube = activator.DatacubeManager.GetDatacube((ushort)CreatureEntry.DatacubeId, DatacubeType.Datacube);
+                    if (datacube == null)
+                        activator.DatacubeManager.AddDatacube((ushort)CreatureEntry.DatacubeId, progress);
+                    else
+                    {
+                        datacube.Progress |= progress;
+                        activator.DatacubeManager.SendDatacube(datacube);
+                    }
                 }
-            }
 
-            if (CreatureEntry.DatacubeVolumeId != 0u)
-            {
-                IDatacube datacube = activator.DatacubeManager.GetDatacube((ushort)CreatureEntry.DatacubeVolumeId, DatacubeType.Journal);
-                if (datacube == null)
-                    activator.DatacubeManager.AddDatacubeVolume((ushort)CreatureEntry.DatacubeVolumeId, progress);
-                else
+                if (CreatureEntry.DatacubeVolumeId != 0u)
                 {
-                    datacube.Progress |= progress;
-                    activator.DatacubeManager.SendDatacubeVolume(datacube);
+                    IDatacube datacube = activator.DatacubeManager.GetDatacube((ushort)CreatureEntry.DatacubeVolumeId, DatacubeType.Journal);
+                    if (datacube == null)
+                        activator.DatacubeManager.AddDatacubeVolume((ushort)CreatureEntry.DatacubeVolumeId, progress);
+                    else
+                    {
+                        datacube.Progress |= progress;
+                        activator.DatacubeManager.SendDatacubeVolume(datacube);
+                    }
                 }
             }
 
             //TODO: cast "116,Generic Quest Spell - Activating - Activate - Tier 1" by 0x07FD
+        }
+
+        /// <inheritdoc />
+        public override void OnActivateSuccess(IPlayer activator)
+        {
+            activator.QuestManager.ObjectiveUpdate(QuestObjectiveType.SucceedCSI, CreatureId, 1u);
+            activator.QuestManager.ObjectiveUpdate(
+                QuestObjectiveType.ActivateTargetGroupChecklist,
+                CreatureId,
+                QuestChecklistIdx);
         }
     }
 }

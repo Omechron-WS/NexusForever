@@ -55,5 +55,15 @@ namespace NexusForever.Game.Abstract.Quest
         /// Update any <see cref="IQuestObjective"/>'s with supplied ID with progress.
         /// </summary>
         void ObjectiveUpdate(uint id, uint progress);
+
+        /// <summary>
+        /// Complete the objective with the supplied identifier using its exact completion representation.
+        /// </summary>
+        void ObjectiveComplete(uint id);
+
+        /// <summary>
+        /// Complete every objective using its exact completion representation.
+        /// </summary>
+        void ObjectivesComplete();
     }
 }
