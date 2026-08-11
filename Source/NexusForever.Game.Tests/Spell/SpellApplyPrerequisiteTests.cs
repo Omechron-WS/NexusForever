@@ -141,6 +141,42 @@ namespace NexusForever.Game.Tests.Spell
             }
         }
 
+        [Theory]
+        [InlineData(49u, true)]
+        [InlineData(50u, false)]
+        public void LegacyCasterCast_HealthPercentageUsesCurrentPlayerState(
+            uint currentHealth,
+            bool expectedInvocation)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                315u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Health, PrerequisiteComparison.LessThan, 50u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterHealth = currentHealth,
+                CasterMaxHealth = 100u
+            };
+            Mock<IUnitEntity> target = context.CreateTarget(10u);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u),
+                casterCastPrerequisite: prerequisite,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            if (expectedInvocation)
+                spell.Update(0d);
+
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Invocations.Count);
+            if (!expectedInvocation)
+            {
+                ServerSpellCastResult result = Assert.Single(
+                    context.SessionPackets.OfType<ServerSpellCastResult>());
+                Assert.Equal(CastResult.PrereqCasterCast, result.CastResult);
+                Assert.Empty(context.Packets.OfType<ServerSpellStart>());
+            }
+        }
+
         [Fact]
         public void CasterRunner_IsPlayerCanOverrideCasterCastPrerequisite()
         {
@@ -253,10 +289,10 @@ namespace NexusForever.Game.Tests.Spell
         }
 
         [Theory]
-        [InlineData(true, 1u, true)]
-        [InlineData(true, 0u, false)]
-        [InlineData(false, 1u, true)]
-        [InlineData(false, 0u, false)]
+        [InlineData(true, 2u, true)]
+        [InlineData(true, 1u, false)]
+        [InlineData(false, 2u, true)]
+        [InlineData(false, 1u, false)]
         public void TargetCast_HealthRequirementUsesExactVisibleTargetForPlayerAndNpcCasters(
             bool playerCaster,
             uint targetHealth,
@@ -265,7 +301,7 @@ namespace NexusForever.Game.Tests.Spell
             PrerequisiteEntry prerequisite = CreateEntry(
                 7958u,
                 EvaluationMode.EvaluateAND,
-                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThanOrEqual, 1u, 0u));
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThan, 1u, 0u));
             using var context = new SpellPrerequisiteContext(prerequisite);
             Mock<IUnitEntity> target = context.CreateTarget(
                 42u,
@@ -318,7 +354,7 @@ namespace NexusForever.Game.Tests.Spell
             PrerequisiteEntry prerequisite = CreateEntry(
                 7958u,
                 EvaluationMode.EvaluateAND,
-                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThanOrEqual, 1u, 0u));
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThan, 1u, 0u));
             using var context = new SpellPrerequisiteContext(prerequisite);
             Mock<IUnitEntity> target = context.CreateTarget(
                 42u,
@@ -344,9 +380,9 @@ namespace NexusForever.Game.Tests.Spell
             PrerequisiteEntry prerequisite = CreateEntry(
                 7958u,
                 EvaluationMode.EvaluateAND,
-                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThanOrEqual, 1u, 0u));
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThan, 1u, 0u));
             using var context = new SpellPrerequisiteContext(prerequisite);
-            uint health = 1u;
+            uint health = 2u;
             Mock<IUnitEntity> target = context.CreateTarget(
                 42u,
                 health: () => health);
@@ -366,6 +402,93 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Single(context.Invocations);
             Assert.Single(context.Packets.OfType<ServerSpellGo>());
             target.VerifyGet(unit => unit.Health, Times.Once);
+        }
+
+        [Theory]
+        [InlineData(true, 50u, true)]
+        [InlineData(true, 49u, false)]
+        [InlineData(false, 50u, true)]
+        [InlineData(false, 49u, false)]
+        public void TargetCast_HealthPercentageUsesExactVisibleTargetForPlayerAndNpcCasters(
+            bool playerCaster,
+            uint targetHealth,
+            bool expectedInvocation)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Health, PrerequisiteComparison.GreaterThanOrEqual, 50u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            Mock<IUnitEntity> target = context.CreateTarget(
+                42u,
+                health: () => targetHealth,
+                maximumHealth: () => 100u);
+            IUnitEntity caster;
+            if (playerCaster)
+            {
+                context.Caster.Setup(unit => unit.GetVisible<IWorldEntity>(42u))
+                    .Returns(target.Object);
+                caster = context.Caster.Object;
+            }
+            else
+            {
+                Mock<IUnitEntity> npc = context.CreateTarget(50u);
+                npc.Setup(unit => unit.GetVisible<IWorldEntity>(42u))
+                    .Returns(target.Object);
+                caster = npc.Object;
+            }
+
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u, cost: 10u),
+                targetCastPrerequisite: prerequisite,
+                primaryTargetId: 42u,
+                caster: caster,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            if (expectedInvocation)
+                spell.Update(0d);
+
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Invocations.Count);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Packets.OfType<ServerSpellGo>().Count());
+            if (!expectedInvocation)
+            {
+                Assert.True(spell.IsFinishing);
+                Assert.Empty(context.CostMutations);
+                Assert.Empty(context.Packets.OfType<ServerSpellStart>());
+            }
+
+            target.VerifyGet(unit => unit.Health, Times.Once);
+            target.VerifyGet(unit => unit.MaxHealth, Times.Once);
+        }
+
+        [Fact]
+        public void TargetCast_HealthPercentageReadFailureFailsBeforeStart()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Health, PrerequisiteComparison.GreaterThanOrEqual, 50u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            Mock<IUnitEntity> target = context.CreateTarget(
+                42u,
+                health: () => 50u,
+                maximumHealth: () => throw new InvalidOperationException(
+                    "Test target max-health read failure."));
+            context.Caster.Setup(unit => unit.GetVisible<IWorldEntity>(42u))
+                .Returns(target.Object);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u, cost: 10u),
+                targetCastPrerequisite: prerequisite,
+                primaryTargetId: 42u,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            Exception exception = Record.Exception(spell.Cast);
+
+            Assert.Null(exception);
+            AssertTargetCastFailure(context, spell);
+            target.VerifyGet(unit => unit.Health, Times.Once);
+            target.VerifyGet(unit => unit.MaxHealth, Times.Once);
         }
 
         [Fact]
@@ -1012,6 +1135,53 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Empty(context.Packets.OfType<ServerSpellGo>());
         }
 
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void SpellPersistence_HealthPercentageReevaluatesCasterOrTarget(bool targetPersistence)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Health, PrerequisiteComparison.GreaterThanOrEqual, 50u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterHealth = 60u,
+                CasterMaxHealth = 100u
+            };
+            uint targetHealth = 60u;
+            Mock<IUnitEntity> target = context.CreateTarget(
+                42u,
+                health: () => targetHealth,
+                maximumHealth: () => 100u);
+            if (targetPersistence)
+            {
+                context.Caster
+                    .Setup(unit => unit.GetVisible<IWorldEntity>(target.Object.Guid))
+                    .Returns(target.Object);
+            }
+
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                CreateEffect(1u, delayTime: 100u),
+                casterPersistencePrerequisite: targetPersistence ? 0u : prerequisite.Id,
+                targetPersistencePrerequisite: targetPersistence ? prerequisite.Id : 0u,
+                primaryTargetId: targetPersistence ? target.Object.Guid : 0u,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+            spell.Cast();
+            Assert.True(spell.IsCasting);
+
+            if (targetPersistence)
+                targetHealth = 40u;
+            else
+                context.CasterHealth = 40u;
+
+            spell.Update(0.1d);
+
+            Assert.True(spell.IsFinishing);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<ServerSpellGo>());
+        }
+
         [Fact]
         public void CasterAndTargetGates_FilterBeforeEffectCostAndHandler()
         {
@@ -1106,34 +1276,68 @@ namespace NexusForever.Game.Tests.Spell
         }
 
         [Theory]
-        [InlineData(22677u)]
-        [InlineData(22678u)]
-        [InlineData(33064u)]
-        public void MixedHealthRequirementBuildRow_NeverRegistersOrAdvertises(uint prerequisiteId)
+        [InlineData(22677u, 6_000u, 10_000u, true)]
+        [InlineData(22677u, 6_000u, 100_000u, false)]
+        [InlineData(22677u, 5_000u, 20_000u, true)]
+        [InlineData(22678u, 6_000u, 10_000u, false)]
+        [InlineData(22678u, 6_000u, 100_000u, true)]
+        [InlineData(22678u, 5_000u, 20_000u, false)]
+        public void AbsoluteAndPercentageHealthBuildRowsFilterBeforeCostAndHandler(
+            uint prerequisiteId,
+            uint health,
+            uint maximumHealth,
+            bool expectedInvocation)
         {
             PrerequisiteEntry prerequisite = prerequisiteId switch
             {
                 22677u => CreateEntry(
                     prerequisiteId,
                     EvaluationMode.EvaluateAND,
-                    (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThan, 5_000u, 0u),
-                    (PrerequisiteType.Health, PrerequisiteComparison.GreaterThan, 25u, 0u)),
+                    (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThanOrEqual, 5_000u, 0u),
+                    (PrerequisiteType.Health, PrerequisiteComparison.GreaterThanOrEqual, 25u, 0u)),
                 22678u => CreateEntry(
                     prerequisiteId,
                     EvaluationMode.EvaluateOR,
-                    (PrerequisiteType.HealthRequirement, PrerequisiteComparison.LessThanOrEqual, 5_000u, 0u),
-                    (PrerequisiteType.Health, PrerequisiteComparison.LessThanOrEqual, 25u, 0u)),
-                33064u => CreateEntry(
-                    prerequisiteId,
-                    EvaluationMode.EvaluateAND,
-                    (PrerequisiteType.Unknown47, PrerequisiteComparison.NotEqual, 21_526u, 0u),
-                    (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThanOrEqual, 100u, 0u)),
+                    (PrerequisiteType.HealthRequirement, PrerequisiteComparison.LessThan, 5_000u, 0u),
+                    (PrerequisiteType.Health, PrerequisiteComparison.LessThan, 25u, 0u)),
                 _ => throw new ArgumentOutOfRangeException(nameof(prerequisiteId))
             };
             using var context = new SpellPrerequisiteContext(prerequisite);
             Mock<IUnitEntity> target = context.CreateTarget(
                 10u,
-                health: () => throw new InvalidOperationException("Mixed row read current health."));
+                health: () => health,
+                maximumHealth: () => maximumHealth);
+            Spell4EffectsEntry effect = CreateEffect(
+                1u,
+                targetPrerequisite: prerequisite.Id,
+                cost: 10u);
+            TestApplyPrerequisiteSpell spell = context.CreateSpell(
+                effect,
+                (SpellEffectTargetFlags.Target, target.Object));
+
+            spell.ExecuteForTest();
+
+            Assert.Equal(expectedInvocation ? 90f : 100f, context.CasterResource1);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.CostMutations.Count);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Invocations.Count);
+            Assert.Equal(
+                expectedInvocation ? 1 : 0,
+                Assert.Single(context.Packets.OfType<ServerSpellGo>()).TargetInfoData.Count);
+        }
+
+        [Fact]
+        public void UnsupportedMixedHealthRequirementBuildRowNeverRegistersOrReadsState()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                33064u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Unknown47, PrerequisiteComparison.NotEqual, 21_526u, 0u),
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThan, 100u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            Mock<IUnitEntity> target = context.CreateTarget(
+                10u,
+                health: () => throw new InvalidOperationException("Gated current-health read."),
+                maximumHealth: () => throw new InvalidOperationException("Gated max-health read."));
             Spell4EffectsEntry effect = CreateEffect(
                 1u,
                 targetPrerequisite: prerequisite.Id,
@@ -1152,6 +1356,7 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Empty(context.Packets.OfType<Server07F8>());
             Assert.Empty(Assert.Single(context.Packets.OfType<ServerSpellGo>()).TargetInfoData);
             target.VerifyGet(unit => unit.Health, Times.Never);
+            target.VerifyGet(unit => unit.MaxHealth, Times.Never);
         }
 
         [Theory]
@@ -1167,11 +1372,14 @@ namespace NexusForever.Game.Tests.Spell
         [InlineData(PrerequisiteType.HealthRequirement, 0)]
         [InlineData(PrerequisiteType.HealthRequirement, 1)]
         [InlineData(PrerequisiteType.HealthRequirement, 2)]
+        [InlineData(PrerequisiteType.Health, 0)]
+        [InlineData(PrerequisiteType.Health, 1)]
+        [InlineData(PrerequisiteType.Health, 2)]
         public void UnitSafeEffectPersistenceOrSuspendPrerequisite_RemainsGated(
             PrerequisiteType type,
             int field)
         {
-            PrerequisiteComparison comparison = type == PrerequisiteType.HealthRequirement
+            PrerequisiteComparison comparison = type is PrerequisiteType.HealthRequirement or PrerequisiteType.Health
                 ? PrerequisiteComparison.GreaterThanOrEqual
                 : PrerequisiteComparison.Equal;
             PrerequisiteEntry prerequisite = CreateEntry(
@@ -1918,6 +2126,8 @@ namespace NexusForever.Game.Tests.Spell
             public uint CasterLevel { get; set; } = 50u;
             public int CasterLevelReads { get; private set; }
             public int CasterVitalReads { get; private set; }
+            public uint CasterHealth { get; set; } = 100u;
+            public uint CasterMaxHealth { get; set; } = 100u;
             public Faction CasterFaction { get; set; } = Faction.Exile;
             public bool CasterAlive { get; set; } = true;
             public bool CasterInCombat { get; set; }
@@ -1971,6 +2181,7 @@ namespace NexusForever.Game.Tests.Spell
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckInCombat>(PrerequisiteType.InCombat);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDeadState>(PrerequisiteType.DeadState);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckIsPlayer>(PrerequisiteType.IsPlayer);
+                services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealth>(PrerequisiteType.Health);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealthRequirement>(PrerequisiteType.HealthRequirement);
                 services.AddSingleton<PrerequisiteManager>();
                 services.AddSingleton<IPrerequisiteManager>(provider => provider.GetRequiredService<PrerequisiteManager>());
@@ -1992,6 +2203,8 @@ namespace NexusForever.Game.Tests.Spell
                 });
                 Caster.SetupGet(entity => entity.Faction1).Returns(() => CasterFaction);
                 Caster.SetupGet(entity => entity.InCombat).Returns(() => CasterInCombat);
+                Caster.SetupGet(entity => entity.Health).Returns(() => CasterHealth);
+                Caster.SetupGet(entity => entity.MaxHealth).Returns(() => CasterMaxHealth);
                 Caster.Setup(entity => entity.TryGetVitalValue(
                         It.IsAny<Vital>(),
                         out It.Ref<float>.IsAny))
@@ -2056,7 +2269,8 @@ namespace NexusForever.Game.Tests.Spell
                 Func<bool> inWorld = null,
                 Func<IBaseMap> map = null,
                 Func<bool> inCombat = null,
-                Func<uint> health = null)
+                Func<uint> health = null,
+                Func<uint> maximumHealth = null)
             {
                 var target = new Mock<IUnitEntity>();
                 ConfigureTarget(
@@ -2069,7 +2283,8 @@ namespace NexusForever.Game.Tests.Spell
                     inWorld,
                     map,
                     inCombat,
-                    health);
+                    health,
+                    maximumHealth);
                 return target;
             }
 
@@ -2099,7 +2314,8 @@ namespace NexusForever.Game.Tests.Spell
                 Func<bool> inWorld = null,
                 Func<IBaseMap> map = null,
                 Func<bool> inCombat = null,
-                Func<uint> health = null)
+                Func<uint> health = null,
+                Func<uint> maximumHealth = null)
                 where T : class, IUnitEntity
             {
                 target.SetupGet(entity => entity.Guid).Returns(guid);
@@ -2110,6 +2326,7 @@ namespace NexusForever.Game.Tests.Spell
                 target.SetupGet(entity => entity.Faction1).Returns(() => faction?.Invoke() ?? Faction.Dominion);
                 target.SetupGet(entity => entity.InCombat).Returns(() => inCombat?.Invoke() ?? false);
                 target.SetupGet(entity => entity.Health).Returns(() => health?.Invoke() ?? 1u);
+                target.SetupGet(entity => entity.MaxHealth).Returns(() => maximumHealth?.Invoke() ?? 1u);
                 target.Setup(entity => entity.TryGetVitalValue(
                         It.IsAny<Vital>(),
                         out It.Ref<float>.IsAny))

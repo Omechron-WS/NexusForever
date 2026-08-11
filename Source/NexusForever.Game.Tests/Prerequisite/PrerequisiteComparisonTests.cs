@@ -41,6 +41,7 @@ namespace NexusForever.Game.Tests.Prerequisite
             var player = new Mock<IPlayer>(MockBehavior.Strict);
             player.SetupGet(unit => unit.Level).Returns(current);
             player.SetupGet(unit => unit.Health).Returns(current);
+            player.SetupGet(unit => unit.MaxHealth).Returns(100u);
             player.Setup(unit => unit.TryGetVitalValue(
                     Vital.Resource1,
                     out It.Ref<float>.IsAny))
@@ -53,6 +54,8 @@ namespace NexusForever.Game.Tests.Prerequisite
             var comparison = (PrerequisiteComparison)rawComparisonId;
             var level = new PrerequisiteCheckLevel(Mock.Of<ILogger<PrerequisiteCheckLevel>>());
             var vital = new PrerequisiteCheckVital(Mock.Of<ILogger<PrerequisiteCheckVital>>());
+            var healthPercentage = new PrerequisiteCheckHealth(
+                Mock.Of<ILogger<PrerequisiteCheckHealth>>());
             var health = new PrerequisiteCheckHealthRequirement(
                 Mock.Of<ILogger<PrerequisiteCheckHealthRequirement>>());
 
@@ -78,6 +81,20 @@ namespace NexusForever.Game.Tests.Prerequisite
                 (uint)Vital.Resource1,
                 out bool vitalMeets));
             Assert.Equal(expected, vitalMeets);
+
+            Assert.Equal(expected, healthPercentage.Meets(
+                player.Object,
+                comparison,
+                threshold,
+                0u,
+                null));
+            Assert.True(healthPercentage.TryMeets(
+                player.Object,
+                comparison,
+                threshold,
+                0u,
+                out bool healthPercentageMeets));
+            Assert.Equal(expected, healthPercentageMeets);
 
             Assert.Equal(expected, health.Meets(player.Object, comparison, threshold, 0u, null));
             Assert.True(health.TryMeets(

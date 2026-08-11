@@ -284,39 +284,39 @@ namespace NexusForever.Game.Tests.Prerequisite
         [Fact]
         public void HealthRequirementBuildRows_EvaluateCurrentAbsoluteHealthDynamically()
         {
-            PrerequisiteEntry greaterThanOrEqualOne = CreateEntry(
+            PrerequisiteEntry greaterThanOne = CreateEntry(
                 7958u,
                 EvaluationMode.EvaluateAND,
-                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThanOrEqual, 1u, 0u));
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThan, 1u, 0u));
             PrerequisiteEntry equalOne = CreateEntry(
                 10754u,
                 EvaluationMode.EvaluateAND,
                 (PrerequisiteType.HealthRequirement, PrerequisiteComparison.Equal, 1u, 0u));
-            PrerequisiteEntry duplicateGreaterThanOrEqualOne = CreateEntry(
+            PrerequisiteEntry duplicateGreaterThanOne = CreateEntry(
                 10790u,
                 EvaluationMode.EvaluateAND,
-                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThanOrEqual, 1u, 0u));
-            PrerequisiteEntry lessThanOne = CreateEntry(
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThan, 1u, 0u));
+            PrerequisiteEntry lessThanOrEqualOne = CreateEntry(
                 18707u,
                 EvaluationMode.EvaluateAND,
-                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.LessThan, 1u, 0u));
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.LessThanOrEqual, 1u, 0u));
             PrerequisiteEntry equalZero = CreateEntry(
                 30772u,
                 EvaluationMode.EvaluateAND,
                 (PrerequisiteType.HealthRequirement, PrerequisiteComparison.Equal, 0u, 0u));
             PrerequisiteEntry[] entries =
             [
-                greaterThanOrEqualOne,
+                greaterThanOne,
                 equalOne,
-                duplicateGreaterThanOrEqualOne,
-                lessThanOne,
+                duplicateGreaterThanOne,
+                lessThanOrEqualOne,
                 equalZero
             ];
             using var context = new ManagerContext(entries);
             uint health = 1u;
             Mock<IUnitEntity> unit = CreateUnit(health: () => health);
 
-            bool[] expectedAtOne = [true, true, true, false, false];
+            bool[] expectedAtOne = [false, true, false, true, false];
             for (int i = 0; i < entries.Length; i++)
             {
                 Assert.True(context.Manager.CanEvaluateForUnit(entries[i].Id));
@@ -337,42 +337,141 @@ namespace NexusForever.Game.Tests.Prerequisite
         }
 
         [Fact]
-        public void HealthRequirementMixedAndMalformedBuildRowsRemainWhollyGated()
+        public void HealthPercentageBuildRowsEvaluateCurrentFloatPercentageDynamically()
+        {
+            PrerequisiteEntry lessThanFifty = CreateEntry(
+                315u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Health, PrerequisiteComparison.LessThan, 50u, 0u));
+            PrerequisiteEntry lessThanOrEqualTwentyFive = CreateEntry(
+                965u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Health, PrerequisiteComparison.LessThanOrEqual, 25u, 0u));
+            PrerequisiteEntry percentageAndCurrentHealth = CreateEntry(
+                3467u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Health, PrerequisiteComparison.LessThanOrEqual, 25u, 0u),
+                (PrerequisiteType.Vital, PrerequisiteComparison.GreaterThan, 0u, (uint)Vital.Health));
+            PrerequisiteEntry[] entries =
+            [
+                lessThanFifty,
+                lessThanOrEqualTwentyFive,
+                percentageAndCurrentHealth
+            ];
+            using var context = new ManagerContext(entries);
+            uint health = 25u;
+            Mock<IUnitEntity> unit = CreateUnit(
+                health: () => health,
+                maximumHealth: () => 100u);
+
+            foreach (PrerequisiteEntry entry in entries)
+            {
+                Assert.True(context.Manager.CanEvaluateForUnit(entry.Id));
+                Assert.True(context.Manager.TryMeets(unit.Object, entry.Id, out bool meets));
+                Assert.True(meets);
+            }
+
+            health = 50u;
+
+            foreach (PrerequisiteEntry entry in entries)
+            {
+                Assert.True(context.Manager.TryMeets(unit.Object, entry.Id, out bool meets));
+                Assert.False(meets);
+            }
+
+            health = 0u;
+
+            Assert.True(context.Manager.TryMeets(unit.Object, lessThanFifty.Id, out bool belowFifty));
+            Assert.True(belowFifty);
+            Assert.True(context.Manager.TryMeets(
+                unit.Object,
+                lessThanOrEqualTwentyFive.Id,
+                out bool atMostTwentyFive));
+            Assert.True(atMostTwentyFive);
+            Assert.True(context.Manager.TryMeets(
+                unit.Object,
+                percentageAndCurrentHealth.Id,
+                out bool positiveCurrentHealth));
+            Assert.False(positiveCurrentHealth);
+        }
+
+        [Fact]
+        public void AbsoluteAndPercentageHealthBuildRowsEvaluateTogetherDynamically()
         {
             PrerequisiteEntry absoluteAndPercentage = CreateEntry(
                 22677u,
                 EvaluationMode.EvaluateAND,
-                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThan, 5_000u, 0u),
-                (PrerequisiteType.Health, PrerequisiteComparison.GreaterThan, 25u, 0u));
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThanOrEqual, 5_000u, 0u),
+                (PrerequisiteType.Health, PrerequisiteComparison.GreaterThanOrEqual, 25u, 0u));
             PrerequisiteEntry absoluteOrPercentage = CreateEntry(
                 22678u,
                 EvaluationMode.EvaluateOR,
-                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.LessThanOrEqual, 5_000u, 0u),
-                (PrerequisiteType.Health, PrerequisiteComparison.LessThanOrEqual, 25u, 0u));
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.LessThan, 5_000u, 0u),
+                (PrerequisiteType.Health, PrerequisiteComparison.LessThan, 25u, 0u));
+            using var context = new ManagerContext(absoluteAndPercentage, absoluteOrPercentage);
+            uint health = 6_000u;
+            uint maximumHealth = 10_000u;
+            Mock<IUnitEntity> unit = CreateUnit(
+                health: () => health,
+                maximumHealth: () => maximumHealth);
+
+            Assert.True(context.Manager.CanEvaluateForUnit(absoluteAndPercentage.Id));
+            Assert.True(context.Manager.CanEvaluateForUnit(absoluteOrPercentage.Id));
+            Assert.True(context.Manager.TryMeets(
+                unit.Object,
+                absoluteAndPercentage.Id,
+                out bool meetsAnd));
+            Assert.True(meetsAnd);
+            Assert.True(context.Manager.TryMeets(
+                unit.Object,
+                absoluteOrPercentage.Id,
+                out bool meetsOr));
+            Assert.False(meetsOr);
+
+            maximumHealth = 100_000u;
+
+            Assert.True(context.Manager.TryMeets(
+                unit.Object,
+                absoluteAndPercentage.Id,
+                out meetsAnd));
+            Assert.False(meetsAnd);
+            Assert.True(context.Manager.TryMeets(
+                unit.Object,
+                absoluteOrPercentage.Id,
+                out meetsOr));
+            Assert.True(meetsOr);
+        }
+
+        [Fact]
+        public void UnsupportedAndMalformedHealthRowsRemainWhollyGated()
+        {
             PrerequisiteEntry unknownAndAbsolute = CreateEntry(
                 33064u,
                 EvaluationMode.EvaluateAND,
                 (PrerequisiteType.Unknown47, PrerequisiteComparison.NotEqual, 21_526u, 0u),
-                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThanOrEqual, 100u, 0u));
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThan, 100u, 0u));
             PrerequisiteEntry invalidObject = CreateEntry(
                 1u,
                 EvaluationMode.EvaluateAND,
-                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.Equal, 1u, 1u));
-            PrerequisiteEntry invalidComparison = CreateEntry(
+                (PrerequisiteType.Health, PrerequisiteComparison.Equal, 50u, 1u));
+            PrerequisiteEntry invalidValue = CreateEntry(
                 2u,
                 EvaluationMode.EvaluateAND,
-                (PrerequisiteType.HealthRequirement, (PrerequisiteComparison)999, 1u, 0u));
-            PrerequisiteEntry malformedInactive = CreateEntry(
+                (PrerequisiteType.Health, PrerequisiteComparison.Equal, 101u, 0u));
+            PrerequisiteEntry invalidComparison = CreateEntry(
                 3u,
                 EvaluationMode.EvaluateAND,
-                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.Equal, 1u, 0u));
+                (PrerequisiteType.Health, (PrerequisiteComparison)999, 50u, 0u));
+            PrerequisiteEntry malformedInactive = CreateEntry(
+                4u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Health, PrerequisiteComparison.Equal, 50u, 0u));
             malformedInactive.Value[1] = 1u;
             PrerequisiteEntry[] entries =
             [
-                absoluteAndPercentage,
-                absoluteOrPercentage,
                 unknownAndAbsolute,
                 invalidObject,
+                invalidValue,
                 invalidComparison,
                 malformedInactive
             ];
@@ -382,7 +481,7 @@ namespace NexusForever.Game.Tests.Prerequisite
             {
                 healthReads++;
                 return 10_000u;
-            });
+            }, maximumHealth: () => throw new InvalidOperationException("Gated max-health read."));
 
             foreach (PrerequisiteEntry entry in entries)
             {
@@ -393,6 +492,7 @@ namespace NexusForever.Game.Tests.Prerequisite
 
             Assert.Equal(0, healthReads);
             unit.VerifyGet(entity => entity.Health, Times.Never);
+            unit.VerifyGet(entity => entity.MaxHealth, Times.Never);
         }
 
         [Fact]
@@ -513,6 +613,29 @@ namespace NexusForever.Game.Tests.Prerequisite
         }
 
         [Fact]
+        public void HealthPercentageReadExceptionIsContainedAsEvaluationFailure()
+        {
+            PrerequisiteEntry entry = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Health, PrerequisiteComparison.GreaterThanOrEqual, 50u, 0u));
+            using var context = new ManagerContext(entry);
+            var unit = new Mock<IUnitEntity>();
+            unit.SetupGet(entity => entity.Health).Returns(50u);
+            unit.SetupGet(entity => entity.MaxHealth)
+                .Throws(new InvalidOperationException("Test unit max-health read failure."));
+
+            Exception exception = Record.Exception(() =>
+            {
+                Assert.True(context.Manager.CanEvaluateForUnit(entry.Id));
+                Assert.False(context.Manager.TryMeets(unit.Object, entry.Id, out bool meets));
+                Assert.False(meets);
+            });
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
         public void MissingMalformedOrInvalidRows_FailClosed()
         {
             PrerequisiteEntry invalidMode = CreateEntry(
@@ -581,7 +704,8 @@ namespace NexusForever.Game.Tests.Prerequisite
             float? resource1 = null,
             Func<bool> alive = null,
             Func<bool> inCombat = null,
-            Func<uint> health = null)
+            Func<uint> health = null,
+            Func<uint> maximumHealth = null)
         {
             var unit = new Mock<IUnitEntity>();
             unit.SetupGet(entity => entity.Level).Returns(level);
@@ -589,11 +713,18 @@ namespace NexusForever.Game.Tests.Prerequisite
             unit.SetupGet(entity => entity.IsAlive).Returns(() => alive?.Invoke() ?? true);
             unit.SetupGet(entity => entity.InCombat).Returns(() => inCombat?.Invoke() ?? false);
             unit.SetupGet(entity => entity.Health).Returns(() => health?.Invoke() ?? 1u);
+            unit.SetupGet(entity => entity.MaxHealth).Returns(() => maximumHealth?.Invoke() ?? 1u);
             unit.Setup(entity => entity.TryGetVitalValue(
                     It.IsAny<Vital>(),
                     out It.Ref<float>.IsAny))
                 .Returns(new TryGetVitalValue((Vital vital, out float value) =>
                 {
+                    if (vital == Vital.Health)
+                    {
+                        value = health?.Invoke() ?? 1u;
+                        return true;
+                    }
+
                     value = resource1 ?? 0f;
                     return vital == Vital.Resource1 && resource1.HasValue;
                 }));
@@ -701,6 +832,7 @@ namespace NexusForever.Game.Tests.Prerequisite
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckInCombat>(PrerequisiteType.InCombat)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDeadState>(PrerequisiteType.DeadState)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckIsPlayer>(PrerequisiteType.IsPlayer)
+                    .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealth>(PrerequisiteType.Health)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealthRequirement>(PrerequisiteType.HealthRequirement)
                     .BuildServiceProvider();
 

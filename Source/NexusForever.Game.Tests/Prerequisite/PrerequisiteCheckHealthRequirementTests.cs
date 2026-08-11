@@ -12,7 +12,7 @@ namespace NexusForever.Game.Tests.Prerequisite
     public class PrerequisiteCheckHealthRequirementTests
     {
         [Fact]
-        public void AddGamePrerequisite_DiscoversHealthRequirementWithoutRegisteringUnderHealth()
+        public void AddGamePrerequisite_DiscoversHealthRequirementIndependentlyFromHealth()
         {
             var services = new ServiceCollection();
             services.AddLogging();
@@ -23,8 +23,8 @@ namespace NexusForever.Game.Tests.Prerequisite
                 PrerequisiteType.HealthRequirement);
 
             Assert.IsType<PrerequisiteCheckHealthRequirement>(check);
-            Assert.Null(serviceProvider.GetKeyedService<IPrerequisiteCheck>(
-                PrerequisiteType.Health));
+            Assert.IsType<PrerequisiteCheckHealth>(
+                serviceProvider.GetRequiredKeyedService<IPrerequisiteCheck>(PrerequisiteType.Health));
         }
 
         [Theory]
