@@ -15,6 +15,7 @@ namespace NexusForever.Network.Message
         ClientCommodityOrderCancel      = 0x0093,
         ClientAuctionCancel             = 0x0094,
         ClientActivateUnitCast          = 0x0097, // not sure about the name - almost the same as 0x00B3, but also initiates 0x07FD
+        ClientActivateUnitInteraction   = 0x0098,
         ClientCastPathExplorerSearching = 0x0099,
         ClientCastSpell                 = 0x009A,
         ServerChallengeShared           = 0x00A9,
@@ -771,12 +772,13 @@ namespace NexusForever.Network.Message
         Server07FA                      = 0x07FA, // spell related
         Server07FB                      = 0x07FB, // spell miss info?
         ServerSpellCastResult           = 0x07FC,
-        Server07FD                      = 0x07FD, // spell related
+        ServerSpellStartClientInteraction = 0x07FD,
         ServerSpellFinish               = 0x07FE,
         ServerSpellStart                = 0x07FF,
         ClientSpellStopCast             = 0x0801,
         ClientCancelEffect              = 0x0802,
         ServerCooldown                  = 0x0804,
+        ClientInteractionResult         = 0x0805,
         Server0811                      = 0x0811, // spell related: broadcast parts of 0x07FF?
         ServerSpellBuffRemove           = 0x0813,
         Server0814                      = 0x0814, // spell related

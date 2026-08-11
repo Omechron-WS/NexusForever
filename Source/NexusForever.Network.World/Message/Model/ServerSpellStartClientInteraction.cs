@@ -4,31 +4,34 @@ using NexusForever.Network.World.Message.Model.Shared;
 
 namespace NexusForever.Network.World.Message.Model
 {
-    [Message(GameMessageOpcode.Server07FD)]
-    public class Server07FD : IWritable
+    /// <summary>
+    /// Starts a client-side interaction for a server-selected activation spell.
+    /// </summary>
+    [Message(GameMessageOpcode.ServerSpellStartClientInteraction)]
+    public class ServerSpellStartClientInteraction : IWritable
     {
-        public uint Time { get; set; }
+        public uint ClientUniqueId { get; set; }
         public uint CastingId { get; set; }
         public uint CasterId { get; set; }
-        public Position Position { get; set; } = new Position();
-        public uint Unknown16 { get; set; }
+        public Position Position { get; set; } = new();
+        public uint Yaw { get; set; }
 
         public List<InitialPosition> InitialPositionData { get; set; } = new();
         public List<TelegraphPosition> TelegraphPositionData { get; set; } = new();
 
         public void Write(GamePacketWriter writer)
         {
-            writer.Write(Time);
+            writer.Write(ClientUniqueId);
             writer.Write(CastingId);
             writer.Write(CasterId);
             Position.Write(writer);
-            writer.Write(Unknown16);
+            writer.Write(Yaw);
 
             writer.Write(InitialPositionData.Count, 8u);
-            InitialPositionData.ForEach(u => u.Write(writer));
+            InitialPositionData.ForEach(position => position.Write(writer));
 
             writer.Write(TelegraphPositionData.Count, 8u);
-            TelegraphPositionData.ForEach(u => u.Write(writer));
+            TelegraphPositionData.ForEach(position => position.Write(writer));
         }
     }
 }
