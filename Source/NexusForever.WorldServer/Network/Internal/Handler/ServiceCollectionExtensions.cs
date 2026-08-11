@@ -67,6 +67,7 @@ namespace NexusForever.WorldServer.Network.Internal.Handler
             sc.AddRebusHandler<GroupPlayerInvitedHandler>();
             sc.AddRebusHandler<GroupPlayerInviteResultHandler>();
             sc.AddRebusHandler<GroupReadyCheckStartedHandler>();
+            sc.AddRebusHandler<GroupSnapshotHandler>();
 
             sc.AddRebusHandler<PlayerGroupAssociationUpdatedHandler>();
             sc.AddRebusHandler<PlayerInfoResponseHandler>();
