@@ -90,6 +90,9 @@ namespace NexusForever.Game.Entity
             if (reason != LogoutReason.None)
                 log.Warn($"Character {player.CharacterId} is being force logged out with reason {reason}.");
 
+            // Player updates stop once logout begins, so hostile relationships must be cleared before that transition.
+            player.ThreatManager.ClearThreatList();
+
             player.Session.EnqueueMessageEncrypted(new ServerLogout
             {
                 Requested = reason == LogoutReason.None,

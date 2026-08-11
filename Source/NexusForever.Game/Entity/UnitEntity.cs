@@ -243,6 +243,7 @@ namespace NexusForever.Game.Entity
 
         public override void Dispose()
         {
+            ThreatManager.ClearThreatList();
             ClearProcs();
 
             foreach (ISpell spell in pendingSpells.ToArray())
@@ -284,6 +285,7 @@ namespace NexusForever.Game.Entity
             foreach (IProcInfo proc in procs.Values.SelectMany(list => list).ToArray())
                 proc.Update(lastTick);
 
+            ThreatManager.Update(lastTick);
             CombatStateTick();
             UpdateRegeneration(lastTick);
             UpdateDeathLifecycle(lastTick);

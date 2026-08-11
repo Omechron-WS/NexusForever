@@ -1,9 +1,10 @@
 ﻿using NexusForever.Game.Abstract.Entity;
 using NexusForever.Network.Session;
+using NexusForever.Shared;
 
 namespace NexusForever.Game.Abstract.Combat
 {
-    public interface IThreatManager : IEnumerable<IHostileEntity>
+    public interface IThreatManager : IUpdate, IEnumerable<IHostileEntity>
     {
         /// <summary>
         /// Returns if any <see cref="IHostileEntity"/> exists in the threat list.

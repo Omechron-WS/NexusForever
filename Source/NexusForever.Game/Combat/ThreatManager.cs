@@ -11,16 +11,29 @@ namespace NexusForever.Game.Combat
     {
         private static readonly ILogger log = LogManager.GetCurrentClassLogger();
 
-        private Dictionary<uint /*unitId*/, IHostileEntity> hostiles = new();
+        private readonly Dictionary<uint /*unitId*/, IHostileEntity> hostiles = new();
 
-        private IUnitEntity owner;
+        private readonly IUnitEntity owner;
 
         /// <summary>
         /// Initialise <see cref="IThreatManager"/> for a <see cref="IUnitEntity"/>.
         /// </summary>
         public ThreatManager(IUnitEntity owner)
         {
+            ArgumentNullException.ThrowIfNull(owner);
+
             this.owner = owner;
+        }
+
+        /// <inheritdoc />
+        public void Update(double lastTick)
+        {
+            foreach (IHostileEntity hostile in hostiles.Values.ToArray())
+            {
+                hostile.Update(lastTick);
+                if (hostile.IsExpired && ReferenceEquals(GetHostile(hostile.HatedUnitId), hostile))
+                    RemoveHostile(hostile.HatedUnitId);
+            }
         }
 
         /// <summary>
@@ -50,7 +63,11 @@ namespace NexusForever.Game.Combat
         public void UpdateThreat(IUnitEntity target, int threat)
         {
             if (hostiles.TryGetValue(target.Guid, out IHostileEntity hostile))
+            {
                 UpdateThreat(hostile, threat);
+                if (hostile.IsPvP)
+                    target.ThreatManager.GetHostile(owner.Guid)?.Refresh();
+            }
             else
                 CreateHostile(target, threat);
         }
@@ -60,7 +77,7 @@ namespace NexusForever.Game.Combat
         /// </summary>
         private void CreateHostile(IUnitEntity target, int threat)
         {
-            IHostileEntity hostile = new HostileEntity(target.Guid);
+            IHostileEntity hostile = new HostileEntity(owner, target);
             hostile.UpdateThreat(threat);
             hostiles.Add(hostile.HatedUnitId, hostile);
 
@@ -105,21 +122,38 @@ namespace NexusForever.Game.Combat
             if (!hostiles.Remove(unitId, out IHostileEntity hostileEntity))
                 return;
 
-            // despite being an update it looks like this is only sent on remove to set threat to 0
-            // might need more research to see if this needs to be sent on any threat change
-            owner.EnqueueToVisible(new ServerEntityThreatUpdate
+            IThreatManager reciprocalThreatManager = null;
+            ExecuteRemovalAction(() => reciprocalThreatManager = owner.GetVisible<IUnitEntity>(unitId)?.ThreatManager,
+                "resolve reciprocal threat relationship", unitId);
+
+            // Despite being an update it looks like this is only sent on remove to set threat to 0.
+            // More research is needed to determine whether this should be sent on every threat change.
+            ExecuteRemovalAction(() => owner.EnqueueToVisible(new ServerEntityThreatUpdate
             {
                 UnitId      = owner.Guid,
                 TargetId    = hostileEntity.HatedUnitId,
                 ThreatLevel = 0
-            });
+            }), "publish threat removal", unitId);
 
-            owner.OnThreatRemoveTarget(hostileEntity);
+            ExecuteRemovalAction(() => owner.OnThreatRemoveTarget(hostileEntity),
+                "process threat removal", unitId);
 
-            // TODO: Handle the case of PvP where the only "end" would be death. Consider an "in-combat without threat" timer as a trigger, in PvP situations only.
-            owner.GetVisible<IUnitEntity>(unitId)?.ThreatManager.RemoveHostile(owner.Guid);
+            ExecuteRemovalAction(() => reciprocalThreatManager?.RemoveHostile(owner.Guid),
+                "remove reciprocal threat relationship", unitId);
 
             log.Trace($"Removed hostile {hostileEntity.HatedUnitId} from {owner.Guid}'s threat list.");
+        }
+
+        private void ExecuteRemovalAction(Action action, string description, uint unitId)
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to {description} between {owner.Guid} and {unitId}.");
+            }
         }
 
         /// <summary>

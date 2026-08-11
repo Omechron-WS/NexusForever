@@ -71,6 +71,18 @@ namespace NexusForever.Game.Tests.Combat
         }
 
         [Fact]
+        public void Update_AdvancesThreatManagerWithWorldTickDelta()
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            var threatManager = new Mock<IThreatManager>();
+            SetThreatManager(entity, threatManager.Object);
+
+            entity.Update(0.25d);
+
+            threatManager.Verify(t => t.Update(0.25d), Times.Once);
+        }
+
+        [Fact]
         public void RemoveProc_CancelsOnlyExactProcAndPreservesOtherRegistrations()
         {
             TestUnitEntity entity = CreateEntity(1u);
@@ -195,6 +207,11 @@ namespace NexusForever.Game.Tests.Combat
             try
             {
                 TestUnitEntity entity = CreateEntity(1u);
+                var threatManager = new Mock<IThreatManager>();
+                threatManager
+                    .Setup(t => t.GetEnumerator())
+                    .Returns(() => Enumerable.Empty<IHostileEntity>().GetEnumerator());
+                SetThreatManager(entity, threatManager.Object);
                 Mock<IProcInfo> proc = CreateProc(entity, ProcType.CriticalDamage, 789u, 123u);
                 var castingSpell = new Mock<ISpell>();
                 castingSpell.Setup(s => s.IsCasting).Returns(true);
@@ -210,6 +227,7 @@ namespace NexusForever.Game.Tests.Combat
                 proc.Verify(p => p.Trigger(It.IsAny<IUnitEntity>()), Times.Never);
                 castingSpell.Verify(s => s.CancelCast(CastResult.CasterCannotBeDead), Times.Once);
                 executingSpell.Verify(s => s.Finish(), Times.Once);
+                threatManager.Verify(t => t.ClearThreatList(), Times.Once);
             }
             finally
             {
@@ -221,6 +239,8 @@ namespace NexusForever.Game.Tests.Combat
         public void Dispose_CancelsRegisteredProcsAndDisposesPendingSpells()
         {
             TestUnitEntity entity = CreateEntity(1u);
+            var threatManager = new Mock<IThreatManager>();
+            SetThreatManager(entity, threatManager.Object);
             Mock<IProcInfo> proc = CreateProc(entity, ProcType.CriticalDamage, 789u, 123u);
             var spell = new Mock<ISpell>();
             AddPendingSpell(entity, spell.Object);
@@ -231,6 +251,7 @@ namespace NexusForever.Game.Tests.Combat
             proc.Verify(p => p.Cancel(), Times.Once);
             spell.Verify(s => s.Finish(), Times.Once);
             spell.Verify(s => s.Dispose(), Times.Once);
+            threatManager.Verify(t => t.ClearThreatList(), Times.Once);
         }
 
         [Fact]
@@ -289,6 +310,12 @@ namespace NexusForever.Game.Tests.Combat
                 BindingFlags.Instance | BindingFlags.NonPublic);
             var spells = (List<ISpell>)field.GetValue(entity);
             spells.Add(spell);
+        }
+
+        private static void SetThreatManager(TestUnitEntity entity, IThreatManager threatManager)
+        {
+            PropertyInfo property = typeof(UnitEntity).GetProperty(nameof(UnitEntity.ThreatManager));
+            property.SetValue(entity, threatManager);
         }
 
         private sealed class TestUnitEntity : UnitEntity
