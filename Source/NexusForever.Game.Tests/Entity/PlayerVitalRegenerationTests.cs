@@ -122,6 +122,25 @@ namespace NexusForever.Game.Tests.Entity
         }
 
         [Fact]
+        public void Update_ZeroEnduranceRegenerationDoesNotRegenerateOrBankCatchUp()
+        {
+            (TestOwner owner, PlayerVitalRegenerator regenerator) = CreateRegenerator(Class.Esper);
+            owner.SetProperty(Property.ResourceMax0, 500f);
+            owner.SetProperty(Property.ResourceRegenMultiplier0, 0f);
+
+            regenerator.Update(10d);
+
+            Assert.Equal(0f, owner.GetVital(Vital.Resource0));
+            Assert.Empty(owner.Modifications);
+
+            owner.SetProperty(Property.ResourceRegenMultiplier0, 0.0225f);
+            regenerator.Update(0.5d);
+
+            Assert.Equal(11.25f, owner.GetVital(Vital.Resource0), 3);
+            Assert.Equal(1, owner.GetModificationCount(Vital.Resource0));
+        }
+
+        [Fact]
         public void Update_StalkerRegeneratesSuitPowerEveryHalfSecond()
         {
             (TestOwner owner, PlayerVitalRegenerator regenerator) = CreateRegenerator(Class.Stalker);

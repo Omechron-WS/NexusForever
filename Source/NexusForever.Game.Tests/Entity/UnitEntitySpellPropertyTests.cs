@@ -116,6 +116,89 @@ namespace NexusForever.Game.Tests.Entity
         }
 
         [Fact]
+        public void AllZeroEnduranceRegenerationModifier_MultipliesToZeroAndRemovalRestoresBase()
+        {
+            TestUnitEntity entity = CreateEntity();
+            entity.SetBaseProperty(Property.ResourceRegenMultiplier0, 0.0225f);
+            var identity = new SpellEffectIdentity(1u, SourceSpell4Id, 1u);
+            SpellPropertyModifier modifier = CreateEnduranceRegenerationModifier(identity, 3u, 0f);
+
+            IPropertyModifier alteration = Assert.Single(modifier.Alterations);
+            Assert.Equal(ModType.Percentage, alteration.ModType);
+            Assert.Equal(0f, alteration.GetValue());
+
+            Assert.True(entity.AddSpellModifierProperty(modifier));
+            Assert.Equal(0f, entity.GetPropertyValue(Property.ResourceRegenMultiplier0));
+
+            Assert.True(entity.RemoveSpellModifierProperty(Property.ResourceRegenMultiplier0, identity));
+            Assert.Equal(0.0225f, entity.GetPropertyValue(Property.ResourceRegenMultiplier0));
+        }
+
+        [Fact]
+        public void ZeroEnduranceRegenerationModifier_CoexistsWithUnrelatedOwner()
+        {
+            TestUnitEntity entity = CreateEntity();
+            entity.SetBaseProperty(Property.ResourceRegenMultiplier0, 0.0225f);
+            SpellPropertyModifier ordinaryModifier = CreateEnduranceRegenerationModifier(
+                new SpellEffectIdentity(1u, 200u, 1u),
+                1u,
+                2f);
+            SpellPropertyModifier zeroModifier = CreateEnduranceRegenerationModifier(
+                new SpellEffectIdentity(2u, SourceSpell4Id, 2u),
+                3u,
+                0f);
+
+            Assert.True(entity.AddSpellModifierProperty(ordinaryModifier));
+            Assert.Equal(0.045f, entity.GetPropertyValue(Property.ResourceRegenMultiplier0), 4);
+
+            Assert.True(entity.AddSpellModifierProperty(zeroModifier));
+            Assert.Equal(0f, entity.GetPropertyValue(Property.ResourceRegenMultiplier0));
+
+            Assert.True(entity.RemoveSpellModifierProperty(Property.ResourceRegenMultiplier0, ordinaryModifier.Identity));
+            Assert.Equal(0f, entity.GetPropertyValue(Property.ResourceRegenMultiplier0));
+
+            Assert.True(entity.RemoveSpellModifierProperty(Property.ResourceRegenMultiplier0, zeroModifier.Identity));
+            Assert.Equal(0.0225f, entity.GetPropertyValue(Property.ResourceRegenMultiplier0));
+        }
+
+        [Fact]
+        public void ZeroEnduranceRegenerationModifier_ReapplyingIdentityIsIdempotent()
+        {
+            TestUnitEntity entity = CreateEntity();
+            entity.SetBaseProperty(Property.ResourceRegenMultiplier0, 0.0225f);
+            var identity = new SpellEffectIdentity(1u, SourceSpell4Id, 1u);
+
+            Assert.True(entity.AddSpellModifierProperty(CreateEnduranceRegenerationModifier(identity, 3u, 0f)));
+            Assert.True(entity.AddSpellModifierProperty(CreateEnduranceRegenerationModifier(identity, 3u, 0f)));
+            Assert.Equal(0f, entity.GetPropertyValue(Property.ResourceRegenMultiplier0));
+
+            Assert.True(entity.RemoveSpellModifierProperty(Property.ResourceRegenMultiplier0, identity));
+            Assert.False(entity.RemoveSpellModifierProperty(Property.ResourceRegenMultiplier0, identity));
+            Assert.Equal(0.0225f, entity.GetPropertyValue(Property.ResourceRegenMultiplier0));
+        }
+
+        [Fact]
+        public void AllZeroNonEnduranceProperty_RemainsNoOp()
+        {
+            TestUnitEntity entity = CreateEntity();
+            var identity = new SpellEffectIdentity(1u, SourceSpell4Id, 1u);
+            var modifier = new SpellPropertyModifier(
+                identity,
+                Property.Strength,
+                3u,
+                0f,
+                0f,
+                0f);
+
+            Assert.Empty(modifier.Alterations);
+            Assert.True(entity.AddSpellModifierProperty(modifier));
+            Assert.Equal(10f, entity.GetPropertyValue(Property.Strength));
+
+            Assert.True(entity.RemoveSpellModifierProperty(Property.Strength, identity));
+            Assert.Equal(10f, entity.GetPropertyValue(Property.Strength));
+        }
+
+        [Fact]
         public void FailedCalculation_RollsBackOwnedModifier()
         {
             TestUnitEntity entity = CreateEntity();
@@ -228,6 +311,20 @@ namespace NexusForever.Game.Tests.Entity
                 1u,
                 0f,
                 flatValue,
+                0f);
+        }
+
+        private static SpellPropertyModifier CreateEnduranceRegenerationModifier(
+            SpellEffectIdentity identity,
+            uint priority,
+            float percentage)
+        {
+            return new SpellPropertyModifier(
+                identity,
+                Property.ResourceRegenMultiplier0,
+                priority,
+                percentage,
+                0f,
                 0f);
         }
 

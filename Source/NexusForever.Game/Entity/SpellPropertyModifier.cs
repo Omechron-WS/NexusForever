@@ -45,8 +45,16 @@ namespace NexusForever.Game.Entity
             if (value3 != 0f)
                 Alterations.Add(new PropertyModifier(Property, ModType.FlatValue, value3));
             // Value2 is a Percentage
-            else if (value2 != 0f)
+            else if (value2 != 0f || IsExplicitZeroEnduranceRegenerationMultiplier(value2, value3, value4))
                 Alterations.Add(new PropertyModifier(Property, ModType.Percentage, value2));
+        }
+
+        private bool IsExplicitZeroEnduranceRegenerationMultiplier(float value2, float value3, float value4)
+        {
+            return Property == Property.ResourceRegenMultiplier0
+                && value2 == 0f
+                && value3 == 0f
+                && value4 == 0f;
         }
     }
 }
