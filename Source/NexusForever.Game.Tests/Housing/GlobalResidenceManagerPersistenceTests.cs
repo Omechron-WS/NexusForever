@@ -6,8 +6,12 @@ using NexusForever.Database.Character;
 using NexusForever.Game.Abstract;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Housing;
+using NexusForever.Game.Abstract.Map.Instance;
 using NexusForever.Game.Housing;
 using NexusForever.Game.Static.Housing;
+using NexusForever.Network.Message;
+using NexusForever.Network.Session;
+using NexusForever.Network.World.Message.Model.Housing;
 using NexusForever.Shared;
 
 namespace NexusForever.Game.Tests.Housing
@@ -63,6 +67,197 @@ namespace NexusForever.Game.Tests.Housing
             Assert.Same(failedResidence.Object, manager.GetResidence(failedIdentity));
         }
 
+        [Fact]
+        public void RegisterResidenceVists_ReplayUpsertsCurrentSnapshot()
+        {
+            Identity identity = new() { RealmId = 1, Id = 7ul };
+            string residenceName = "First name";
+            var residence = new Mock<IResidence>();
+            residence.SetupGet(value => value.Identity).Returns(identity);
+            residence.SetupGet(value => value.Name).Returns(() => residenceName);
+            var manager = CreateManager();
+
+            manager.RegisterResidenceVists(residence.Object, "First owner");
+            residenceName = "Current name";
+            manager.RegisterResidenceVists(residence.Object, "Current owner");
+
+            IPublicResidence publicResidence = Assert.Single(manager.GetRandomVisitableResidences());
+            Assert.Equal(identity, publicResidence.Identity);
+            Assert.Equal("Current owner", publicResidence.Owner);
+            Assert.Equal("Current name", publicResidence.Name);
+        }
+
+        [Fact]
+        public void DeregisterResidenceVists_ReplayIsIdempotent()
+        {
+            Identity identity = new() { RealmId = 1, Id = 7ul };
+            var residence = new Mock<IResidence>();
+            residence.SetupGet(value => value.Identity).Returns(identity);
+            var manager = CreateManager();
+            manager.RegisterResidenceVists(residence.Object, "Owner");
+
+            manager.DeregisterResidenceVists(identity);
+            manager.DeregisterResidenceVists(identity);
+
+            Assert.Empty(manager.GetRandomVisitableResidences());
+        }
+
+        [Theory]
+        [InlineData(ResidencePrivacyLevel.Public, true)]
+        [InlineData(ResidencePrivacyLevel.Private, false)]
+        [InlineData(ResidencePrivacyLevel.NeighboursOnly, false)]
+        [InlineData(ResidencePrivacyLevel.RoommatesOnly, false)]
+        public void StoreResidencePath_DerivesPublicIndexFromAuthoritativePrivacy(
+            ResidencePrivacyLevel privacyLevel,
+            bool expectedVisitable)
+        {
+            Identity ownerIdentity = new() { RealmId = 1, Id = 11ul };
+            Identity residenceIdentity = new() { RealmId = 1, Id = 21ul };
+            var player = new Mock<IPlayer>();
+            player.SetupGet(value => value.Identity).Returns(ownerIdentity);
+            player.SetupGet(value => value.Name).Returns("Owner");
+            var residence = new Mock<IResidence>();
+            residence.SetupGet(value => value.Identity).Returns(residenceIdentity);
+            residence.SetupGet(value => value.OwnerIdentity).Returns(ownerIdentity);
+            residence.SetupGet(value => value.Name).Returns("Residence");
+            residence.SetupGet(value => value.PrivacyLevel).Returns(privacyLevel);
+            var residenceFactory = new Mock<IFactory<IResidence>>();
+            residenceFactory.Setup(factory => factory.Resolve()).Returns(residence.Object);
+            var manager = new GlobalResidenceManager(
+                Mock.Of<ILogger<GlobalResidenceManager>>(),
+                Mock.Of<IRealmContext>(),
+                Mock.Of<IDatabaseManager>(),
+                residenceFactory.Object);
+
+            manager.CreateResidence(player.Object);
+
+            Assert.Equal(expectedVisitable, manager.GetRandomVisitableResidences().Any());
+        }
+
+        [Fact]
+        public void ResidenceManager_PublicReplayKeepsIndexCurrentAndResendsBasics()
+        {
+            ResidenceManagerFixture fixture = CreateResidenceManagerFixture();
+
+            fixture.Manager.SetResidencePrivacy(ResidencePrivacyLevel.Public);
+            fixture.Manager.SetResidencePrivacy(ResidencePrivacyLevel.Public);
+
+            Assert.Equal(ResidencePrivacyLevel.Public, fixture.Residence.Object.PrivacyLevel);
+            fixture.GlobalResidenceManager.Verify(manager => manager.RegisterResidenceVists(
+                fixture.Residence.Object, "Owner"), Times.Exactly(2));
+            fixture.GlobalResidenceManager.Verify(manager => manager.DeregisterResidenceVists(
+                It.IsAny<Identity>()), Times.Never);
+            fixture.Session.Verify(session => session.EnqueueMessageEncrypted(
+                It.Is<ServerHousingBasics>(message =>
+                    message.ResidenceId == fixture.Residence.Object.Identity.Id
+                    && message.PrivacyLevel == ServerHousingBasics.ResidencePrivacyLevelFlags.Public)), Times.Exactly(2));
+        }
+
+        [Fact]
+        public void ResidenceManager_PrivateReplayKeepsIndexAbsentAndResendsBasics()
+        {
+            ResidenceManagerFixture fixture = CreateResidenceManagerFixture();
+
+            fixture.Manager.SetResidencePrivacy(ResidencePrivacyLevel.Private);
+            fixture.Manager.SetResidencePrivacy(ResidencePrivacyLevel.Private);
+
+            Assert.Equal(ResidencePrivacyLevel.Private, fixture.Residence.Object.PrivacyLevel);
+            fixture.GlobalResidenceManager.Verify(manager => manager.DeregisterResidenceVists(
+                fixture.Residence.Object.Identity), Times.Exactly(2));
+            fixture.GlobalResidenceManager.Verify(manager => manager.RegisterResidenceVists(
+                It.IsAny<IResidence>(), It.IsAny<string>()), Times.Never);
+            fixture.Session.Verify(session => session.EnqueueMessageEncrypted(
+                It.Is<ServerHousingBasics>(message =>
+                    message.ResidenceId == fixture.Residence.Object.Identity.Id
+                    && message.PrivacyLevel == ServerHousingBasics.ResidencePrivacyLevelFlags.Private)), Times.Exactly(2));
+        }
+
+        [Theory]
+        [InlineData(-1)]
+        [InlineData(1)]
+        [InlineData(2)]
+        [InlineData(4)]
+        public void ResidenceManager_UnsupportedPrivacyResynchronisesWithoutMutation(int rawPrivacy)
+        {
+            ResidenceManagerFixture fixture = CreateResidenceManagerFixture();
+
+            fixture.Manager.SetResidencePrivacy((ResidencePrivacyLevel)rawPrivacy);
+
+            Assert.Equal(ResidencePrivacyLevel.Public, fixture.Residence.Object.PrivacyLevel);
+            fixture.GlobalResidenceManager.Verify(manager => manager.RegisterResidenceVists(
+                It.IsAny<IResidence>(), It.IsAny<string>()), Times.Never);
+            fixture.GlobalResidenceManager.Verify(manager => manager.DeregisterResidenceVists(
+                It.IsAny<Identity>()), Times.Never);
+            fixture.Session.Verify(session => session.EnqueueMessageEncrypted(
+                It.Is<ServerHousingBasics>(message =>
+                    message.ResidenceId == fixture.Residence.Object.Identity.Id
+                    && message.PrivacyLevel == ServerHousingBasics.ResidencePrivacyLevelFlags.Public)), Times.Once);
+        }
+
+        [Fact]
+        public void ResidenceManager_DifferentResidenceMapResynchronisesWithoutMutation()
+        {
+            ResidenceManagerFixture fixture = CreateResidenceManagerFixture(useDifferentPlayerMap: true);
+
+            fixture.Manager.SetResidencePrivacy(ResidencePrivacyLevel.Private);
+
+            Assert.Equal(ResidencePrivacyLevel.Public, fixture.Residence.Object.PrivacyLevel);
+            fixture.GlobalResidenceManager.Verify(manager => manager.RegisterResidenceVists(
+                It.IsAny<IResidence>(), It.IsAny<string>()), Times.Never);
+            fixture.GlobalResidenceManager.Verify(manager => manager.DeregisterResidenceVists(
+                It.IsAny<Identity>()), Times.Never);
+            fixture.Session.Verify(session => session.EnqueueMessageEncrypted(
+                It.IsAny<IWritable>()), Times.Once);
+        }
+
+        [Fact]
+        public void ResidenceManager_BothMapsNullResynchronisesWithoutMutation()
+        {
+            ResidenceManagerFixture fixture = CreateResidenceManagerFixture(useNullMaps: true);
+
+            fixture.Manager.SetResidencePrivacy(ResidencePrivacyLevel.Private);
+
+            Assert.Equal(ResidencePrivacyLevel.Public, fixture.Residence.Object.PrivacyLevel);
+            fixture.GlobalResidenceManager.Verify(manager => manager.RegisterResidenceVists(
+                It.IsAny<IResidence>(), It.IsAny<string>()), Times.Never);
+            fixture.GlobalResidenceManager.Verify(manager => manager.DeregisterResidenceVists(
+                It.IsAny<Identity>()), Times.Never);
+            fixture.Session.Verify(session => session.EnqueueMessageEncrypted(
+                It.IsAny<IWritable>()), Times.Once);
+        }
+
+        [Fact]
+        public void ResidenceManager_DifferentOwnerResynchronisesWithoutMutation()
+        {
+            ResidenceManagerFixture fixture = CreateResidenceManagerFixture(useDifferentOwner: true);
+
+            fixture.Manager.SetResidencePrivacy(ResidencePrivacyLevel.Private);
+
+            Assert.Equal(ResidencePrivacyLevel.Public, fixture.Residence.Object.PrivacyLevel);
+            fixture.GlobalResidenceManager.Verify(manager => manager.RegisterResidenceVists(
+                It.IsAny<IResidence>(), It.IsAny<string>()), Times.Never);
+            fixture.GlobalResidenceManager.Verify(manager => manager.DeregisterResidenceVists(
+                It.IsAny<Identity>()), Times.Never);
+            fixture.Session.Verify(session => session.EnqueueMessageEncrypted(
+                It.IsAny<IWritable>()), Times.Once);
+        }
+
+        [Fact]
+        public void ResidenceManager_CommunityResidenceResynchronisesWithoutMutation()
+        {
+            ResidenceManagerFixture fixture = CreateResidenceManagerFixture(ResidenceType.Community);
+
+            fixture.Manager.SetResidencePrivacy(ResidencePrivacyLevel.Private);
+
+            Assert.Equal(ResidencePrivacyLevel.Public, fixture.Residence.Object.PrivacyLevel);
+            fixture.GlobalResidenceManager.Verify(manager => manager.RegisterResidenceVists(
+                It.IsAny<IResidence>(), It.IsAny<string>()), Times.Never);
+            fixture.GlobalResidenceManager.Verify(manager => manager.DeregisterResidenceVists(
+                It.IsAny<Identity>()), Times.Never);
+            fixture.Session.Verify(session => session.EnqueueMessageEncrypted(
+                It.IsAny<IWritable>()), Times.Once);
+        }
+
         private static Mock<IResidence> CreateResidence(Identity identity, ulong ownerId, Action acknowledged)
         {
             var residence = new Mock<IResidence>();
@@ -77,6 +272,66 @@ namespace NexusForever.Game.Tests.Housing
                 .Callback<CharacterContext, ISaveCommitScope>((_, scope) => scope.Register(acknowledged));
             return residence;
         }
+
+        private static GlobalResidenceManager CreateManager()
+        {
+            return new GlobalResidenceManager(
+                Mock.Of<ILogger<GlobalResidenceManager>>(),
+                Mock.Of<IRealmContext>(),
+                Mock.Of<IDatabaseManager>(),
+                Mock.Of<IFactory<IResidence>>());
+        }
+
+        private static ResidenceManagerFixture CreateResidenceManagerFixture(
+            ResidenceType residenceType = ResidenceType.Residence,
+            bool useDifferentOwner = false,
+            bool useDifferentPlayerMap = false,
+            bool useNullMaps = false)
+        {
+            Identity playerIdentity = new() { RealmId = 1, Id = 11ul };
+            Identity residenceOwnerIdentity = useDifferentOwner
+                ? new Identity { RealmId = 1, Id = 12ul }
+                : playerIdentity;
+            Identity residenceIdentity = new() { RealmId = 1, Id = 21ul };
+            Mock<IResidenceMapInstance> residenceMap = useNullMaps
+                ? null
+                : new Mock<IResidenceMapInstance>();
+            Mock<IResidenceMapInstance> playerMap = useNullMaps
+                ? null
+                : useDifferentPlayerMap
+                    ? new Mock<IResidenceMapInstance>()
+                    : residenceMap;
+            var session = new Mock<IGameSession>();
+            var residence = new Mock<IResidence>();
+            residence.SetupGet(value => value.Identity).Returns(residenceIdentity);
+            residence.SetupGet(value => value.OwnerIdentity).Returns(residenceOwnerIdentity);
+            residence.SetupGet(value => value.Type).Returns(residenceType);
+            residence.SetupGet(value => value.Map).Returns(residenceMap?.Object);
+            residence.SetupProperty(value => value.PrivacyLevel, ResidencePrivacyLevel.Public);
+
+            var player = new Mock<IPlayer>();
+            player.SetupGet(value => value.Identity).Returns(playerIdentity);
+            player.SetupGet(value => value.Name).Returns("Owner");
+            player.SetupGet(value => value.Map).Returns(playerMap?.Object);
+            player.SetupGet(value => value.Session).Returns(session.Object);
+
+            var globalResidenceManager = new Mock<IGlobalResidenceManager>();
+            globalResidenceManager.Setup(manager => manager.GetResidenceByOwner(playerIdentity)).Returns(residence.Object);
+            var manager = new ResidenceManager(globalResidenceManager.Object);
+            manager.Initialise(player.Object);
+
+            return new ResidenceManagerFixture(
+                manager,
+                globalResidenceManager,
+                residence,
+                session);
+        }
+
+        private sealed record ResidenceManagerFixture(
+            ResidenceManager Manager,
+            Mock<IGlobalResidenceManager> GlobalResidenceManager,
+            Mock<IResidence> Residence,
+            Mock<IGameSession> Session);
 
         private static IPlayer CreatePlayer(string name, ulong characterId)
         {

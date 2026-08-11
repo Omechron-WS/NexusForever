@@ -72,7 +72,34 @@ namespace NexusForever.Game.Housing
             if (Residence == null)
                 throw new InvalidOperationException();
 
+            // Neighbour and roommate admission requires relationship authority that is not yet
+            // available. Keep those client values fail closed and resynchronise the current state.
+            if (privacy is not ResidencePrivacyLevel.Public and not ResidencePrivacyLevel.Private)
+            {
+                SendHousingBasics();
+                return;
+            }
+
+            // A player can mutate only their own personal residence while occupying that exact
+            // residence map. Residence.Map is the authoritative instance association.
+            if (Residence.Type != ResidenceType.Residence
+                || Residence.OwnerIdentity != owner.Identity
+                || Residence.Map == null
+                || !ReferenceEquals(Residence.Map, owner.Map))
+            {
+                SendHousingBasics();
+                return;
+            }
+
             Residence.PrivacyLevel = privacy;
+
+            // Keep the derived public index in the same world-thread transition as the
+            // authoritative residence state. Both operations are deliberately idempotent.
+            if (privacy == ResidencePrivacyLevel.Public)
+                globalResidenceManager.RegisterResidenceVists(Residence, owner.Name);
+            else
+                globalResidenceManager.DeregisterResidenceVists(Residence.Identity);
+
             SendHousingBasics();
         }
 

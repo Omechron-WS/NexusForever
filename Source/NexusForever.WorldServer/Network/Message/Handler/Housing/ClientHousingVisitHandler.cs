@@ -63,19 +63,10 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Housing
                 return;
             }
 
-            switch (residence.PrivacyLevel)
-            {
-                case ResidencePrivacyLevel.Private:
-                {
-                    // TODO: show error
-                    return;
-                }
-                // TODO: check if player is either a neighbour or roommate
-                case ResidencePrivacyLevel.NeighboursOnly:
-                    break;
-                case ResidencePrivacyLevel.RoommatesOnly:
-                    break;
-            }
+            bool isOwner = residence.Type == ResidenceType.Residence
+                && residence.OwnerIdentity == session.Player.Identity;
+            if (!isOwner && residence.PrivacyLevel != ResidencePrivacyLevel.Public)
+                return;
 
             IMapLock mapLock = mapLockManager.GetResidenceLock(residence.Parent ?? residence);
 

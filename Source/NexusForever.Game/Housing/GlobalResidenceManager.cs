@@ -370,12 +370,12 @@ namespace NexusForever.Game.Housing
         /// </summary>
         public void RegisterResidenceVists(IResidence residence, string name)
         {
-            visitableResidences.Add(residence.Identity, new PublicResidence
+            visitableResidences[residence.Identity] = new PublicResidence
             {
                 Identity    = residence.Identity,
                 Owner       = name,
                 Name        = residence.Name
-            });
+            };
         }
 
         /// <summary>

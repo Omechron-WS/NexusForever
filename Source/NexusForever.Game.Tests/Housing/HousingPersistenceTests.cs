@@ -51,6 +51,86 @@ namespace NexusForever.Game.Tests.Housing
         }
 
         [Fact]
+        public void Residence_PrivacySaveWithoutAcknowledgementRetainsDirtyState()
+        {
+            Residence residence = CreateResidence();
+            residence.PrivacyLevel = ResidencePrivacyLevel.Private;
+
+            using (CharacterContext context = CreateContext())
+                residence.Save(context, new SaveCommitScope());
+
+            using CharacterContext retryContext = CreateContext();
+            residence.Save(retryContext, new SaveCommitScope());
+
+            ResidenceModel model = Assert.Single(retryContext.ChangeTracker.Entries<ResidenceModel>()).Entity;
+            Assert.Equal(ResidencePrivacyLevel.Private, model.PrivacyLevel);
+        }
+
+        [Fact]
+        public void Residence_ConcurrentPrivacyMutationSurvivesAcknowledgement()
+        {
+            Residence residence = CreateResidence();
+            residence.PrivacyLevel = ResidencePrivacyLevel.Private;
+            var scope = new SaveCommitScope();
+
+            using (CharacterContext context = CreateContext())
+                residence.Save(context, scope);
+            residence.PrivacyLevel = ResidencePrivacyLevel.Public;
+            scope.CreateAcknowledgement().Acknowledge();
+
+            using CharacterContext retryContext = CreateContext();
+            residence.Save(retryContext, new SaveCommitScope());
+
+            ResidenceModel model = Assert.Single(retryContext.ChangeTracker.Entries<ResidenceModel>()).Entity;
+            Assert.Equal(ResidencePrivacyLevel.Public, model.PrivacyLevel);
+        }
+
+        [Fact]
+        public void Residence_SamePrivacyReplayDoesNotDirtyState()
+        {
+            Residence residence = CreateResidence();
+
+            residence.PrivacyLevel = ResidencePrivacyLevel.Public;
+
+            using CharacterContext context = CreateContext();
+            residence.Save(context, new SaveCommitScope());
+            Assert.Empty(context.ChangeTracker.Entries<ResidenceModel>());
+        }
+
+        [Theory]
+        [InlineData(-1)]
+        [InlineData(4)]
+        public void Residence_UndefinedPrivacyMutationIsRejected(int rawPrivacy)
+        {
+            Residence residence = CreateResidence();
+
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                residence.PrivacyLevel = (ResidencePrivacyLevel)rawPrivacy);
+
+            Assert.Equal(ResidencePrivacyLevel.Public, residence.PrivacyLevel);
+        }
+
+        [Theory]
+        [InlineData(-1)]
+        [InlineData(4)]
+        public void Residence_CorruptPersistedPrivacyIsRejected(int rawPrivacy)
+        {
+            Assert.Throws<DatabaseDataException>(() => CreateResidence((ResidencePrivacyLevel)rawPrivacy));
+        }
+
+        [Theory]
+        [InlineData(ResidencePrivacyLevel.Public)]
+        [InlineData(ResidencePrivacyLevel.Private)]
+        [InlineData(ResidencePrivacyLevel.NeighboursOnly)]
+        [InlineData(ResidencePrivacyLevel.RoommatesOnly)]
+        public void Residence_KnownPersistedPrivacyLoads(ResidencePrivacyLevel privacyLevel)
+        {
+            Residence residence = CreateResidence(privacyLevel);
+
+            Assert.Equal(privacyLevel, residence.PrivacyLevel);
+        }
+
+        [Fact]
         public void Decor_SuccessfulAcknowledgementClearsUnchangedDirtyState()
         {
             Decor decor = CreateDecor();
@@ -131,7 +211,7 @@ namespace NexusForever.Game.Tests.Housing
             Assert.Equal(BuildState.Complete, model.BuildState);
         }
 
-        private static Residence CreateResidence()
+        private static Residence CreateResidence(ResidencePrivacyLevel privacyLevel = ResidencePrivacyLevel.Public)
         {
             var realmContext = new Mock<IRealmContext>();
             realmContext.SetupGet(realm => realm.RealmId).Returns(1);
@@ -145,7 +225,8 @@ namespace NexusForever.Game.Tests.Housing
                 Id             = 1ul,
                 OwnerId        = 2ul,
                 PropertyInfoId = PropertyInfoId.Residence,
-                Name           = "Original"
+                Name           = "Original",
+                PrivacyLevel   = privacyLevel
             });
             return residence;
         }

@@ -91,8 +91,11 @@ namespace NexusForever.Game.Housing
             get => privacyLevel;
             set
             {
-                if (value > ResidencePrivacyLevel.Private)
-                    throw new ArgumentOutOfRangeException();
+                if (value < ResidencePrivacyLevel.Public || value > ResidencePrivacyLevel.Private)
+                    throw new ArgumentOutOfRangeException(nameof(value), value, "Unknown residence privacy level.");
+
+                if (privacyLevel == value)
+                    return;
 
                 privacyLevel = value;
                 saveMask.Mark(ResidenceSaveMask.PrivacyLevel);
@@ -313,6 +316,9 @@ namespace NexusForever.Game.Housing
         {
             if (Identity != null)
                 throw new InvalidOperationException("Residence is already initialised.");
+
+            if (model.PrivacyLevel < ResidencePrivacyLevel.Public || model.PrivacyLevel > ResidencePrivacyLevel.Private)
+                throw new DatabaseDataException($"Residence {model.Id} has invalid privacy level {(int)model.PrivacyLevel}!");
 
             Identity = new Identity
             {
