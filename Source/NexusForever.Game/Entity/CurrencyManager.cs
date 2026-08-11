@@ -5,14 +5,18 @@ using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Persistence;
 using NexusForever.Game.Static.Entity;
+using NexusForever.Game.Static.Quest;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
 using NexusForever.Network.World.Message.Model;
+using NLog;
 
 namespace NexusForever.Game.Entity
 {
     public class CurrencyManager : ICurrencyManager
     {
+        private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+
         private IPlayer player;
         private readonly Dictionary<CurrencyType, ICurrency> currencies = [];
 
@@ -106,11 +110,44 @@ namespace NexusForever.Game.Entity
             if (!currencies.TryGetValue((CurrencyType)currencyEntry.Id, out ICurrency currency))
                 currency = CurrencyCreate(currencyEntry);
 
-            amount += currency.Amount;
-            if (currency.Entry.CapAmount > 0)
-                amount = Math.Min(amount, currency.Entry.CapAmount);
+            ulong previousAmount = currency.Amount;
+            ulong updatedAmount;
+            if (currency.Entry.CapAmount > 0uL)
+            {
+                if (previousAmount >= currency.Entry.CapAmount)
+                    updatedAmount = previousAmount;
+                else
+                    updatedAmount = previousAmount + Math.Min(amount, currency.Entry.CapAmount - previousAmount);
+            }
+            else
+                updatedAmount = checked(previousAmount + amount);
 
-            CurrencyAmountUpdate(currency, amount, isLoot);
+            try
+            {
+                CurrencyAmountUpdate(currency, updatedAmount, isLoot);
+            }
+            finally
+            {
+                NotifyCurrencyGranted(currency, previousAmount);
+            }
+        }
+
+        private void NotifyCurrencyGranted(ICurrency currency, ulong previousAmount)
+        {
+            if (currency == null || player == null || currency.Amount <= previousAmount)
+                return;
+
+            ulong grantedAmount = currency.Amount - previousAmount;
+            uint progress = (uint)Math.Min(grantedAmount, uint.MaxValue);
+
+            try
+            {
+                player.QuestManager?.ObjectiveUpdate(QuestObjectiveType.EarnCurrency, (uint)currency.Id, progress);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to update EarnCurrency quest objectives for currency {currency.Id} after granting {grantedAmount}.");
+            }
         }
 
         private ICurrency CurrencyCreate(CurrencyTypeEntry currencyEntry)
