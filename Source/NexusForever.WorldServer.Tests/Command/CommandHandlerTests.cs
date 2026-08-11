@@ -13,16 +13,22 @@ namespace NexusForever.WorldServer.Tests.Command
 {
     public sealed class CommandHandlerTests
     {
+        private const string CommandFailureMessage = "Something went wrong :(";
+        private const string ConverterExceptionDetail = "sensitive converter exception detail";
+        private const string HandlerExceptionDetail = "sensitive handler exception detail";
+
         [Fact]
         public void Invoke_ExactZeroParameterCommand_InvokesHandler()
         {
             var target = new InvocationCategory();
+            var context = new TestCommandContext();
             CommandHandler handler = CreateHandler(target, nameof(InvocationCategory.HandleNoParameters));
 
-            CommandResult result = handler.Invoke(new TestCommandContext(), new ParameterQueue([]));
+            CommandResult result = handler.Invoke(context, new ParameterQueue([]));
 
             Assert.Equal(CommandResult.Ok, result);
             Assert.Equal(1, target.InvocationCount);
+            Assert.Empty(context.Errors);
         }
 
         [Fact]
@@ -112,6 +118,43 @@ namespace NexusForever.WorldServer.Tests.Command
             Assert.Null(target.VectorValue);
         }
 
+        [Fact]
+        public void Invoke_ThrowingHandler_SendsOneGenericErrorAndSubsequentHandlerRuns()
+        {
+            var target = new InvocationCategory();
+            var context = new TestCommandContext();
+            CommandHandler throwingHandler = CreateHandler(target, nameof(InvocationCategory.HandleThrowing));
+            CommandHandler succeedingHandler = CreateHandler(target, nameof(InvocationCategory.HandleNoParameters));
+
+            CommandResult failureResult = throwingHandler.Invoke(context, new ParameterQueue([]));
+            CommandResult succeedingResult = succeedingHandler.Invoke(context, new ParameterQueue([]));
+
+            Assert.Equal(CommandResult.Ok, failureResult);
+            Assert.Equal(CommandResult.Ok, succeedingResult);
+            Assert.Equal(1, target.InvocationCount);
+            Assert.Equal([CommandFailureMessage], context.Errors);
+            Assert.DoesNotContain(HandlerExceptionDetail, context.Errors[0]);
+        }
+
+        [Fact]
+        public void Invoke_ThrowingConverter_SendsOneGenericErrorWithoutInvokingHandler()
+        {
+            var target = new InvocationCategory();
+            var context = new TestCommandContext();
+            CommandHandler handler = CreateHandler(
+                target,
+                nameof(InvocationCategory.HandleString),
+                new CommandHandler.CommandParameter(typeof(string), new ThrowingParameterConverter(), false));
+
+            CommandResult result = handler.Invoke(context, new ParameterQueue(["value"]));
+
+            Assert.Equal(CommandResult.Ok, result);
+            Assert.Equal(0, target.InvocationCount);
+            Assert.Null(target.StringValue);
+            Assert.Equal([CommandFailureMessage], context.Errors);
+            Assert.DoesNotContain(ConverterExceptionDetail, context.Errors[0]);
+        }
+
         private static CommandHandler CreateHandler(
             InvocationCategory target,
             string methodName,
@@ -160,6 +203,19 @@ namespace NexusForever.WorldServer.Tests.Command
                 InvocationCount++;
                 VectorValue = value;
             }
+
+            public void HandleThrowing(ICommandContext context)
+            {
+                throw new InvalidOperationException(HandlerExceptionDetail);
+            }
+        }
+
+        private sealed class ThrowingParameterConverter : IParameterConvert
+        {
+            public object Convert(ICommandContext context, ParameterQueue queue)
+            {
+                throw new InvalidOperationException(ConverterExceptionDetail);
+            }
         }
 
         private sealed class TestCommandContext : ICommandContext
@@ -170,12 +226,17 @@ namespace NexusForever.WorldServer.Tests.Command
             public Language Language { get; } = Language.English;
             public ImmutableHashSet<Permission> Permissions { get; } = [];
 
+            public List<string> Messages { get; } = [];
+            public List<string> Errors { get; } = [];
+
             public void SendMessage(string message)
             {
+                Messages.Add(message);
             }
 
             public void SendError(string message)
             {
+                Errors.Add(message);
             }
 
             public T GetTargetOrInvoker<T>() where T : IWorldEntity

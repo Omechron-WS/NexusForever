@@ -9,11 +9,16 @@ using NexusForever.Game.Static.RBAC;
 using NexusForever.WorldServer.Command.Context;
 using NexusForever.WorldServer.Command.Convert;
 using NexusForever.WorldServer.Command.Static;
+using NLog;
 
 namespace NexusForever.WorldServer.Command
 {
     public class CommandHandler : ICommandHandler
     {
+        private const string CommandFailureMessage = "Something went wrong :(";
+
+        private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+
         public class CommandParameter
         {
             public Type Type { get; }
@@ -199,7 +204,13 @@ namespace NexusForever.WorldServer.Command
             }
             catch (Exception exception)
             {
-                context.SendError(exception.ToString());
+                Exception logException = exception is TargetInvocationException { InnerException: not null } invocationException
+                    ? invocationException.InnerException
+                    : exception;
+                log.Error(
+                    logException,
+                    $"Command handler {methodContainer.Method.DeclaringType?.FullName}.{methodContainer.Method.Name} failed.");
+                context.SendError(CommandFailureMessage);
             }
 
             return CommandResult.Ok;
