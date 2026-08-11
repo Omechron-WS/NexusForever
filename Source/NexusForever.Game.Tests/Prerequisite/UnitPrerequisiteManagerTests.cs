@@ -107,6 +107,83 @@ namespace NexusForever.Game.Tests.Prerequisite
         }
 
         [Fact]
+        public void DeadStateRows_ReevaluateWhileInvalidAndMixedShapesRemainGated()
+        {
+            PrerequisiteEntry aliveAndOutOfCombat = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 0u, 0u),
+                (PrerequisiteType.InCombat, PrerequisiteComparison.NotEqual, 0u, 0u));
+            PrerequisiteEntry deadOrInCombat = CreateEntry(
+                2u,
+                EvaluationMode.EvaluateOR,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 1u, 0u),
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
+            PrerequisiteEntry invalidValue = CreateEntry(
+                3u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 2u, 0u));
+            PrerequisiteEntry invalidObject = CreateEntry(
+                4u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 0u, 1u));
+            PrerequisiteEntry mixedPlayerOnly = CreateEntry(
+                5u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 0u, 0u),
+                (PrerequisiteType.Race, PrerequisiteComparison.Equal, 1u, 0u));
+            PrerequisiteEntry malformedInactive = CreateEntry(
+                6u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 0u, 0u));
+            malformedInactive.Value[1] = 1u;
+            using var context = new ManagerContext(
+                aliveAndOutOfCombat,
+                deadOrInCombat,
+                invalidValue,
+                invalidObject,
+                mixedPlayerOnly,
+                malformedInactive);
+            bool isAlive = true;
+            Mock<IUnitEntity> unit = CreateUnit(
+                alive: () => isAlive,
+                inCombat: () => false);
+
+            Assert.True(context.Manager.CanEvaluateForUnit(aliveAndOutOfCombat.Id));
+            Assert.True(context.Manager.TryMeets(
+                unit.Object,
+                aliveAndOutOfCombat.Id,
+                out bool meets));
+            Assert.True(meets);
+            Assert.True(context.Manager.CanEvaluateForUnit(deadOrInCombat.Id));
+            Assert.True(context.Manager.TryMeets(unit.Object, deadOrInCombat.Id, out meets));
+            Assert.False(meets);
+
+            isAlive = false;
+
+            Assert.True(context.Manager.TryMeets(
+                unit.Object,
+                aliveAndOutOfCombat.Id,
+                out meets));
+            Assert.False(meets);
+            Assert.True(context.Manager.TryMeets(unit.Object, deadOrInCombat.Id, out meets));
+            Assert.True(meets);
+
+            foreach (uint prerequisiteId in new[]
+            {
+                invalidValue.Id,
+                invalidObject.Id,
+                mixedPlayerOnly.Id,
+                malformedInactive.Id
+            })
+            {
+                Assert.False(context.Manager.CanEvaluateForUnit(prerequisiteId));
+                Assert.False(context.Manager.TryMeets(unit.Object, prerequisiteId, out meets));
+                Assert.False(meets);
+            }
+        }
+
+        [Fact]
         public void TableBackedFactionOutsideLocalEnum_RemainsUnitSafe()
         {
             const uint factionId = 170u;
@@ -172,6 +249,28 @@ namespace NexusForever.Game.Tests.Prerequisite
 
             Exception exception = Record.Exception(() =>
             {
+                Assert.False(context.Manager.TryMeets(unit.Object, entry.Id, out bool meets));
+                Assert.False(meets);
+            });
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
+        public void DeadStateReadException_IsContainedAsEvaluationFailure()
+        {
+            PrerequisiteEntry entry = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 0u, 0u));
+            using var context = new ManagerContext(entry);
+            var unit = new Mock<IUnitEntity>();
+            unit.SetupGet(entity => entity.IsAlive)
+                .Throws(new InvalidOperationException("Test unit death-state read failure."));
+
+            Exception exception = Record.Exception(() =>
+            {
+                Assert.True(context.Manager.CanEvaluateForUnit(entry.Id));
                 Assert.False(context.Manager.TryMeets(unit.Object, entry.Id, out bool meets));
                 Assert.False(meets);
             });
@@ -246,11 +345,13 @@ namespace NexusForever.Game.Tests.Prerequisite
             uint level = 1u,
             Faction faction = Faction.Dominion,
             float? resource1 = null,
+            Func<bool> alive = null,
             Func<bool> inCombat = null)
         {
             var unit = new Mock<IUnitEntity>();
             unit.SetupGet(entity => entity.Level).Returns(level);
             unit.SetupGet(entity => entity.Faction1).Returns(faction);
+            unit.SetupGet(entity => entity.IsAlive).Returns(() => alive?.Invoke() ?? true);
             unit.SetupGet(entity => entity.InCombat).Returns(() => inCombat?.Invoke() ?? false);
             unit.Setup(entity => entity.TryGetVitalValue(
                     It.IsAny<Vital>(),
@@ -362,6 +463,7 @@ namespace NexusForever.Game.Tests.Prerequisite
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckVital>(PrerequisiteType.Vital)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckBaseFaction>(PrerequisiteType.BaseFaction)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckInCombat>(PrerequisiteType.InCombat)
+                    .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDeadState>(PrerequisiteType.DeadState)
                     .BuildServiceProvider();
 
                 Manager = new PrerequisiteManager(

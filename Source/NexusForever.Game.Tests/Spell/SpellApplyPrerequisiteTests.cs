@@ -72,6 +72,45 @@ namespace NexusForever.Game.Tests.Spell
             }
         }
 
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void LegacyCasterCast_DeadStateUsesPlayerPrerequisiteCheck(bool isAlive)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 0u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterAlive = isAlive
+            };
+            Mock<IUnitEntity> target = context.CreateTarget(10u);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u),
+                casterCastPrerequisite: prerequisite,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            spell.Update(0d);
+
+            if (isAlive)
+            {
+                Assert.Empty(context.SessionPackets.OfType<ServerSpellCastResult>());
+                Assert.Single(context.Invocations);
+                Assert.Single(context.Packets.OfType<ServerSpellGo>());
+            }
+            else
+            {
+                ServerSpellCastResult result = Assert.Single(
+                    context.SessionPackets.OfType<ServerSpellCastResult>());
+                Assert.Equal(CastResult.PrereqCasterCast, result.CastResult);
+                Assert.Empty(context.Invocations);
+                Assert.Empty(context.Packets.OfType<ServerSpellStart>());
+                Assert.Empty(context.Packets.OfType<ServerSpellGo>());
+            }
+        }
+
         [Fact]
         public void TargetCast_LevelUsesExactVisibleTarget()
         {
@@ -180,6 +219,74 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Single(context.Invocations);
             Assert.Empty(context.SessionPackets);
             npc.VerifyGet(unit => unit.InCombat, Times.Once);
+        }
+
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(true, true)]
+        public void TargetCast_DeadStateUsesExactVisibleTarget(
+            bool targetIsAlive,
+            bool expectedFailure)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 1u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            Mock<IUnitEntity> target = context.CreateTarget(
+                42u,
+                alive: () => targetIsAlive);
+            context.Caster.Setup(unit => unit.GetVisible<IWorldEntity>(42u))
+                .Returns(target.Object);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u),
+                targetCastPrerequisite: prerequisite,
+                primaryTargetId: 42u,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            spell.Update(0d);
+
+            if (expectedFailure)
+            {
+                AssertTargetCastFailure(context, spell);
+            }
+            else
+            {
+                Assert.False(spell.IsFinishing);
+                Assert.Single(context.Invocations);
+                Assert.Single(context.Packets.OfType<ServerSpellGo>());
+            }
+
+            target.VerifyGet(unit => unit.IsAlive, Times.AtLeastOnce);
+        }
+
+        [Fact]
+        public void TargetCast_DeadStateSupportsNonPlayerCaster()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 1u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            Mock<IUnitEntity> target = context.CreateTarget(42u, alive: () => false);
+            Mock<IUnitEntity> npc = context.CreateTarget(50u);
+            npc.Setup(unit => unit.GetVisible<IWorldEntity>(42u))
+                .Returns(target.Object);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u),
+                targetCastPrerequisite: prerequisite,
+                primaryTargetId: 42u,
+                caster: npc.Object,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            spell.Update(0d);
+
+            Assert.False(spell.IsFinishing);
+            Assert.Single(context.Invocations);
+            Assert.Empty(context.SessionPackets);
+            target.VerifyGet(unit => unit.IsAlive, Times.AtLeastOnce);
         }
 
         [Theory]
@@ -424,6 +531,49 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Empty(context.Packets.OfType<Server07F8>());
         }
 
+        [Theory]
+        [InlineData(false, false, false)]
+        [InlineData(true, true, false)]
+        [InlineData(true, false, true)]
+        public void UnitApply_DeadStateChecksLivingCasterAndDeadTarget(
+            bool casterIsAlive,
+            bool targetIsAlive,
+            bool expectedInvocation)
+        {
+            PrerequisiteEntry livingPrerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 0u, 0u));
+            PrerequisiteEntry deadPrerequisite = CreateEntry(
+                2u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 1u, 0u));
+            using var context = new SpellPrerequisiteContext(
+                livingPrerequisite,
+                deadPrerequisite)
+            {
+                CasterAlive = casterIsAlive
+            };
+            Mock<IUnitEntity> target = context.CreateTarget(
+                10u,
+                alive: () => targetIsAlive);
+            Spell4EffectsEntry effect = CreateEffect(
+                1u,
+                casterPrerequisite: livingPrerequisite.Id,
+                targetPrerequisite: deadPrerequisite.Id);
+            TestApplyPrerequisiteSpell spell = context.CreateSpell(
+                effect,
+                (SpellEffectTargetFlags.Target, target.Object));
+
+            spell.ExecuteForTest();
+
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Invocations.Count);
+            Assert.Equal(
+                expectedInvocation ? 1 : 0,
+                Assert.Single(context.Packets.OfType<ServerSpellGo>()).TargetInfoData.Count);
+            Assert.Empty(context.Packets.OfType<Server07F8>());
+        }
+
         [Fact]
         public void DelayedTargetApply_InCombatReevaluatesAtActivationTime()
         {
@@ -448,6 +598,36 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Empty(context.Invocations);
 
             targetInCombat = true;
+            spell.Update(0.1d);
+
+            Assert.Single(context.Invocations);
+            Assert.Single(context.Packets.OfType<Server07F8>());
+        }
+
+        [Fact]
+        public void DelayedTargetApply_DeadStateReevaluatesAtActivationTime()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 1u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            bool targetIsAlive = true;
+            Mock<IUnitEntity> target = context.CreateTarget(
+                10u,
+                alive: () => targetIsAlive);
+            Spell4EffectsEntry effect = CreateEffect(
+                1u,
+                targetPrerequisite: prerequisite.Id,
+                delayTime: 100u);
+            TestApplyPrerequisiteSpell spell = context.CreateSpell(
+                effect,
+                (SpellEffectTargetFlags.Target, target.Object));
+
+            spell.ExecuteForTest();
+            Assert.Empty(context.Invocations);
+
+            targetIsAlive = false;
             spell.Update(0.1d);
 
             Assert.Single(context.Invocations);
@@ -491,6 +671,48 @@ namespace NexusForever.Game.Tests.Spell
                 targetInCombat = false;
             else
                 context.CasterInCombat = false;
+
+            spell.Update(0.1d);
+
+            Assert.True(spell.IsFinishing);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<ServerSpellGo>());
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void SpellPersistence_DeadStateReevaluatesCasterOrTarget(bool targetPersistence)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 0u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            bool targetIsAlive = true;
+            Mock<IUnitEntity> target = context.CreateTarget(
+                42u,
+                alive: () => targetIsAlive);
+            if (targetPersistence)
+            {
+                context.Caster
+                    .Setup(unit => unit.GetVisible<IWorldEntity>(target.Object.Guid))
+                    .Returns(target.Object);
+            }
+
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                CreateEffect(1u, delayTime: 100u),
+                casterPersistencePrerequisite: targetPersistence ? 0u : prerequisite.Id,
+                targetPersistencePrerequisite: targetPersistence ? prerequisite.Id : 0u,
+                primaryTargetId: targetPersistence ? target.Object.Guid : 0u,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+            spell.Cast();
+            Assert.True(spell.IsCasting);
+
+            if (targetPersistence)
+                targetIsAlive = false;
+            else
+                context.CasterAlive = false;
 
             spell.Update(0.1d);
 
@@ -593,15 +815,20 @@ namespace NexusForever.Game.Tests.Spell
         }
 
         [Theory]
-        [InlineData(0)]
-        [InlineData(1)]
-        [InlineData(2)]
-        public void InCombatEffectPersistenceOrSuspendPrerequisite_RemainsGated(int field)
+        [InlineData(PrerequisiteType.InCombat, 0)]
+        [InlineData(PrerequisiteType.InCombat, 1)]
+        [InlineData(PrerequisiteType.InCombat, 2)]
+        [InlineData(PrerequisiteType.DeadState, 0)]
+        [InlineData(PrerequisiteType.DeadState, 1)]
+        [InlineData(PrerequisiteType.DeadState, 2)]
+        public void UnitSafeEffectPersistenceOrSuspendPrerequisite_RemainsGated(
+            PrerequisiteType type,
+            int field)
         {
             PrerequisiteEntry prerequisite = CreateEntry(
                 1u,
                 EvaluationMode.EvaluateAND,
-                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
+                (type, PrerequisiteComparison.Equal, 0u, 0u));
             using var context = new SpellPrerequisiteContext(prerequisite)
             {
                 CasterInCombat = true
@@ -776,6 +1003,37 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Equal(1, context.InvocationAttempts);
             Assert.Empty(context.Packets.OfType<Server07F8>());
             Assert.Empty(Assert.Single(context.Packets.OfType<ServerSpellGo>()).TargetInfoData);
+        }
+
+        [Fact]
+        public void DeadOnlyCasterPersistence_RejectsLivingCasterBeforeStart()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.DeadState, PrerequisiteComparison.Equal, 1u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterAlive = true
+            };
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                CreateEffect(1u, cost: 10u),
+                casterPersistencePrerequisite: prerequisite.Id,
+                targets: [(SpellEffectTargetFlags.Target, context.Caster.Object)]);
+
+            spell.Cast();
+            spell.Update(0d);
+            spell.LateUpdate(0d);
+
+            Assert.True(spell.IsFinished);
+            ServerSpellCastResult result = Assert.Single(
+                context.SessionPackets.OfType<ServerSpellCastResult>());
+            Assert.Equal(CastResult.PrereqCasterPersistence, result.CastResult);
+            Assert.Empty(context.CostMutations);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<ServerSpellStart>());
+            Assert.Empty(context.Packets.OfType<ServerSpellGo>());
+            Assert.Empty(context.Packets.OfType<ServerSpellFinish>());
         }
 
         [Fact]
@@ -1280,6 +1538,7 @@ namespace NexusForever.Game.Tests.Spell
             public int CasterLevelReads { get; private set; }
             public int CasterVitalReads { get; private set; }
             public Faction CasterFaction { get; set; } = Faction.Exile;
+            public bool CasterAlive { get; set; } = true;
             public bool CasterInCombat { get; set; }
             public float CasterResource0 { get; set; } = 100f;
             public float CasterResource1 { get; set; } = 100f;
@@ -1329,6 +1588,7 @@ namespace NexusForever.Game.Tests.Spell
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckVital>(PrerequisiteType.Vital);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckBaseFaction>(PrerequisiteType.BaseFaction);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckInCombat>(PrerequisiteType.InCombat);
+                services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDeadState>(PrerequisiteType.DeadState);
                 services.AddSingleton<PrerequisiteManager>();
                 services.AddSingleton<IPrerequisiteManager>(provider => provider.GetRequiredService<PrerequisiteManager>());
                 serviceProvider = services.BuildServiceProvider();
@@ -1336,7 +1596,7 @@ namespace NexusForever.Game.Tests.Spell
 
                 var spellManager = new Mock<ISpellManager>();
                 Caster.SetupGet(entity => entity.Guid).Returns(7u);
-                Caster.SetupGet(entity => entity.IsAlive).Returns(true);
+                Caster.SetupGet(entity => entity.IsAlive).Returns(() => CasterAlive);
                 Caster.SetupGet(entity => entity.InWorld).Returns(true);
                 Caster.SetupGet(entity => entity.Map).Returns(Map.Object);
                 Caster.SetupGet(entity => entity.IsLoading).Returns(false);
