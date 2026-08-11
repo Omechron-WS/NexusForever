@@ -8,6 +8,7 @@ using NexusForever.Game.Abstract.Entity.Movement.Generator;
 using NexusForever.Game.Abstract.Map;
 using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Static.Entity;
+using NexusForever.Game.Static.Entity.Movement.Spline;
 using NexusForever.Game.Static.Spell;
 using NexusForever.Network.World.Entity;
 using NexusForever.Script.Template;
@@ -672,10 +673,63 @@ namespace NexusForever.Script.Main.AI
             directMovementGenerator.Begin = begin;
             directMovementGenerator.Final = final;
             directMovementGenerator.Map = attachedMap;
-            owner.MovementManager.LaunchGenerator(directMovementGenerator, speed);
-            aiMovementActive = true;
+
+            // LaunchGenerator is a no-op without server control, while the AI still records the request as
+            // issued. Preserve that ownership contract without calculating a path that would not be launched.
+            if (!owner.MovementManager.ServerControl)
+            {
+                aiMovementActive = true;
+                aiMovementIssued = true;
+                facingTargetGuid = null;
+                return;
+            }
+
+            List<Vector3> nodes;
+            try
+            {
+                nodes = directMovementGenerator.CalculatePath();
+            }
+            catch (Exception exception)
+            {
+                log.LogError(
+                    exception,
+                    "Creature {CreatureId} ({Guid}) failed to calculate its AI movement path.",
+                    owner.CreatureId,
+                    owner.Guid);
+                return;
+            }
+
+            if (nodes == null || nodes.Count < 2 || nodes.Any(node => !IsFinite(node)))
+            {
+                log.LogError(
+                    "Creature {CreatureId} ({Guid}) generated an invalid AI movement path.",
+                    owner.CreatureId,
+                    owner.Guid);
+                return;
+            }
+
             aiMovementIssued = true;
+            movementCleanupPending = true;
+            aiMovementActive = false;
             facingTargetGuid = null;
+
+            try
+            {
+                owner.MovementManager.LaunchSpline(nodes, SplineType.Linear, SplineMode.OneShot, speed);
+            }
+            catch (Exception exception)
+            {
+                log.LogError(
+                    exception,
+                    "Creature {CreatureId} ({Guid}) failed to launch its AI movement path.",
+                    owner.CreatureId,
+                    owner.Guid);
+                ProcessMovementCleanup();
+                return;
+            }
+
+            movementCleanupPending = false;
+            aiMovementActive = true;
         }
 
         private bool RequestStopAiMovement()

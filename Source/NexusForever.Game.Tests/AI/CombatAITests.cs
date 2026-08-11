@@ -11,6 +11,7 @@ using NexusForever.Game.Abstract.Entity.Movement.Generator;
 using NexusForever.Game.Abstract.Map;
 using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Static.Entity;
+using NexusForever.Game.Static.Entity.Movement.Spline;
 using NexusForever.Game.Static.Spell;
 using NexusForever.Network.Session;
 using NexusForever.Script.Main.AI;
@@ -143,6 +144,196 @@ namespace NexusForever.Game.Tests.AI
             target.Position = new Vector3(11.1f, 0f, 0f);
             harness.AI.Update(0.01d);
             Assert.Equal(3, harness.MovementLaunches.Count);
+        }
+
+        [Fact]
+        public void ServerControlDisabled_PreservesMovementNoOpWithoutCalculatingPath()
+        {
+            var harness = new CombatAIHarness
+            {
+                ServerControl = false,
+                PathGenerationFailuresRemaining = 1
+            };
+            TargetHarness target = harness.AddTarget(2u, new Vector3(10f, 0f, 0f));
+            harness.AddThreat(target, 10u);
+
+            harness.AI.Update(0.1d);
+
+            Assert.Equal(0, harness.PathGenerationCount);
+            Assert.Equal(1, harness.PathGenerationFailuresRemaining);
+            Assert.Empty(harness.MovementLaunches);
+            Assert.Empty(harness.MovementOperations);
+            Assert.Equal(2u, harness.TargetGuid);
+            Assert.True(harness.ThreatManager.IsThreatened);
+
+            harness.AI.Update(double.NaN);
+
+            Assert.Equal(1, harness.StopMovementCount);
+            Assert.Equal(1, harness.MoveDefaultsCount);
+            Assert.Equal(1, harness.StateDefaultCount);
+        }
+
+        [Fact]
+        public void PathGenerationException_PreservesExistingMovementAndRetriesOnCadence()
+        {
+            var harness = CreateChasingHarness();
+            TargetHarness target = harness.GetTarget(2u);
+            target.Position = new Vector3(11.1f, 0f, 0f);
+            harness.PathGenerationFailuresRemaining = 1;
+            harness.MovementOperations.Clear();
+
+            Exception exception = Record.Exception(() => harness.AI.Update(0.01d));
+
+            Assert.Null(exception);
+            Assert.Equal(2, harness.PathGenerationCount);
+            Assert.Single(harness.MovementLaunches);
+            Assert.Equal(new[] { "calculate-path" }, harness.MovementOperations);
+            Assert.Equal(0, harness.StopMovementCount);
+            Assert.Equal(0, harness.MoveDefaultsCount);
+            Assert.Equal(0, harness.StateDefaultCount);
+            Assert.Equal(2u, harness.TargetGuid);
+            Assert.True(harness.ThreatManager.IsThreatened);
+
+            harness.AI.Update(0.25d);
+
+            Assert.Equal(3, harness.PathGenerationCount);
+            Assert.Equal(2, harness.MovementLaunches.Count);
+            Assert.Equal(target.Position, harness.MovementLaunches[^1].Final);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void InvalidGeneratedPath_FailsBeforeMovementMutation(bool containsNonFiniteNode)
+        {
+            var harness = new CombatAIHarness
+            {
+                GeneratedPath = containsNonFiniteNode
+                    ? new List<Vector3> { Vector3.Zero, new Vector3(float.NaN, 0f, 0f) }
+                    : new List<Vector3> { Vector3.Zero }
+            };
+            TargetHarness target = harness.AddTarget(2u, new Vector3(10f, 0f, 0f));
+            harness.AddThreat(target, 10u);
+
+            harness.AI.Update(0.1d);
+
+            Assert.Equal(1, harness.PathGenerationCount);
+            Assert.Empty(harness.MovementLaunches);
+            Assert.Equal(new[] { "calculate-path" }, harness.MovementOperations);
+            Assert.Equal(0, harness.StopMovementCount);
+            Assert.Equal(0, harness.MoveDefaultsCount);
+            Assert.Equal(0, harness.StateDefaultCount);
+            Assert.Equal(2u, harness.TargetGuid);
+            Assert.True(harness.ThreatManager.IsThreatened);
+            Assert.Empty(harness.Casts);
+        }
+
+        [Fact]
+        public void LateLaunchFailure_CleansPartialMutationBeforeReturning()
+        {
+            var harness = new CombatAIHarness
+            {
+                MovementLaunchFailuresRemaining = 1
+            };
+            TargetHarness target = harness.AddTarget(2u, new Vector3(10f, 0f, 0f));
+            harness.AddThreat(target, 10u);
+
+            Exception exception = Record.Exception(() => harness.AI.Update(0.1d));
+
+            Assert.Null(exception);
+            Assert.Single(harness.MovementLaunches);
+            Assert.Equal(
+                new[] { "calculate-path", "launch", "set-position", "set-move-defaults", "set-state-default" },
+                harness.MovementOperations);
+            Assert.Equal(1, harness.StopMovementCount);
+            Assert.Equal(1, harness.MoveDefaultsCount);
+            Assert.Equal(1, harness.StateDefaultCount);
+            Assert.Equal(2u, harness.TargetGuid);
+            Assert.True(harness.ThreatManager.IsThreatened);
+            Assert.Empty(harness.Casts);
+
+            harness.AI.Update(0.1d);
+
+            Assert.Equal(2, harness.MovementLaunches.Count);
+        }
+
+        [Fact]
+        public void LateLaunchFailure_CleanupRetryBlocksRelaunchUntilResetSucceeds()
+        {
+            var harness = new CombatAIHarness
+            {
+                MovementLaunchFailuresRemaining = 1,
+                PositionResetFailuresRemaining = 2
+            };
+            TargetHarness target = harness.AddTarget(2u, new Vector3(10f, 0f, 0f));
+            harness.AddThreat(target, 10u);
+
+            harness.AI.Update(0.1d);
+            harness.AI.Update(0.1d);
+
+            Assert.Single(harness.MovementLaunches);
+            Assert.Equal(1, harness.PathGenerationCount);
+            Assert.Equal(0, harness.StopMovementCount);
+            Assert.Equal(2, harness.MoveDefaultsCount);
+            Assert.Equal(2, harness.StateDefaultCount);
+            Assert.Equal(2u, harness.TargetGuid);
+            Assert.True(harness.ThreatManager.IsThreatened);
+            Assert.Empty(harness.Casts);
+
+            harness.AI.Update(0.1d);
+
+            Assert.Equal(2, harness.MovementLaunches.Count);
+            Assert.Equal(2, harness.PathGenerationCount);
+            Assert.Equal(1, harness.StopMovementCount);
+            Assert.Equal(3, harness.MoveDefaultsCount);
+            Assert.Equal(3, harness.StateDefaultCount);
+            Assert.Equal(
+                new[]
+                {
+                    "calculate-path",
+                    "launch",
+                    "set-position",
+                    "set-move-defaults",
+                    "set-state-default",
+                    "set-position",
+                    "set-move-defaults",
+                    "set-state-default",
+                    "set-position",
+                    "set-move-defaults",
+                    "set-state-default",
+                    "calculate-path",
+                    "launch"
+                },
+                harness.MovementOperations);
+        }
+
+        [Fact]
+        public void LateLaunchFailure_CleanupRetryBlocksCastUntilResetSucceeds()
+        {
+            var harness = new CombatAIHarness
+            {
+                MovementLaunchFailuresRemaining = 1,
+                PositionResetFailuresRemaining = 2
+            };
+            TargetHarness target = harness.AddTarget(2u, new Vector3(10f, 0f, 0f));
+            harness.AddThreat(target, 10u);
+            harness.AI.Update(0.1d);
+            target.Position = new Vector3(4f, 0f, 0f);
+
+            harness.AI.Update(2d);
+
+            Assert.Empty(harness.Casts);
+            Assert.Single(harness.MovementLaunches);
+            Assert.Equal(1, harness.PathGenerationCount);
+
+            harness.AI.Update(2d);
+
+            Assert.Single(harness.Casts);
+            Assert.Equal(65812u, harness.Casts[0].SpellId);
+            Assert.Equal(1, harness.StopMovementCount);
+            Assert.Equal(
+                new[] { "set-position", "set-move-defaults", "set-state-default", "cast" },
+                harness.MovementOperations.TakeLast(4));
         }
 
         [Theory]
@@ -743,6 +934,7 @@ namespace NexusForever.Game.Tests.AI
             public uint CreatureId { get; set; }
             public bool IsAlive { get; set; } = true;
             public bool InWorld { get; set; }
+            public bool ServerControl { get; set; } = true;
             public Vector3 Position { get; set; }
             public Vector3 Rotation { get; set; }
             public Vector3 HomeRotation { get; set; }
@@ -757,14 +949,19 @@ namespace NexusForever.Game.Tests.AI
             public int PositionResetFailuresRemaining { get; set; }
             public int PositionReadFailuresRemaining { get; set; }
             public int TargetValidationFailuresRemaining { get; set; }
+            public int PathGenerationFailuresRemaining { get; set; }
+            public int MovementLaunchFailuresRemaining { get; set; }
+            public List<Vector3> GeneratedPath { get; set; }
 
             public int TargetWriteCount { get; private set; }
             public int StopMovementCount { get; private set; }
             public int MoveDefaultsCount { get; private set; }
             public int StateDefaultCount { get; private set; }
             public int HealCount { get; private set; }
+            public int PathGenerationCount { get; private set; }
             public List<CastAttempt> Casts { get; } = [];
             public List<MovementLaunch> MovementLaunches { get; } = [];
+            public List<string> MovementOperations { get; } = [];
 
             private readonly EntitySplineModel spline;
             private readonly Dictionary<uint, TargetHarness> targets = [];
@@ -774,6 +971,23 @@ namespace NexusForever.Game.Tests.AI
                 CreatureId = creatureId;
                 this.spline = spline;
                 Generator.SetupAllProperties();
+                Generator
+                    .Setup(generator => generator.CalculatePath())
+                    .Callback(() =>
+                    {
+                        PathGenerationCount++;
+                        MovementOperations.Add("calculate-path");
+                    })
+                    .Returns(() =>
+                    {
+                        if (PathGenerationFailuresRemaining > 0)
+                        {
+                            PathGenerationFailuresRemaining--;
+                            throw new InvalidOperationException("Test path generation failure.");
+                        }
+
+                        return GeneratedPath ?? [Generator.Object.Begin, Generator.Object.Final];
+                    });
 
                 Owner.SetupGet(entity => entity.Guid).Returns(1u);
                 Owner.SetupGet(entity => entity.CreatureId).Returns(() => CreatureId);
@@ -828,6 +1042,7 @@ namespace NexusForever.Game.Tests.AI
                     .Setup(entity => entity.CastSpellTracked(It.IsAny<uint>(), It.IsAny<ISpellParameters>()))
                     .Returns((uint spellId, ISpellParameters parameters) =>
                     {
+                        MovementOperations.Add("cast");
                         Casts.Add(new CastAttempt(spellId, parameters));
                         if (ThrowOnCast)
                             throw new InvalidOperationException("Test cast admission failure.");
@@ -845,6 +1060,9 @@ namespace NexusForever.Game.Tests.AI
                     });
 
                 Movement
+                    .SetupGet(manager => manager.ServerControl)
+                    .Returns(() => ServerControl);
+                Movement
                     .Setup(manager => manager.GetPosition())
                     .Returns(() =>
                     {
@@ -861,6 +1079,7 @@ namespace NexusForever.Game.Tests.AI
                     .Setup(manager => manager.SetPosition(It.IsAny<Vector3>(), It.IsAny<bool>()))
                     .Callback<Vector3, bool>((position, blend) =>
                     {
+                        MovementOperations.Add("set-position");
                         if (PositionResetFailuresRemaining > 0)
                         {
                             PositionResetFailuresRemaining--;
@@ -872,19 +1091,36 @@ namespace NexusForever.Game.Tests.AI
                     });
                 Movement
                     .Setup(manager => manager.SetMoveDefaults(It.IsAny<bool>()))
-                    .Callback<bool>(blend => MoveDefaultsCount++);
+                    .Callback<bool>(blend =>
+                    {
+                        MovementOperations.Add("set-move-defaults");
+                        MoveDefaultsCount++;
+                    });
                 Movement
                     .Setup(manager => manager.SetStateDefault())
-                    .Callback(() => StateDefaultCount++);
+                    .Callback(() =>
+                    {
+                        MovementOperations.Add("set-state-default");
+                        StateDefaultCount++;
+                    });
                 Movement
                     .Setup(manager => manager.SetRotation(It.IsAny<Vector3>(), It.IsAny<bool>()))
                     .Callback<Vector3, bool>((rotation, blend) => Rotation = rotation);
                 Movement
-                    .Setup(manager => manager.LaunchGenerator(It.IsAny<IMovementGenerator>(), It.IsAny<float>(), It.IsAny<NexusForever.Game.Static.Entity.Movement.Spline.SplineMode>()))
-                    .Callback<IMovementGenerator, float, NexusForever.Game.Static.Entity.Movement.Spline.SplineMode>((generator, speed, mode) =>
+                    .Setup(manager => manager.LaunchSpline(
+                        It.IsAny<List<Vector3>>(),
+                        SplineType.Linear,
+                        SplineMode.OneShot,
+                        It.IsAny<float>()))
+                    .Callback<List<Vector3>, SplineType, SplineMode, float>((nodes, type, mode, speed) =>
                     {
-                        var directGenerator = Assert.IsAssignableFrom<IDirectMovementGenerator>(generator);
-                        MovementLaunches.Add(new MovementLaunch(directGenerator.Begin, directGenerator.Final, speed));
+                        MovementOperations.Add("launch");
+                        MovementLaunches.Add(new MovementLaunch(nodes[0], nodes[^1], speed));
+                        if (MovementLaunchFailuresRemaining > 0)
+                        {
+                            MovementLaunchFailuresRemaining--;
+                            throw new InvalidOperationException("Test late movement launch failure.");
+                        }
                     });
 
                 LoggerFactory
