@@ -111,7 +111,9 @@ namespace NexusForever.Game.Abstract.Housing
         /// Returns true if <see cref="IPlayer"/> can modify the <see cref="IResidence"/>.
         /// </summary>
         /// <remarks>
-        /// This is valid for both community and individual residences.
+        /// The player must occupy this residence's exact live map. Personal residences require
+        /// the exact owner, while community residences require the exact owning community,
+        /// residence reference, current member rank, and decorate permission.
         /// </remarks>
         bool CanModifyResidence(IPlayer player);
 

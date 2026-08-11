@@ -709,19 +709,23 @@ namespace NexusForever.Game.Housing
         /// </remarks>
         public bool CanModifyResidence(IPlayer player)
         {
+            if (player == null
+                || Map == null
+                || !ReferenceEquals(Map, player.Map))
+                return false;
+
             switch (Type)
             {
                 case ResidenceType.Community:
                 {
-                    ICommunity community = player.GuildManager.GetGuild<ICommunity>(GuildType.Community);
-                    if (community == null)
+                    ICommunity community = player.GuildManager?.GetGuild<ICommunity>(GuildType.Community);
+                    if (GuildOwnerIdentity == null
+                        || community?.Identity != GuildOwnerIdentity
+                        || !ReferenceEquals(community.Residence, this))
                         return false;
 
                     IGuildMember member = community.GetMember(player.CharacterId);
-                    if (member == null)
-                        return false;
-
-                    return member.Rank.HasPermission(GuildRankPermission.DecorateCommunity);
+                    return member?.Rank?.HasPermission(GuildRankPermission.DecorateCommunity) == true;
                 }
                 case ResidenceType.Residence:
                 {
