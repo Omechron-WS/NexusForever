@@ -3,7 +3,10 @@ using System.Linq;
 using NexusForever.Database.World.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Loot;
+using NexusForever.Game.Abstract.Quest;
+using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Loot;
+using NexusForever.Game.Static.Quest;
 
 namespace NexusForever.Game.Loot
 {
@@ -40,6 +43,9 @@ namespace NexusForever.Game.Loot
         /// </summary>
         public Dictionary<ILootItem, uint> GenerateLootDrops(IPlayer player)
         {
+            if (player == null)
+                return new Dictionary<ILootItem, uint>();
+
             if (!WillDrop(player))
                 return new Dictionary<ILootItem, uint>();
 
@@ -93,28 +99,88 @@ namespace NexusForever.Game.Loot
 
         private bool WillDrop(IPlayer player)
         {
-            double chance = Random.Shared.NextDouble() * 100d;
-            if (chance >= Probability)
+            if (!MeetsCondition(player))
                 return false;
 
-            return MeetsCondition(player);
+            if (!float.IsFinite(Probability) || Probability <= 0f || Probability > 100f)
+                return false;
+
+            double chance = Random.Shared.NextDouble() * 100d;
+            return chance < Probability;
         }
 
         private bool MeetsCondition(IPlayer player)
         {
+            if (player == null)
+                return false;
+
             switch (conditionType)
             {
                 case LootConditionType.None:
                     return true;
+                case LootConditionType.IsClass:
+                    return IsDefinedClass(condition) && (uint)player.Class == condition;
+                case LootConditionType.IsRace:
+                    return IsDefinedRace(condition) && (uint)player.Race == condition;
+                case LootConditionType.IsLevel:
+                    return HasValidLevelContext(player) && condition > 0u && player.Level == condition;
+                case LootConditionType.IsLessThanLevel:
+                    return HasValidLevelContext(player) && condition > 0u && player.Level < condition;
+                case LootConditionType.IsMoreThanLevel:
+                    return HasValidLevelContext(player) && condition > 0u && player.Level > condition;
+                case LootConditionType.QuestIsComplete:
+                    return TryGetQuestState(player, out QuestState? completedState)
+                        && completedState == QuestState.Completed;
+                case LootConditionType.QuestNotComplete:
+                    return TryGetQuestState(player, out QuestState? incompleteState)
+                        && incompleteState != QuestState.Completed;
                 case LootConditionType.QuestObjectiveActive:
-                    // TODO: properly check if player has an active quest objective matching this condition value.
-                    // Requires IQuestManager to expose an objective query method.
-                    // For now, return true (permissive) to avoid blocking loot drops.
-                    return true;
+                    return HasActiveQuestObjective(player);
                 default:
-                    // TODO: implement IsClass, IsRace, IsLevel, QuestIsComplete, etc.
-                    return true;
+                    return false;
             }
+        }
+
+        private static bool HasValidLevelContext(IPlayer player)
+        {
+            return player.Level > 0u;
+        }
+
+        private static bool IsDefinedClass(uint value)
+        {
+            return value is > 0u and <= byte.MaxValue
+                && Enum.IsDefined((Class)value);
+        }
+
+        private static bool IsDefinedRace(uint value)
+        {
+            return value is > 0u and <= byte.MaxValue
+                && Enum.IsDefined((Race)value);
+        }
+
+        private bool TryGetQuestState(IPlayer player, out QuestState? state)
+        {
+            state = null;
+            if (condition == 0u || condition > ushort.MaxValue || player.QuestManager == null)
+                return false;
+
+            state = player.QuestManager.GetQuestState((ushort)condition);
+            return true;
+        }
+
+        private bool HasActiveQuestObjective(IPlayer player)
+        {
+            if (condition == 0u || player.QuestManager == null)
+                return false;
+
+            IEnumerable<IQuest> activeQuests = player.QuestManager.GetActiveQuests();
+            if (activeQuests == null)
+                return false;
+
+            return activeQuests
+                .Where(quest => quest != null)
+                .SelectMany(quest => quest)
+                .Any(objective => objective?.ObjectiveInfo?.Id == condition && !objective.IsComplete());
         }
     }
 }
