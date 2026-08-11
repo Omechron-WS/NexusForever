@@ -594,12 +594,62 @@ namespace NexusForever.Game.Quest
                 QuestState = State
             });
 
-            // check if this quest and state is a trigger for a new communicator message
-            foreach (ICommunicatorMessage message in GetGlobalQuestManager().GetQuestCommunicatorQuestStateTriggers(Id, state))
-                if (message.Meets(player))
-                    player.QuestManager.QuestMention(message.QuestId);
+            try
+            {
+                SendCommunicatorMessages();
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to resolve communicator messages for quest {Id} state {state}.");
+            }
+            finally
+            {
+                scriptCollection?.Invoke<IQuestScript>(s => s.OnQuestStateChange(State, oldState));
+            }
+        }
 
-            scriptCollection?.Invoke<IQuestScript>(s => s.OnQuestStateChange(State, oldState));
+        private void SendCommunicatorMessages()
+        {
+            IGlobalQuestManager manager = GetGlobalQuestManager();
+            IEnumerable<ICommunicatorMessage> messages =
+                manager.GetQuestCommunicatorQuestStateTriggers(Id, state)
+                ?? Enumerable.Empty<ICommunicatorMessage>();
+            var mentionedQuestIds = new HashSet<ushort>();
+
+            foreach (ICommunicatorMessage message in messages)
+            {
+                try
+                {
+                    if (message == null || !message.Meets(player))
+                        continue;
+
+                    // The communicator row is the primary delivery. Any quest mention is
+                    // optional metadata and must not replace the exact build 16042 message.
+                    message.Send(player.Session);
+
+                    ushort questId = message.QuestId;
+                    if (questId == 0 || !mentionedQuestIds.Add(questId))
+                        continue;
+
+                    if (manager.GetQuestInfo(questId) == null)
+                    {
+                        log.Error($"A communicator message references missing quest {questId}.");
+                        continue;
+                    }
+
+                    if (player.QuestManager == null)
+                    {
+                        log.Error($"A communicator message could not mention quest {questId} without a quest manager.");
+                        continue;
+                    }
+
+                    player.QuestManager.QuestMention(questId);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to deliver a communicator message for quest {Id}.");
+                }
+            }
         }
 
         private IGlobalQuestManager GetGlobalQuestManager()

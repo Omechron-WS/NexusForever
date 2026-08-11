@@ -231,7 +231,7 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void QuestMention(ushort questId)
         {
-            IQuestInfo info = GlobalQuestManager.Instance.GetQuestInfo(questId);
+            IQuestInfo info = GetGlobalQuestManager().GetQuestInfo(questId);
             if (info == null)
                 throw new ArgumentException($"Invalid quest {questId}!");
 
@@ -252,14 +252,18 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void QuestMention(IQuestInfo info)
         {
-            IQuest quest = GetQuest((ushort)info.Entry.Id);
-            if (quest == null)
-                quest = new Quest.Quest(player, info, GetGlobalQuestManager(), null, null);
-            else
-                QuestRemove(quest);
+            ArgumentNullException.ThrowIfNull(info);
+            if (info.Entry == null || info.Entry.Id == 0u || info.Entry.Id > CommunicatorMessage.MaximumId)
+                throw new ArgumentException("Quest information has an invalid id.", nameof(info));
+
+            ushort questId = (ushort)info.Entry.Id;
+            if (GetQuest(questId) != null)
+                return;
+
+            var quest = new Quest.Quest(player, info, GetGlobalQuestManager(), null, null);
 
             quest.State = QuestState.Mentioned;
-            inactiveQuests.Add((ushort)info.Entry.Id, quest);
+            inactiveQuests.Add(questId, quest);
 
             log.Trace($"Mentioned new quest {info.Entry.Id}.");
         }
@@ -269,7 +273,7 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void QuestAdd(ushort questId, IItem item)
         {
-            IQuestInfo info = GlobalQuestManager.Instance.GetQuestInfo(questId);
+            IQuestInfo info = GetGlobalQuestManager().GetQuestInfo(questId);
             if (info == null)
                 throw new ArgumentException($"Invalid quest {questId}!");
 
@@ -309,10 +313,13 @@ namespace NexusForever.Game.Entity
             else
             {
                 // make sure the player is in range of a quest giver or they are eligible for a communicator message that starts the quest
-                if (!GlobalQuestManager.Instance.GetQuestGivers((ushort)info.Entry.Id)
-                        .Any(c => player.GetVisibleCreature<WorldEntity>(c).Any())
-                    && !GlobalQuestManager.Instance.GetQuestCommunicatorMessages((ushort)info.Entry.Id)
-                        .Any(m => m.Meets(player)))
+                IGlobalQuestManager manager = GetGlobalQuestManager();
+                ushort questId = (ushort)info.Entry.Id;
+                bool hasVisibleQuestGiver = (manager.GetQuestGivers(questId) ?? Enumerable.Empty<uint>())
+                    .Any(creatureId => player.GetVisibleCreature<WorldEntity>(creatureId).Any());
+                bool canStartRemotely = info.CanBeCalledBack()
+                    || (info.IsCommunicatorReceived() && HasEligibleCommunicatorMessage(manager, questId));
+                if (!hasVisibleQuestGiver && !canStartRemotely)
                     throw new QuestException($"Player {player.CharacterId} tried to start quest {info.Entry.Id} without quest giver!");
             }
 
@@ -578,7 +585,7 @@ namespace NexusForever.Game.Entity
             {
                 // TODO: check if this is complete, client seems to also refer to contact info
                 // for more see QuestTracker:HelperShowQuestCallbackBtn in LUA which contains the logic to show the complete button in the quest tracker
-                if (!quest.Info.IsCommunicatorReceived())
+                if (!quest.Info.IsCommunicatorReceived() && !quest.Info.CanBeCalledBack())
                     throw new QuestException($"Player {player.CharacterId} tried to complete quest {questId} without communicator message!");
             }
             else
@@ -649,6 +656,26 @@ namespace NexusForever.Game.Entity
         private IDisableManager GetDisableManager()
         {
             return disableManager ?? DisableManager.Instance;
+        }
+
+        private bool HasEligibleCommunicatorMessage(IGlobalQuestManager manager, ushort questId)
+        {
+            IEnumerable<ICommunicatorMessage> messages = manager.GetQuestCommunicatorMessages(questId)
+                ?? Enumerable.Empty<ICommunicatorMessage>();
+            foreach (ICommunicatorMessage message in messages)
+            {
+                try
+                {
+                    if (message?.Meets(player) == true)
+                        return true;
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to evaluate a communicator message for quest {questId}.");
+                }
+            }
+
+            return false;
         }
 
         /// <summary>

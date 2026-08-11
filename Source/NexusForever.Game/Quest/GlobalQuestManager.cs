@@ -23,13 +23,19 @@ namespace NexusForever.Game.Quest
         /// </summary>
         public DateTime NextWeeklyReset { get; private set; }
 
-        private ImmutableDictionary<ushort, IQuestInfo> questInfoStore;
-        private ImmutableDictionary<ushort, ImmutableList<uint>> questGiverStore;
-        private ImmutableDictionary<ushort, ImmutableList<uint>> questReceiverStore;
+        private ImmutableDictionary<ushort, IQuestInfo> questInfoStore =
+            ImmutableDictionary<ushort, IQuestInfo>.Empty;
+        private ImmutableDictionary<ushort, ImmutableList<uint>> questGiverStore =
+            ImmutableDictionary<ushort, ImmutableList<uint>>.Empty;
+        private ImmutableDictionary<ushort, ImmutableList<uint>> questReceiverStore =
+            ImmutableDictionary<ushort, ImmutableList<uint>>.Empty;
 
-        private ImmutableDictionary<uint, ICommunicatorMessage> communicatorStore;
-        private ImmutableDictionary<ushort, ImmutableList<ICommunicatorMessage>> communicatorQuestStore;
-        private ImmutableDictionary<(ushort /*questId*/, QuestState), ImmutableList<ICommunicatorMessage>> communicatorQuestStateTriggerStore;
+        private ImmutableDictionary<uint, ICommunicatorMessage> communicatorStore =
+            ImmutableDictionary<uint, ICommunicatorMessage>.Empty;
+        private ImmutableDictionary<ushort, ImmutableList<ICommunicatorMessage>> communicatorQuestStore =
+            ImmutableDictionary<ushort, ImmutableList<ICommunicatorMessage>>.Empty;
+        private ImmutableDictionary<(ushort /*questId*/, QuestState), ImmutableList<ICommunicatorMessage>> communicatorQuestStateTriggerStore =
+            ImmutableDictionary<(ushort, QuestState), ImmutableList<ICommunicatorMessage>>.Empty;
 
         public void Initialise()
         {
@@ -39,9 +45,9 @@ namespace NexusForever.Game.Quest
             InitialiseQuestInfo();
             InitialiseQuestRelations();
 
-            InitialiseCommunicatorEntries();
-            InitialiseCommunicatorQuests();
-            InitialiseCommunicatorQuestStateTriggers();
+            InitialiseCommunicators(
+                GameTableManager.Instance.CommunicatorMessages.Entries,
+                questInfoStore);
 
             log.Info($"Cached {questInfoStore.Count} quests in {sw.ElapsedMilliseconds}ms.");
         }
@@ -97,58 +103,117 @@ namespace NexusForever.Game.Quest
             questReceiverStore = questReceivers.ToImmutableDictionary(k => k.Key, v => v.Value.ToImmutableList());
         }
 
-        private void InitialiseCommunicatorEntries()
+        internal void InitialiseCommunicators(
+            IEnumerable<CommunicatorMessagesEntry> entries,
+            IReadOnlyDictionary<ushort, IQuestInfo> questInfos)
         {
-            var builder = ImmutableDictionary.CreateBuilder<uint, ICommunicatorMessage>();
-            foreach (CommunicatorMessagesEntry entry in GameTableManager.Instance.CommunicatorMessages.Entries)
+            ArgumentNullException.ThrowIfNull(entries);
+            ArgumentNullException.ThrowIfNull(questInfos);
+
+            var communicatorBuilder = ImmutableDictionary.CreateBuilder<uint, ICommunicatorMessage>();
+            var questBuilder = new Dictionary<ushort, List<ICommunicatorMessage>>();
+            var triggerBuilder = new Dictionary<(ushort, QuestState), List<ICommunicatorMessage>>();
+
+            foreach (IGrouping<uint, CommunicatorMessagesEntry> group in entries
+                .Where(entry => entry != null)
+                .GroupBy(entry => entry.Id)
+                .OrderBy(group => group.Key))
             {
-                var communicator = new CommunicatorMessage(entry);
-                builder.Add(communicator.Id, communicator);
-            }
-
-            communicatorStore = builder.ToImmutable();
-        }
-
-        private void InitialiseCommunicatorQuests()
-        {
-            var builder = new Dictionary<ushort, List<ICommunicatorMessage>>();
-            foreach (CommunicatorMessagesEntry entry in GameTableManager.Instance.CommunicatorMessages.Entries
-                .Where(e => e.QuestIdDelivered != 0u))
-            {
-                ICommunicatorMessage communicator = communicatorStore[entry.Id];
-                if (!builder.ContainsKey(communicator.QuestId))
-                    builder.Add(communicator.QuestId, new List<ICommunicatorMessage>());
-
-                builder[communicator.QuestId].Add(communicator);
-            }
-
-            communicatorQuestStore = builder.ToImmutableDictionary(e => e.Key, e => e.Value.ToImmutableList());
-        }
-
-        private void InitialiseCommunicatorQuestStateTriggers()
-        {
-            var builder = new Dictionary<(ushort, QuestState), List<ICommunicatorMessage>>();
-            foreach (CommunicatorMessagesEntry entry in GameTableManager.Instance.CommunicatorMessages.Entries
-                .Where(e => e.QuestIdDelivered != 0u))
-            {
-                foreach ((ushort QuestId, QuestState QuestState) p in
-                    entry.Quests.Zip(entry.States, (a, b) => ((ushort)a, (QuestState)b)))
+                if (group.Count() != 1)
                 {
-                    if (p.QuestId == 0)
+                    log.Warn($"Ignoring duplicate communicator message id {group.Key}.");
+                    continue;
+                }
+
+                CommunicatorMessagesEntry entry = group.Single();
+                if (!TryValidateCommunicatorEntry(entry, questInfos, out string reason))
+                {
+                    log.Warn($"Ignoring communicator message {entry.Id}: {reason}.");
+                    continue;
+                }
+
+                var communicator = new CommunicatorMessage(entry);
+                communicatorBuilder.Add(communicator.Id, communicator);
+
+                if (communicator.QuestId != 0)
+                    AddCommunicator(questBuilder, communicator.QuestId, communicator);
+
+                for (int i = 0; i < entry.Quests.Length; i++)
+                {
+                    ushort questId = (ushort)entry.Quests[i];
+                    if (questId == 0 || questId == communicator.QuestId)
                         continue;
 
-                    if (p.QuestId == entry.QuestIdDelivered)
-                        continue;
-
-                    if (!builder.ContainsKey(p))
-                        builder.Add(p, new List<ICommunicatorMessage>());
-
-                    ICommunicatorMessage communicator = communicatorStore[entry.Id];
-                    builder[p].Add(communicator);
+                    AddCommunicator(triggerBuilder, (questId, (QuestState)entry.States[i]), communicator);
                 }
             }
 
-            communicatorQuestStateTriggerStore = builder.ToImmutableDictionary(e => e.Key, e => e.Value.ToImmutableList());
+            communicatorStore = communicatorBuilder.ToImmutable();
+            communicatorQuestStore = questBuilder.ToImmutableDictionary(
+                pair => pair.Key,
+                pair => pair.Value.OrderBy(message => message.Id).ToImmutableList());
+            communicatorQuestStateTriggerStore = triggerBuilder.ToImmutableDictionary(
+                pair => pair.Key,
+                pair => pair.Value.OrderBy(message => message.Id).ToImmutableList());
+        }
+
+        private static bool TryValidateCommunicatorEntry(
+            CommunicatorMessagesEntry entry,
+            IReadOnlyDictionary<ushort, IQuestInfo> questInfos,
+            out string reason)
+        {
+            if (entry.Id == 0u || entry.Id > CommunicatorMessage.MaximumId)
+            {
+                reason = "id does not fit the 15-bit packet field";
+                return false;
+            }
+
+            if (!IsValidQuestReference(entry.QuestIdDelivered, questInfos))
+            {
+                reason = $"delivered quest {entry.QuestIdDelivered} is invalid";
+                return false;
+            }
+
+            if (entry.Quests == null || entry.States == null || entry.Quests.Length != entry.States.Length)
+            {
+                reason = "quest trigger arrays are malformed";
+                return false;
+            }
+
+            foreach (uint questId in entry.Quests)
+            {
+                if (!IsValidQuestReference(questId, questInfos))
+                {
+                    reason = $"trigger quest {questId} is invalid";
+                    return false;
+                }
+            }
+
+            reason = null;
+            return true;
+        }
+
+        private static bool IsValidQuestReference(
+            uint questId,
+            IReadOnlyDictionary<ushort, IQuestInfo> questInfos)
+        {
+            return questId == 0u
+                || (questId <= CommunicatorMessage.MaximumId && questInfos.ContainsKey((ushort)questId));
+        }
+
+        private static void AddCommunicator<TKey>(
+            IDictionary<TKey, List<ICommunicatorMessage>> store,
+            TKey key,
+            ICommunicatorMessage communicator)
+        {
+            if (!store.TryGetValue(key, out List<ICommunicatorMessage> messages))
+            {
+                messages = new List<ICommunicatorMessage>();
+                store.Add(key, messages);
+            }
+
+            if (messages.All(message => message.Id != communicator.Id))
+                messages.Add(communicator);
         }
 
         public void Update(double lastTick)
