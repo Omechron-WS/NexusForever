@@ -463,7 +463,7 @@ namespace NexusForever.Game.Tests.Spell
         {
             var caster = new Mock<IUnitEntity>();
             var target = new Mock<IUnitEntity>();
-            caster.Setup(unit => unit.GetVisible<IUnitEntity>(42u)).Returns(target.Object);
+            caster.Setup(unit => unit.GetVisible<IWorldEntity>(42u)).Returns(target.Object);
             target.Setup(unit => unit.TryGetVitalValue(
                     Vital.Health,
                     out It.Ref<float>.IsAny))

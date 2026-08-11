@@ -10,6 +10,7 @@ using NexusForever.Game.Abstract.Map;
 using NexusForever.Game.Abstract.Reputation;
 using NexusForever.Game.Chat;
 using NexusForever.Game.Map.Search;
+using NexusForever.Game.Prerequisite;
 using NexusForever.Game.Reputation;
 using NexusForever.Game.Static.Chat;
 using NexusForever.Game.Static.Entity;
@@ -22,11 +23,14 @@ using NexusForever.Network.World.Entity;
 using NexusForever.Network.World.Message.Model;
 using NexusForever.Network.World.Message.Model.Shared;
 using NexusForever.Script.Template;
+using NLog;
 
 namespace NexusForever.Game.Entity
 {
     public abstract class WorldEntity : GridEntity, IWorldEntity
     {
+        private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+
         public abstract EntityType Type { get; }
         public EntityCreateFlag CreateFlags { get; set; }
 
@@ -387,34 +391,116 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public virtual void OnActivateCast(IPlayer activator)
         {
-            if (CreatureEntry == null)
-                return;
+            TryActivateCast(activator, 0u);
+        }
 
-            // Resolve activation spell from creature entry (first non-zero spell)
-            uint spell4Id = CreatureEntry.Spell4IdActivate00;
-            if (spell4Id == 0)
-                return;
+        /// <summary>
+        /// Invoked when <see cref="IWorldEntity"/> is cast activated with a client-assigned interaction identifier.
+        /// </summary>
+        public virtual void OnActivateCast(IPlayer activator, uint clientUniqueId)
+        {
+            TryActivateCast(activator, clientUniqueId);
+        }
 
-            // Look up the spell's CSI entry ID (if any)
-            Spell4Entry spell4Entry = GameTableManager.Instance.Spell4.GetEntry(spell4Id);
-            uint csiId = 0;
-            if (spell4Entry != null)
+        /// <inheritdoc />
+        public virtual bool TryActivateCast(IPlayer activator, uint clientUniqueId)
+        {
+            if (activator == null || CreatureEntry == null)
+                return false;
+
+            uint spell4Id = 0u;
+            try
             {
+                spell4Id = ResolveActivationSpell(
+                    CreatureEntry,
+                    prerequisiteId => MeetsActivationPrerequisite(activator, prerequisiteId));
+                if (spell4Id == 0u)
+                    return false;
+
+                Spell4Entry spell4Entry = GameTableManager.Instance.Spell4.GetEntry(spell4Id);
+                if (spell4Entry == null)
+                {
+                    log.Error($"Activation entity {CreatureId} references missing Spell4 row {spell4Id}.");
+                    return false;
+                }
+
+                uint csiId = 0u;
                 Spell4BaseEntry baseEntry = GameTableManager.Instance.Spell4Base.GetEntry(spell4Entry.Spell4BaseIdBaseSpell);
                 if (baseEntry != null)
                     csiId = baseEntry.ClientSideInteractionId;
+
+                var csi = new CSI.ClientSideInteraction(
+                    activator,
+                    this,
+                    clientUniqueId,
+                    csiId,
+                    AssetManager.Instance);
+
+                var parameters = new Spell.SpellParameters
+                {
+                    PrimaryTargetId        = Guid,
+                    ClientSideInteraction  = csi,
+                    CastTimeOverride       = CreatureEntry.ActivateSpellCastTime,
+                    UserInitiatedSpellCast = true
+                };
+
+                if (activator.CastSpellTracked(spell4Id, parameters) != null)
+                    return true;
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to start client-side interaction spell {spell4Id} for entity {Guid}.");
             }
 
-            var csi = new CSI.ClientSideInteraction(activator, this, activator.Guid, csiId);
+            return false;
+        }
 
-            var parameters = new Spell.SpellParameters
+        /// <summary>
+        /// Selects the first met prerequisite-gated activation spell, falling back to the last contiguous ungated spell.
+        /// </summary>
+        internal static uint ResolveActivationSpell(Creature2Entry entry, Func<uint, bool> meetsPrerequisite)
+        {
+            ArgumentNullException.ThrowIfNull(entry);
+            ArgumentNullException.ThrowIfNull(meetsPrerequisite);
+
+            (uint Spell4Id, uint PrerequisiteId)[] candidates =
+            [
+                (entry.Spell4IdActivate00, entry.PrerequisiteIdActivateSpell00),
+                (entry.Spell4IdActivate01, entry.PrerequisiteIdActivateSpell01),
+                (entry.Spell4IdActivate02, entry.PrerequisiteIdActivateSpell02),
+                (entry.Spell4IdActivate03, entry.PrerequisiteIdActivateSpell03)
+            ];
+
+            uint fallbackSpell4Id = 0u;
+            foreach ((uint candidateSpell4Id, uint prerequisiteId) in candidates)
             {
-                PrimaryTargetId        = Guid,
-                ClientSideInteraction  = csi,
-                UserInitiatedSpellCast = true
-            };
+                if (candidateSpell4Id == 0u)
+                    break;
 
-            activator.CastSpell(spell4Id, parameters);
+                if (prerequisiteId == 0u)
+                {
+                    fallbackSpell4Id = candidateSpell4Id;
+                    continue;
+                }
+
+                if (meetsPrerequisite(prerequisiteId))
+                    return candidateSpell4Id;
+            }
+
+            return fallbackSpell4Id;
+        }
+
+        private static bool MeetsActivationPrerequisite(IPlayer activator, uint prerequisiteId)
+        {
+            try
+            {
+                return PrerequisiteManager.Instance.Meets(activator, prerequisiteId);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to evaluate activation prerequisite {prerequisiteId} for player {activator.Identity}.");
+                return false;
+            }
         }
 
         /// <summary>
@@ -422,7 +508,7 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public virtual void OnActivateSuccess(IPlayer activator)
         {
-            // deliberately empty — overridden by entity subclasses
+            scriptCollection?.Invoke<IWorldEntityScript>(script => script.OnActivateSuccess(this, activator));
         }
 
         /// <summary>
@@ -430,7 +516,7 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public virtual void OnActivateFail(IPlayer activator)
         {
-            // deliberately empty — overridden by entity subclasses
+            scriptCollection?.Invoke<IWorldEntityScript>(script => script.OnActivateFail(this, activator));
         }
 
         /// <summary>

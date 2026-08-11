@@ -435,18 +435,62 @@ namespace NexusForever.Game.Tests.Quest
                 31u), Times.Once);
         }
 
-        [Fact]
-        public void SimpleEntity_OnActivateCastRejectsChecklistIndexOutsideDatacubeMask()
+        [Theory]
+        [InlineData((byte)32)]
+        [InlineData(byte.MaxValue)]
+        public void SimpleEntity_OnActivateSuccessRejectsChecklistIndexOutsideDatacubeMask(byte checklistIndex)
         {
+            var questManager = new Mock<IQuestManager>();
+            var player = new Mock<IPlayer>();
+            player.SetupGet(value => value.QuestManager).Returns(questManager.Object);
             var entity = new SimpleEntity(Mock.Of<NexusForever.Game.Abstract.Entity.Movement.IMovementManager>());
             typeof(SimpleEntity).GetProperty(
                     nameof(SimpleEntity.QuestChecklistIdx),
                     BindingFlags.Instance | BindingFlags.Public)
-                .SetValue(entity, byte.MaxValue);
+                .SetValue(entity, checklistIndex);
 
-            Exception exception = Record.Exception(() => entity.OnActivateCast(Mock.Of<IPlayer>()));
+            Exception exception = Record.Exception(() => entity.OnActivateSuccess(player.Object));
 
             Assert.Null(exception);
+            questManager.Verify(manager => manager.ObjectiveUpdate(
+                It.IsAny<QuestObjectiveType>(),
+                It.IsAny<uint>(),
+                It.IsAny<uint>()), Times.Never);
+        }
+
+        [Fact]
+        public void SimpleEntity_DatacubeFailureDoesNotSuppressVolumeOrChecklistProgress()
+        {
+            var datacubeManager = new Mock<IDatacubeManager>();
+            datacubeManager.Setup(manager => manager.GetDatacube(11, DatacubeType.Datacube))
+                .Throws(new InvalidOperationException("Test datacube failure."));
+            datacubeManager.Setup(manager => manager.GetDatacube(12, DatacubeType.Journal))
+                .Returns((IDatacube)null);
+            var questManager = new Mock<IQuestManager>();
+            var player = new Mock<IPlayer>();
+            player.SetupGet(value => value.DatacubeManager).Returns(datacubeManager.Object);
+            player.SetupGet(value => value.QuestManager).Returns(questManager.Object);
+            var entity = new SimpleEntity(Mock.Of<NexusForever.Game.Abstract.Entity.Movement.IMovementManager>());
+            typeof(WorldEntity).GetProperty(
+                    nameof(WorldEntity.CreatureEntry),
+                    BindingFlags.Instance | BindingFlags.Public)
+                .SetValue(entity, new Creature2Entry
+                {
+                    DatacubeId       = 11u,
+                    DatacubeVolumeId = 12u
+                });
+            typeof(SimpleEntity).GetProperty(
+                    nameof(SimpleEntity.QuestChecklistIdx),
+                    BindingFlags.Instance | BindingFlags.Public)
+                .SetValue(entity, (byte)3);
+
+            entity.OnActivateSuccess(player.Object);
+
+            datacubeManager.Verify(manager => manager.AddDatacubeVolume(12, 0x08u), Times.Once);
+            questManager.Verify(manager => manager.ObjectiveUpdate(
+                QuestObjectiveType.ActivateTargetGroupChecklist,
+                entity.CreatureId,
+                3u), Times.Once);
         }
 
         [Fact]

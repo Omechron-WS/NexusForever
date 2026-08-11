@@ -99,6 +99,17 @@ namespace NexusForever.Game.Abstract.Entity
         void OnActivateCast(IPlayer activator);
 
         /// <summary>
+        /// Invoked when <see cref="IWorldEntity"/> is cast activated with a client-assigned interaction identifier.
+        /// </summary>
+        void OnActivateCast(IPlayer activator, uint clientUniqueId);
+
+        /// <summary>
+        /// Attempts to start a cast activation with a client-assigned interaction identifier.
+        /// </summary>
+        /// <returns><see langword="true"/> when a spell instance was created; otherwise, <see langword="false"/>.</returns>
+        bool TryActivateCast(IPlayer activator, uint clientUniqueId);
+
+        /// <summary>
         /// Invoked when a client-side interaction on this entity succeeds.
         /// </summary>
         void OnActivateSuccess(IPlayer activator);

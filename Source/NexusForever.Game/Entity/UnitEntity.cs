@@ -642,7 +642,7 @@ namespace NexusForever.Game.Entity
                     player.Dismount();
             }
 
-            CastMethod castMethod = (CastMethod)parameters.SpellInfo.BaseInfo.Entry.CastMethod;
+            CastMethod castMethod = ResolveCastMethod(parameters);
             ISpell spell = GlobalSpellManager.Instance.NewSpell(castMethod, this, parameters);
             if (spell == null)
                 return null;
@@ -650,6 +650,17 @@ namespace NexusForever.Game.Entity
             spell.Cast();
             pendingSpells.Add(spell);
             return spell;
+        }
+
+        /// <summary>
+        /// Resolves the concrete spell implementation, forcing activation spells through the CSI lifecycle.
+        /// </summary>
+        internal static CastMethod ResolveCastMethod(ISpellParameters parameters)
+        {
+            ArgumentNullException.ThrowIfNull(parameters);
+            return parameters.ClientSideInteraction != null
+                ? CastMethod.ClientSideInteraction
+                : (CastMethod)parameters.SpellInfo.BaseInfo.Entry.CastMethod;
         }
 
         /// <summary>
@@ -737,9 +748,18 @@ namespace NexusForever.Game.Entity
         /// <summary>
         /// Returns an active <see cref="ISpell"/> that is affecting this <see cref="IUnitEntity"/>
         /// </summary>
-        public ISpell GetActiveSpell(Func<ISpell, bool> func)
+        public ISpell GetActiveSpell(Func<ISpell, bool> predicate)
         {
-            return pendingSpells.FirstOrDefault(func);
+            ArgumentNullException.ThrowIfNull(predicate);
+            return pendingSpells.FirstOrDefault(predicate);
+        }
+
+        /// <summary>
+        /// Returns an active <see cref="ISpell"/> with the supplied server casting identifier.
+        /// </summary>
+        public ISpell GetActiveSpell(uint castingId)
+        {
+            return pendingSpells.FirstOrDefault(spell => spell.CastingId == castingId);
         }
 
         /// <summary>

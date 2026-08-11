@@ -1,4 +1,5 @@
 ﻿using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.CSI;
 using NexusForever.Network;
 using NexusForever.Network.Message;
 using NexusForever.Network.World.Message.Model;
@@ -10,10 +11,9 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Entity
         public void HandleMessage(IWorldSession session, ClientActivateUnit activateUnit)
         {
             IWorldEntity entity = session.Player.GetVisible<IWorldEntity>(activateUnit.UnitId);
-            if (entity == null)
+            if (!ClientSideInteractionValidator.IsValid(session.Player, entity)
+                || ClientSideInteractionValidator.HasCastActivation(entity))
                 throw new InvalidPacketValueException();
-
-            // TODO: sanity check for range etc.
 
             entity.OnActivate(session.Player);
         }

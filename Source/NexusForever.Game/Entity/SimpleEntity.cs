@@ -5,11 +5,15 @@ using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Quest;
 using NexusForever.Network.World.Entity;
 using NexusForever.Network.World.Entity.Model;
+using NexusForever.Script;
+using NLog;
 
 namespace NexusForever.Game.Entity
 {
     public class SimpleEntity : UnitEntity, ISimpleEntity
     {
+        private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+
         public override EntityType Type => EntityType.Simple;
 
         public byte QuestChecklistIdx { get; private set; }
@@ -27,6 +31,7 @@ namespace NexusForever.Game.Entity
         {
             base.Initialise(model);
             QuestChecklistIdx = model.QuestChecklistIdx;
+            scriptCollection = ScriptManager.Instance.InitialiseEntityScripts<ISimpleEntity>(this);
         }
 
         protected override IEntityModel BuildEntityModel()
@@ -46,11 +51,29 @@ namespace NexusForever.Game.Entity
 
         public override void OnActivateCast(IPlayer activator)
         {
-            if (QuestChecklistIdx < 32)
-            {
-                uint progress = 1u << QuestChecklistIdx;
+            base.OnActivateCast(activator);
+        }
 
-                if (CreatureEntry.DatacubeId != 0u)
+        /// <inheritdoc />
+        public override void OnActivateCast(IPlayer activator, uint clientUniqueId)
+        {
+            base.OnActivateCast(activator, clientUniqueId);
+        }
+
+        /// <inheritdoc />
+        public override void OnActivateSuccess(IPlayer activator)
+        {
+            if (QuestChecklistIdx >= 32)
+            {
+                base.OnActivateSuccess(activator);
+                return;
+            }
+
+            uint progress = 1u << QuestChecklistIdx;
+
+            try
+            {
+                if (CreatureEntry != null && CreatureEntry.DatacubeId != 0u)
                 {
                     IDatacube datacube = activator.DatacubeManager.GetDatacube((ushort)CreatureEntry.DatacubeId, DatacubeType.Datacube);
                     if (datacube == null)
@@ -61,8 +84,15 @@ namespace NexusForever.Game.Entity
                         activator.DatacubeManager.SendDatacube(datacube);
                     }
                 }
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to update datacube progress for activated entity {Guid}.");
+            }
 
-                if (CreatureEntry.DatacubeVolumeId != 0u)
+            try
+            {
+                if (CreatureEntry != null && CreatureEntry.DatacubeVolumeId != 0u)
                 {
                     IDatacube datacube = activator.DatacubeManager.GetDatacube((ushort)CreatureEntry.DatacubeVolumeId, DatacubeType.Journal);
                     if (datacube == null)
@@ -74,18 +104,24 @@ namespace NexusForever.Game.Entity
                     }
                 }
             }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to update datacube volume progress for activated entity {Guid}.");
+            }
 
-            //TODO: cast "116,Generic Quest Spell - Activating - Activate - Tier 1" by 0x07FD
-        }
+            try
+            {
+                activator.QuestManager?.ObjectiveUpdate(
+                    QuestObjectiveType.ActivateTargetGroupChecklist,
+                    CreatureId,
+                    QuestChecklistIdx);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to update checklist progress for activated entity {Guid}.");
+            }
 
-        /// <inheritdoc />
-        public override void OnActivateSuccess(IPlayer activator)
-        {
-            activator.QuestManager.ObjectiveUpdate(QuestObjectiveType.SucceedCSI, CreatureId, 1u);
-            activator.QuestManager.ObjectiveUpdate(
-                QuestObjectiveType.ActivateTargetGroupChecklist,
-                CreatureId,
-                QuestChecklistIdx);
+            base.OnActivateSuccess(activator);
         }
     }
 }

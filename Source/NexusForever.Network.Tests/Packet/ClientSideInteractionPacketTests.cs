@@ -1,5 +1,6 @@
 using NexusForever.Network.Message;
 using NexusForever.Network.World.Message.Model;
+using NexusForever.Game.Static.CSI;
 
 namespace NexusForever.Network.Tests.Packet
 {
@@ -45,7 +46,7 @@ namespace NexusForever.Network.Tests.Packet
             message.Read(reader);
 
             Assert.Equal(0x78563412u, message.CastingId);
-            Assert.Equal(5, message.Result);
+            Assert.Equal((ClientSideInteractionResult)5, message.Result);
             Assert.Equal(0xA1B2C3D4u, message.Validation);
         }
 

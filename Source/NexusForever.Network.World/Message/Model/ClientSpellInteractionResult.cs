@@ -1,3 +1,4 @@
+using NexusForever.Game.Static.CSI;
 using NexusForever.Network.Message;
 
 namespace NexusForever.Network.World.Message.Model
@@ -9,13 +10,13 @@ namespace NexusForever.Network.World.Message.Model
     public class ClientSpellInteractionResult : IReadable
     {
         public uint CastingId { get; private set; }
-        public byte Result { get; private set; }
+        public ClientSideInteractionResult Result { get; private set; }
         public uint Validation { get; private set; }
 
         public void Read(GamePacketReader reader)
         {
-            CastingId = reader.ReadUInt();
-            Result = reader.ReadByte(3u);
+            CastingId  = reader.ReadUInt();
+            Result     = reader.ReadEnum<ClientSideInteractionResult>(3u);
             Validation = reader.ReadUInt();
         }
     }

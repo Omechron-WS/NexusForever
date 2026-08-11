@@ -18,5 +18,19 @@ namespace NexusForever.Script.Template
         void OnEnterZone(IWorldEntity entity, uint zone)
         {
         }
+
+        /// <summary>
+        /// Invoked after a client-side interaction succeeds.
+        /// </summary>
+        void OnActivateSuccess(IWorldEntity entity, IPlayer activator)
+        {
+        }
+
+        /// <summary>
+        /// Invoked after a client-side interaction fails.
+        /// </summary>
+        void OnActivateFail(IWorldEntity entity, IPlayer activator)
+        {
+        }
     }
 }

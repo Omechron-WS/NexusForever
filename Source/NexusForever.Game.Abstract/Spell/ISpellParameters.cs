@@ -20,6 +20,11 @@ namespace NexusForever.Game.Abstract.Spell
         /// </remarks>
         bool IsProcTriggered { get; set; }
 
+        /// <summary>
+        /// Gets or sets a creature activation cast-time override in milliseconds.
+        /// </summary>
+        uint CastTimeOverride { get; set; }
+
         uint PrimaryTargetId { get; set; }
         Position Position { get; set; }
         ushort TaxiNode { get; set; }

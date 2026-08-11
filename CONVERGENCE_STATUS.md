@@ -18,7 +18,7 @@ This document records verified implementation status on the `convergence` branch
 | 0 — Static types | Conditional | Planned types are present and tested. Some downstream use is absent, and `TelegraphDamageFlag` values still require capture validation. |
 | 1 — Loot | Incomplete | Schema, recursive loading, startup/ticking, owner attachment, authorised same-map collection, reconnect notification, loot bags, capacity-safe item grants, expiry, stale-owner cleanup, final-package corpse cleanup, and fail-closed class/race/level/quest conditions are live and tested. Group/raid allocation remains incomplete, and retail loot seed data is unavailable. |
 | 2 — Spell variants | Incomplete | Factory dispatch is live. Failed-cast cleanup, cancellation semantics, phase masks, threshold input, aura cleanup, and exactly-once costs remain incomplete. |
-| 3 — Client-side interaction | Incomplete | Foundations exist, but the build-16042 start/result packet loop, client correlation ID, timeout, entity callbacks, and quest integration are not live. |
+| 3 — Client-side interaction | Complete | Immediate and deferred activation packets preserve the client correlation ID, select prerequisite-gated activation spells, enforce visibility/map/range and cast-time boundaries, emit the build-16042 start form, correlate terminal results by server casting ID, and complete exactly once through entity, datacube, script, and quest callbacks. Timeouts, cancellation, late/replayed packets, non-unit targets, failed spell admission, and vital/cooldown execution failures are tested and fail closed. The opaque client validation word is deliberately not trusted without capture evidence. |
 | 4 — Combat, healing, and procs | Incomplete | Healing, chance-based movement/critical/direct-hit/received-damage proc dispatch, build-16042 internal cooldowns, deferred triggers, recursion suppression, exact per-spell/per-target teardown, combat-state transitions, deterministic 10-second PvP threat expiry, and corrected critical, power, and mitigation formula paths are live and tested. Effect-level prerequisite gating remains incomplete. |
 | 5 — NPC AI | Not implemented | Scheduled after the Phase 6 entity lifecycle is stable. |
 | 6 — Entity vitals and lifecycle | In progress | Wire-compatible vital aliases, focus property data, persistence-safe initial pools, deterministic unit/class regeneration, idempotent death and rewards, corpse cleanup, persistent non-player respawn, and transactional build-16042 base spell vital requirements/costs are live and tested. Per-effect costs/timing, threshold-child casting, sprint, dash, and the remaining class-resource action hooks are incomplete. |
@@ -48,6 +48,7 @@ Completed hardening:
 - Quest reward selection, eligibility, currency/reputation/XP bounds, and aggregate inventory capacity are validated before mutation; pushed-item removal and item grants use one exact-bag exchange and repeated or re-entrant completion is rejected.
 - Proc trigger chance, internal cooldown, event-target routing, deferred execution, exact effect identity, lifecycle cancellation, and proc-origin recursion suppression are validated against build-16042 spell data.
 - Base caster/target vital requirements and aliased player resource costs are revalidated atomically at spell execution; failed admissions clean up without leaking pending spells, and channelled costs are charged per successful pulse.
+- Client-side interactions now use the live build-16042 start/result loop with authoritative cast timing, bounded spatial revalidation, prerequisite-aware activation selection, exactly-once callbacks, and non-disconnecting handling for duplicate, late, and server-data failure paths.
 - Quest communicator conditions, story-only delivery, idempotent mentions, and callback pickup/hand-in gates are validated against build-16042 data. The client communicator action remains disabled until its one-bit action semantics can be verified from client code or captures.
 - The offline archive reader is maintained in-tree against SharpCompress `0.50.4`; malformed and truncated archives fail closed, and a compressed build-16042 `World.tbl` read was verified byte-for-byte against the extracted client table. The full solution currently reports no vulnerable direct or transitive packages.
 
@@ -55,7 +56,7 @@ Remaining priority work:
 
 - Make cross-server lifecycle publication failures retryable; detached failures are now observable through error logging.
 - Add a durable quest reward outbox/completion record before enabling account reward domains; the current in-memory admission boundary cannot make a process crash atomic across inventory, character, and account stores.
-- Finish the Phase 2/3 spell-state and client-side-interaction failure paths before relying on them for scripted quest interactions.
+- Finish the remaining Phase 2 spell variants and effect-timeline failure paths before relying on threshold and persistent effects for scripted combat content.
 
 RC4 remains required by the build-16042 STS protocol. It is treated as a compatibility exception and contained through SRP state enforcement, bounded inputs, secret redaction, and deployment isolation.
 
@@ -63,5 +64,5 @@ RC4 remains required by the build-16042 STS protocol. It is treated as a compati
 
 1. Close the remaining Phase 4 effect-prerequisite gap and Phase 6 per-effect timing/cost work, then complete threshold casting, dash, and sprint.
 2. Complete verified quest event adapters, then timer, repeat, sharing, and durable reward-delivery slices; keep the ambiguous client communicator action gated pending build-16042 evidence.
-3. Repair the Phase 2 and Phase 3 spell-state and build-16042 client-correlation blockers, then implement minimum viable NPC aggro, targeting, attacks, movement, leash, and evade on the stable lifecycle.
+3. Repair the remaining Phase 2 spell-state and threshold-child blockers, then implement minimum viable NPC aggro, targeting, attacks, movement, leash, and evade on the stable lifecycle.
 4. Make cross-server lifecycle publication retryable and continue lower-risk long-uptime hardening alongside the gameplay phases.

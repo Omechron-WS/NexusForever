@@ -28,15 +28,29 @@ namespace NexusForever.Game.Abstract.CSI
         ClientSideInteractionEntry Entry { get; }
 
         /// <summary>
+        /// Returns whether the activating player and target still satisfy the interaction boundary.
+        /// </summary>
+        /// <returns><see langword="true"/> when the interaction remains valid; otherwise, <see langword="false"/>.</returns>
+        bool IsValid();
+
+        /// <summary>
         /// Called when the client reports CSI success.
         /// Routes to the activating entity's OnActivateSuccess callback.
         /// </summary>
-        void TriggerSuccess();
+        /// <returns><see langword="true"/> when this call claimed the terminal result; otherwise, <see langword="false"/>.</returns>
+        bool TriggerSuccess();
+
+        /// <summary>
+        /// Completes a success whose spatial boundary was validated immediately before spell execution.
+        /// </summary>
+        /// <returns><see langword="true"/> when this call claimed the terminal result; otherwise, <see langword="false"/>.</returns>
+        bool CompleteSuccess();
 
         /// <summary>
         /// Called when the client reports CSI failure.
         /// Routes to the activating entity's OnActivateFail callback.
         /// </summary>
-        void TriggerFail();
+        /// <returns><see langword="true"/> when this call claimed the terminal result; otherwise, <see langword="false"/>.</returns>
+        bool TriggerFail();
     }
 }

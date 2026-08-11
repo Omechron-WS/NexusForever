@@ -180,7 +180,7 @@ namespace NexusForever.Game.Spell
 
             IUnitEntity target = Parameters.PrimaryTargetId == 0u
                 ? Caster
-                : Caster.GetVisible<IUnitEntity>(Parameters.PrimaryTargetId);
+                : Caster.GetVisible<IWorldEntity>(Parameters.PrimaryTargetId) as IUnitEntity;
             result = SpellVitalPolicy.CheckTargetRequirement(target, entry);
             if (result != CastResult.Ok)
                 return result;
@@ -289,15 +289,7 @@ namespace NexusForever.Game.Spell
 
             try
             {
-                if (Caster is IPlayer player && !player.IsLoading)
-                {
-                    player.Session.EnqueueMessageEncrypted(new Server07F9
-                    {
-                        ServerUniqueId = CastingId,
-                        CastResult     = result,
-                        CancelCast     = true
-                    });
-                }
+                SendSpellCancellation(result);
             }
             finally
             {
@@ -512,7 +504,7 @@ namespace NexusForever.Game.Spell
 
             if (Parameters.PrimaryTargetId != 0)
             {
-                IUnitEntity primaryTargetEntity = Caster.GetVisible<IUnitEntity>(Parameters.PrimaryTargetId);
+                IUnitEntity primaryTargetEntity = Caster.GetVisible<IWorldEntity>(Parameters.PrimaryTargetId) as IUnitEntity;
                 if (primaryTargetEntity != null)
                     targets.Add(new SpellTargetInfo(SpellEffectTargetFlags.Target, primaryTargetEntity));
             }
@@ -554,7 +546,7 @@ namespace NexusForever.Game.Spell
             }
         }
 
-        public bool IsMovingInterrupted()
+        public virtual bool IsMovingInterrupted()
         {
             // TODO: implement correctly
             return Parameters.SpellInfo.Entry.CastTime > 0;
@@ -590,7 +582,7 @@ namespace NexusForever.Game.Spell
             }
         }
 
-        private void FailExecution(CastResult castResult)
+        protected void FailExecution(CastResult castResult)
         {
             try
             {
@@ -613,8 +605,15 @@ namespace NexusForever.Game.Spell
                             CancelCast(castResult);
                         else
                         {
-                            events.CancelEvents();
-                            RemoveAllEffects();
+                            try
+                            {
+                                SendSpellCancellation(castResult);
+                            }
+                            finally
+                            {
+                                events.CancelEvents();
+                                RemoveAllEffects();
+                            }
                         }
                     }
                     catch (Exception exception)
@@ -627,6 +626,19 @@ namespace NexusForever.Game.Spell
                     status = SpellStatus.Finishing;
                 }
             }
+        }
+
+        private void SendSpellCancellation(CastResult castResult)
+        {
+            if (Caster is not IPlayer player || player.IsLoading)
+                return;
+
+            player.Session.EnqueueMessageEncrypted(new Server07F9
+            {
+                ServerUniqueId = CastingId,
+                CastResult     = castResult,
+                CancelCast     = true
+            });
         }
 
         protected void SendSpellCastResult(CastResult castResult)
@@ -655,6 +667,14 @@ namespace NexusForever.Game.Spell
 
         protected void SendSpellStart()
         {
+            SendSpellStart(Parameters.PrimaryTargetId);
+        }
+
+        /// <summary>
+        /// Publishes the spell start while selecting the unit used for its initial position block.
+        /// </summary>
+        protected void SendSpellStart(uint initialPositionUnitId)
+        {
             var spellStart = new ServerSpellStart
             {
                 CastingId              = CastingId,
@@ -671,8 +691,12 @@ namespace NexusForever.Game.Spell
             };
 
             var unitsCasting = new List<IUnitEntity>();
-            if (Parameters.PrimaryTargetId > 0)
-                unitsCasting.Add(Caster.GetVisible<IUnitEntity>(Parameters.PrimaryTargetId));
+            if (initialPositionUnitId > 0u)
+            {
+                IUnitEntity unit = Caster.GetVisible<IWorldEntity>(initialPositionUnitId) as IUnitEntity;
+                if (unit != null)
+                    unitsCasting.Add(unit);
+            }
             else
                 unitsCasting.Add(Caster);
 
