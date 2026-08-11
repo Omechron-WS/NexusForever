@@ -192,6 +192,9 @@ namespace NexusForever.WorldServer.Command
                     convertedParameters.Add(parameterValue);
                 }
 
+                if (queue.Count != 0)
+                    return CommandResult.InvalidParameters;
+
                 methodContainer.Invoke(convertedParameters);
             }
             catch (Exception exception)
