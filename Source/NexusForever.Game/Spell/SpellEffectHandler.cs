@@ -10,6 +10,7 @@ using NexusForever.Game.Map;
 using NexusForever.Game.Quest;
 using NexusForever.Game.Static.Combat;
 using NexusForever.Game.Static.Entity;
+using NexusForever.Game.Static.Quest;
 using NexusForever.Game.Static.Spell;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
@@ -283,27 +284,58 @@ namespace NexusForever.Game.Spell
             IUnitEntity target,
             ISpellTargetEffectInfo info)
         {
-            if (target is not IPlayer player
-                || player.QuestManager == null
-                || info?.Entry == null)
+            if (info?.Entry == null)
                 return;
+
+            if (target is not IPlayer player || player.QuestManager == null)
+            {
+                info.DropEffect = true;
+                return;
+            }
 
             uint questId = info.Entry.DataBits00;
             uint objectiveIndex = info.Entry.DataBits01;
-            if (questId is 0u or > MaximumQuestId || objectiveIndex >= byte.MaxValue)
+            uint progress = info.Entry.DataBits02;
+            if (questId is 0u or > MaximumQuestId
+                || objectiveIndex >= byte.MaxValue
+                || progress == 0u)
+            {
+                info.DropEffect = true;
                 return;
+            }
 
             try
             {
-                player.QuestManager.QuestAchieveObjective((ushort)questId, (byte)objectiveIndex);
+                if (!player.QuestManager.TryObjectiveUpdate(
+                        (ushort)questId,
+                        (byte)objectiveIndex,
+                        progress,
+                        out var objective))
+                {
+                    info.DropEffect = true;
+                    return;
+                }
+
+                var interaction = spell?.Parameters?.ClientSideInteraction;
+                if (interaction?.ActivateUnit != null
+                    && objective.ObjectiveInfo.Type == QuestObjectiveType.ActivateEntity
+                    && objective.IsTarget(interaction.ActivateUnit.CreatureId))
+                {
+                    // Immediate effects run before CompleteSuccess and can exclude their exact
+                    // objective from the generic activation event. Delayed effects arrive after
+                    // the terminal claim and are deliberately rejected by the interaction.
+                    interaction.TrySuppressActivateEntityObjective(objective.ObjectiveInfo.Id);
+                }
             }
             catch (QuestException)
             {
                 // The effect can legitimately target a player without the referenced active objective.
+                info.DropEffect = true;
             }
             catch (ArgumentException)
             {
                 // Invalid static quest references fail this effect without aborting the owning spell.
+                info.DropEffect = true;
             }
         }
 

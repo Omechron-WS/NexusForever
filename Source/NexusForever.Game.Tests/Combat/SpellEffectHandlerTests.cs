@@ -1,11 +1,14 @@
 using Microsoft.Extensions.DependencyInjection;
 using NexusForever.Game.Abstract;
+using NexusForever.Game.Abstract.CSI;
 using NexusForever.Game.Abstract.Combat;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Abstract.Quest;
 using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Quest;
 using NexusForever.Game.Static.Combat;
 using NexusForever.Game.Static.Entity;
+using NexusForever.Game.Static.Quest;
 using NexusForever.Game.Spell;
 using NexusForever.Game.Static.Spell;
 using NexusForever.GameTable.Model;
@@ -467,28 +470,38 @@ namespace NexusForever.Game.Tests.Combat
         public void HandleEffectQuestAdvanceObjective_AdvancesValidatedPlayerObjective()
         {
             var questManager = new Mock<IQuestManager>();
+            IQuestObjective objective = Mock.Of<IQuestObjective>();
+            questManager
+                .Setup(manager => manager.TryObjectiveUpdate(10_643, 7, 2u, out objective))
+                .Returns(true);
             var player = new Mock<IPlayer>();
             player.SetupGet(value => value.QuestManager).Returns(questManager.Object);
             var info = new SpellTargetInfo.SpellTargetEffectInfo(1u, new Spell4EffectsEntry
             {
                 EffectType = SpellEffectType.QuestAdvanceObjective,
                 DataBits00 = 10_643u,
-                DataBits01 = 7u
+                DataBits01 = 7u,
+                DataBits02 = 2u
             });
 
             SpellHandler.HandleEffectQuestAdvanceObjective(Mock.Of<ISpell>(), player.Object, info);
 
-            questManager.Verify(manager => manager.QuestAchieveObjective(10_643, 7), Times.Once);
+            questManager.Verify(
+                manager => manager.TryObjectiveUpdate(10_643, 7, 2u, out objective),
+                Times.Once);
+            Assert.False(info.DropEffect);
         }
 
         [Theory]
-        [InlineData(0u, 0u)]
-        [InlineData(0x8000u, 0u)]
-        [InlineData(100u, 255u)]
-        [InlineData(100u, 256u)]
+        [InlineData(0u, 0u, 1u)]
+        [InlineData(0x8000u, 0u, 1u)]
+        [InlineData(100u, 255u, 1u)]
+        [InlineData(100u, 256u, 1u)]
+        [InlineData(100u, 0u, 0u)]
         public void HandleEffectQuestAdvanceObjective_InvalidPackedIdentifiersFailClosed(
             uint questId,
-            uint objectiveIndex)
+            uint objectiveIndex,
+            uint progress)
         {
             var questManager = new Mock<IQuestManager>();
             var player = new Mock<IPlayer>();
@@ -497,30 +510,39 @@ namespace NexusForever.Game.Tests.Combat
             {
                 EffectType = SpellEffectType.QuestAdvanceObjective,
                 DataBits00 = questId,
-                DataBits01 = objectiveIndex
+                DataBits01 = objectiveIndex,
+                DataBits02 = progress
             });
 
             SpellHandler.HandleEffectQuestAdvanceObjective(Mock.Of<ISpell>(), player.Object, info);
 
             questManager.Verify(
-                manager => manager.QuestAchieveObjective(It.IsAny<ushort>(), It.IsAny<byte>()),
+                manager => manager.TryObjectiveUpdate(
+                    It.IsAny<ushort>(),
+                    It.IsAny<byte>(),
+                    It.IsAny<uint>(),
+                    out It.Ref<IQuestObjective>.IsAny),
                 Times.Never);
+            Assert.True(info.DropEffect);
         }
 
         [Fact]
-        public void HandleEffectQuestAdvanceObjective_NonPlayerTargetIsIgnored()
+        public void HandleEffectQuestAdvanceObjective_NonPlayerTargetIsDropped()
         {
             var info = new SpellTargetInfo.SpellTargetEffectInfo(1u, new Spell4EffectsEntry
             {
                 EffectType = SpellEffectType.QuestAdvanceObjective,
                 DataBits00 = 100u,
-                DataBits01 = 1u
+                DataBits01 = 1u,
+                DataBits02 = 1u
             });
 
             SpellHandler.HandleEffectQuestAdvanceObjective(
                 Mock.Of<ISpell>(),
                 Mock.Of<IUnitEntity>(),
                 info);
+
+            Assert.True(info.DropEffect);
         }
 
         [Theory]
@@ -530,8 +552,9 @@ namespace NexusForever.Game.Tests.Combat
             bool invalidStaticReference)
         {
             var questManager = new Mock<IQuestManager>();
+            IQuestObjective objective = null;
             questManager
-                .Setup(manager => manager.QuestAchieveObjective(100, 1))
+                .Setup(manager => manager.TryObjectiveUpdate(100, 1, 1u, out objective))
                 .Throws(invalidStaticReference
                     ? new ArgumentException("Invalid quest.")
                     : new QuestException("Quest is not active."));
@@ -541,12 +564,103 @@ namespace NexusForever.Game.Tests.Combat
             {
                 EffectType = SpellEffectType.QuestAdvanceObjective,
                 DataBits00 = 100u,
-                DataBits01 = 1u
+                DataBits01 = 1u,
+                DataBits02 = 1u
             });
 
             SpellHandler.HandleEffectQuestAdvanceObjective(Mock.Of<ISpell>(), player.Object, info);
 
-            questManager.Verify(manager => manager.QuestAchieveObjective(100, 1), Times.Once);
+            questManager.Verify(
+                manager => manager.TryObjectiveUpdate(100, 1, 1u, out objective),
+                Times.Once);
+            Assert.True(info.DropEffect);
+        }
+
+        [Fact]
+        public void HandleEffectQuestAdvanceObjective_ImmediateCsiSuppressesOnlyMatchingActivateObjective()
+        {
+            var objectiveInfo = new Mock<IQuestObjectiveInfo>();
+            objectiveInfo.SetupGet(value => value.Id).Returns(8_247u);
+            objectiveInfo.SetupGet(value => value.Type).Returns(QuestObjectiveType.ActivateEntity);
+            var objective = new Mock<IQuestObjective>();
+            objective.SetupGet(value => value.ObjectiveInfo).Returns(objectiveInfo.Object);
+            objective.Setup(value => value.IsTarget(24_251u)).Returns(true);
+            IQuestObjective resolvedObjective = objective.Object;
+
+            var questManager = new Mock<IQuestManager>();
+            questManager
+                .Setup(manager => manager.TryObjectiveUpdate(5_593, 0, 1u, out resolvedObjective))
+                .Returns(true);
+            var player = new Mock<IPlayer>();
+            player.SetupGet(value => value.QuestManager).Returns(questManager.Object);
+
+            var activateUnit = new Mock<IWorldEntity>();
+            activateUnit.SetupGet(value => value.CreatureId).Returns(24_251u);
+            var interaction = new Mock<IClientSideInteraction>();
+            interaction.SetupGet(value => value.ActivateUnit).Returns(activateUnit.Object);
+            interaction
+                .Setup(value => value.TrySuppressActivateEntityObjective(8_247u))
+                .Returns(true);
+            var parameters = new Mock<ISpellParameters>();
+            parameters.SetupGet(value => value.ClientSideInteraction).Returns(interaction.Object);
+            var spell = new Mock<ISpell>();
+            spell.SetupGet(value => value.Parameters).Returns(parameters.Object);
+            var info = new SpellTargetInfo.SpellTargetEffectInfo(1u, new Spell4EffectsEntry
+            {
+                EffectType = SpellEffectType.QuestAdvanceObjective,
+                DataBits00 = 5_593u,
+                DataBits01 = 0u,
+                DataBits02 = 1u
+            });
+
+            SpellHandler.HandleEffectQuestAdvanceObjective(spell.Object, player.Object, info);
+
+            interaction.Verify(
+                value => value.TrySuppressActivateEntityObjective(8_247u),
+                Times.Once);
+            Assert.False(info.DropEffect);
+        }
+
+        [Theory]
+        [InlineData(QuestObjectiveType.SucceedCSI, true)]
+        [InlineData(QuestObjectiveType.ActivateEntity, false)]
+        public void HandleEffectQuestAdvanceObjective_DoesNotSuppressDifferentGenericObjective(
+            QuestObjectiveType type,
+            bool matchesTarget)
+        {
+            var objectiveInfo = new Mock<IQuestObjectiveInfo>();
+            objectiveInfo.SetupGet(value => value.Id).Returns(8_247u);
+            objectiveInfo.SetupGet(value => value.Type).Returns(type);
+            var objective = new Mock<IQuestObjective>();
+            objective.SetupGet(value => value.ObjectiveInfo).Returns(objectiveInfo.Object);
+            objective.Setup(value => value.IsTarget(24_251u)).Returns(matchesTarget);
+            IQuestObjective resolvedObjective = objective.Object;
+
+            var questManager = new Mock<IQuestManager>();
+            questManager
+                .Setup(manager => manager.TryObjectiveUpdate(5_593, 0, 1u, out resolvedObjective))
+                .Returns(true);
+            var player = new Mock<IPlayer>();
+            player.SetupGet(value => value.QuestManager).Returns(questManager.Object);
+            var interaction = new Mock<IClientSideInteraction>();
+            interaction.SetupGet(value => value.ActivateUnit).Returns(Mock.Of<IWorldEntity>(
+                value => value.CreatureId == 24_251u));
+            var parameters = new Mock<ISpellParameters>();
+            parameters.SetupGet(value => value.ClientSideInteraction).Returns(interaction.Object);
+            var spell = new Mock<ISpell>();
+            spell.SetupGet(value => value.Parameters).Returns(parameters.Object);
+            var info = new SpellTargetInfo.SpellTargetEffectInfo(1u, new Spell4EffectsEntry
+            {
+                EffectType = SpellEffectType.QuestAdvanceObjective,
+                DataBits00 = 5_593u,
+                DataBits02 = 1u
+            });
+
+            SpellHandler.HandleEffectQuestAdvanceObjective(spell.Object, player.Object, info);
+
+            interaction.Verify(
+                value => value.TrySuppressActivateEntityObjective(It.IsAny<uint>()),
+                Times.Never);
         }
 
         [Fact]

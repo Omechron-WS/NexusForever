@@ -69,6 +69,62 @@ namespace NexusForever.Game.Tests.CSI
         }
 
         [Fact]
+        public void CompleteSuccess_ExcludesOnlyAuthoritativeActivateEntityObjective()
+        {
+            (Mock<IPlayer> player, Mock<IWorldEntity> entity, Mock<IAssetManager> assetManager) = CreateValidInteraction();
+            var interaction = new ClientSideInteraction(
+                player.Object,
+                entity.Object,
+                42u,
+                assetManager: assetManager.Object);
+
+            Assert.True(interaction.TrySuppressActivateEntityObjective(8_247u));
+            Assert.False(interaction.TrySuppressActivateEntityObjective(8_247u));
+            Assert.True(interaction.CompleteSuccess());
+
+            Mock.Get(player.Object.QuestManager).Verify(manager => manager.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity,
+                77u,
+                1u,
+                It.Is<IReadOnlySet<uint>>(excluded =>
+                    excluded.Count == 1 && excluded.Contains(8_247u))), Times.Once);
+            Mock.Get(player.Object.QuestManager).Verify(manager => manager.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity,
+                77u,
+                1u), Times.Never);
+            player.Object.QuestManager.VerifyObjective(QuestObjectiveType.SucceedCSI, 77u);
+            player.Object.QuestManager.VerifyObjective(QuestObjectiveType.ActivateTargetGroup, 12u);
+            player.Object.QuestManager.VerifyObjective(QuestObjectiveType.ActivateTargetGroup, 13u);
+            entity.Verify(value => value.OnActivateSuccess(player.Object), Times.Once);
+        }
+
+        [Fact]
+        public void CompleteSuccess_RejectsLateSuppressionAndReplay()
+        {
+            (Mock<IPlayer> player, Mock<IWorldEntity> entity, Mock<IAssetManager> assetManager) = CreateValidInteraction();
+            var interaction = new ClientSideInteraction(
+                player.Object,
+                entity.Object,
+                42u,
+                assetManager: assetManager.Object);
+
+            Assert.True(interaction.CompleteSuccess());
+            Assert.False(interaction.TrySuppressActivateEntityObjective(8_247u));
+            Assert.False(interaction.CompleteSuccess());
+
+            Mock.Get(player.Object.QuestManager).Verify(manager => manager.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity,
+                77u,
+                1u), Times.Once);
+            Mock.Get(player.Object.QuestManager).Verify(manager => manager.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity,
+                77u,
+                1u,
+                It.IsAny<IReadOnlySet<uint>>()), Times.Never);
+            entity.Verify(value => value.OnActivateSuccess(player.Object), Times.Once);
+        }
+
+        [Fact]
         public void TriggerFail_CallsEntityOnActivateFail()
         {
             var mockPlayer = new Mock<IPlayer>();

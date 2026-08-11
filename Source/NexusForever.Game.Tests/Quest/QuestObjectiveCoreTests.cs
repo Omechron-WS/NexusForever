@@ -280,6 +280,33 @@ namespace NexusForever.Game.Tests.Quest
         }
 
         [Fact]
+        public void ObjectiveUpdate_ExcludesOnlyExactStaticObjectiveWithinDescendingBatch()
+        {
+            QuestFixture fixture = CreateQuest(
+                QuestObjectiveChecklistTests.CreateObjectiveInfo(
+                    1u,
+                    QuestObjectiveType.ActivateEntity,
+                    2u,
+                    data: 77u),
+                QuestObjectiveChecklistTests.CreateObjectiveInfo(
+                    2u,
+                    QuestObjectiveType.ActivateEntity,
+                    2u,
+                    data: 77u));
+
+            fixture.Quest.ObjectiveUpdate(
+                QuestObjectiveType.ActivateEntity,
+                77u,
+                1u,
+                new HashSet<uint> { 1u });
+
+            Assert.Equal([0u, 1u], fixture.Quest.Select(objective => objective.Progress));
+            Assert.Equal([1u], GetMessages<ServerQuestObjectiveUpdate>(fixture.Session)
+                .Select(message => message.QuestObjectiveIndex));
+            Assert.Equal(QuestState.Accepted, fixture.Quest.State);
+        }
+
+        [Fact]
         public void ObjectiveUpdate_OptionalPredecessorDoesNotBlockSequentialRequiredObjective()
         {
             QuestFixture fixture = CreateQuest(
@@ -571,6 +598,115 @@ namespace NexusForever.Game.Tests.Quest
 
             ServerQuestInit message = Assert.Single(GetMessages<ServerQuestInit>(dependencies.Session));
             Assert.Equal([5u, 10u], Assert.Single(message.Active).Objectives.Select(objective => objective.Progress));
+        }
+
+        [Fact]
+        public void QuestManager_TryObjectiveUpdate_UsesExactSlotAndRawAmount()
+        {
+            IQuestObjectiveInfo first = QuestObjectiveChecklistTests.CreateObjectiveInfo(
+                1u,
+                QuestObjectiveType.CollectItem,
+                5u);
+            IQuestObjectiveInfo second = QuestObjectiveChecklistTests.CreateObjectiveInfo(
+                2u,
+                QuestObjectiveType.CollectItem,
+                5u);
+            QuestDependencies dependencies = CreateDependencies();
+            IQuestInfo info = QuestObjectiveChecklistTests.CreateQuestInfo(first, second);
+            var quest = new QuestEntity(
+                dependencies.Player.Object,
+                info,
+                dependencies.GlobalQuestManager.Object,
+                dependencies.ScriptManager.Object,
+                dependencies.AssetManager.Object);
+            var manager = new QuestManager(
+                dependencies.Player.Object,
+                new CharacterModel(),
+                dependencies.GlobalQuestManager.Object,
+                null,
+                Mock.Of<IDisableManager>());
+            GetActiveQuests(manager).Add(quest.Id, quest);
+
+            bool updated = manager.TryObjectiveUpdate(quest.Id, 1, 2u, out IQuestObjective objective);
+
+            Assert.True(updated);
+            Assert.Same(quest.ElementAt(1), objective);
+            Assert.Equal([0u, 2u], quest.Select(value => value.Progress));
+            ServerQuestObjectiveUpdate message = Assert.Single(
+                GetMessages<ServerQuestObjectiveUpdate>(dependencies.Session));
+            Assert.Equal(1u, message.QuestObjectiveIndex);
+            Assert.Equal(2u, message.Completed);
+        }
+
+        [Fact]
+        public void QuestManager_TryObjectiveUpdate_PreservesChecklistRawValueAndRejectsInvalidInput()
+        {
+            IQuestObjectiveInfo objectiveInfo = QuestObjectiveChecklistTests.CreateObjectiveInfo(
+                1u,
+                QuestObjectiveType.ActivateTargetGroupChecklist,
+                4u);
+            QuestDependencies dependencies = CreateDependencies();
+            IQuestInfo info = QuestObjectiveChecklistTests.CreateQuestInfo(objectiveInfo);
+            var quest = new QuestEntity(
+                dependencies.Player.Object,
+                info,
+                dependencies.GlobalQuestManager.Object,
+                dependencies.ScriptManager.Object,
+                dependencies.AssetManager.Object);
+            var manager = new QuestManager(
+                dependencies.Player.Object,
+                new CharacterModel(),
+                dependencies.GlobalQuestManager.Object,
+                null,
+                Mock.Of<IDisableManager>());
+            GetActiveQuests(manager).Add(quest.Id, quest);
+
+            Assert.True(manager.TryObjectiveUpdate(quest.Id, 0, 2u, out IQuestObjective objective));
+            Assert.Equal(0x04u, objective.Progress);
+            Assert.False(manager.TryObjectiveUpdate(quest.Id, 1, 1u, out _));
+            Assert.False(manager.TryObjectiveUpdate(quest.Id, 0, 0u, out _));
+            Assert.False(manager.TryObjectiveUpdate(999, 0, 1u, out _));
+        }
+
+        [Fact]
+        public void QuestManager_TryObjectiveUpdate_NotificationFailureCannotReplayCommittedProgress()
+        {
+            IQuestObjectiveInfo objectiveInfo = QuestObjectiveChecklistTests.CreateObjectiveInfo(
+                1u,
+                QuestObjectiveType.ActivateEntity,
+                1u,
+                data: 24_251u);
+            QuestDependencies dependencies = CreateDependencies();
+            dependencies.Session
+                .Setup(session => session.EnqueueMessageEncrypted(
+                    It.IsAny<ServerQuestObjectiveUpdate>()))
+                .Throws(new InvalidOperationException("Test objective packet failure."));
+            IQuestInfo info = QuestObjectiveChecklistTests.CreateQuestInfo(objectiveInfo);
+            var quest = new QuestEntity(
+                dependencies.Player.Object,
+                info,
+                dependencies.GlobalQuestManager.Object,
+                dependencies.ScriptManager.Object,
+                dependencies.AssetManager.Object);
+            var manager = new QuestManager(
+                dependencies.Player.Object,
+                new CharacterModel(),
+                dependencies.GlobalQuestManager.Object,
+                null,
+                Mock.Of<IDisableManager>());
+            GetActiveQuests(manager).Add(quest.Id, quest);
+
+            bool updated = manager.TryObjectiveUpdate(quest.Id, 0, 1u, out IQuestObjective objective);
+            bool replayed = manager.TryObjectiveUpdate(quest.Id, 0, 1u, out _);
+
+            Assert.True(updated);
+            Assert.False(replayed);
+            Assert.Equal(1u, objective.Progress);
+            Assert.Equal(QuestState.Achieved, quest.State);
+            dependencies.Session.Verify(session => session.EnqueueMessageEncrypted(
+                It.IsAny<ServerQuestObjectiveUpdate>()), Times.Once);
+            dependencies.Session.Verify(session => session.EnqueueMessageEncrypted(
+                It.IsAny<ServerQuestStateChange>()), Times.Once);
         }
 
         [Fact]

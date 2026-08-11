@@ -52,6 +52,31 @@ namespace NexusForever.Game.Abstract.Quest
         void ObjectiveUpdate(QuestObjectiveType type, uint data, uint progress);
 
         /// <summary>
+        /// Update matching objectives except for exact static objective identifiers.
+        /// </summary>
+        /// <param name="type">Objective type.</param>
+        /// <param name="data">Objective target data.</param>
+        /// <param name="progress">Raw objective progress value.</param>
+        /// <param name="excludedObjectiveIds">Static objective identifiers excluded from this event.</param>
+        void ObjectiveUpdate(
+            QuestObjectiveType type,
+            uint data,
+            uint progress,
+            IReadOnlySet<uint> excludedObjectiveIds);
+
+        /// <summary>
+        /// Attempts to apply raw progress to an exact zero-based objective slot.
+        /// </summary>
+        /// <param name="objectiveIndex">Zero-based objective slot.</param>
+        /// <param name="progress">Raw objective progress value.</param>
+        /// <param name="objective">Resolved objective when the slot is valid.</param>
+        /// <returns><see langword="true"/> when objective progress changed; otherwise, <see langword="false"/>.</returns>
+        bool TryObjectiveUpdate(
+            byte objectiveIndex,
+            uint progress,
+            out IQuestObjective objective);
+
+        /// <summary>
         /// Update any <see cref="IQuestObjective"/>'s with supplied ID with progress.
         /// </summary>
         void ObjectiveUpdate(uint id, uint progress);

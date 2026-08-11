@@ -20,6 +20,7 @@ namespace NexusForever.Game.CSI
 
         private readonly IPlayer owner;
         private readonly IAssetManager assetManager;
+        private readonly HashSet<uint> suppressedActivateEntityObjectiveIds = [];
         private int terminalState;
 
         /// <summary>
@@ -50,6 +51,21 @@ namespace NexusForever.Game.CSI
             return ClientSideInteractionValidator.IsValid(owner, ActivateUnit);
         }
 
+        /// <inheritdoc />
+        public bool TrySuppressActivateEntityObjective(uint questObjectiveId)
+        {
+            if (questObjectiveId == 0u || Volatile.Read(ref terminalState) != 0)
+                return false;
+
+            lock (suppressedActivateEntityObjectiveIds)
+            {
+                if (Volatile.Read(ref terminalState) != 0)
+                    return false;
+
+                return suppressedActivateEntityObjectiveIds.Add(questObjectiveId);
+            }
+        }
+
         /// <summary>
         /// Called when the client reports CSI success.
         /// </summary>
@@ -67,7 +83,11 @@ namespace NexusForever.Game.CSI
             if (Interlocked.CompareExchange(ref terminalState, 1, 0) != 0)
                 return false;
 
-            UpdateObjective(QuestObjectiveType.ActivateEntity, ActivateUnit.CreatureId);
+            IReadOnlySet<uint> excludedObjectiveIds = CaptureSuppressedActivateEntityObjectives();
+            UpdateObjective(
+                QuestObjectiveType.ActivateEntity,
+                ActivateUnit.CreatureId,
+                excludedObjectiveIds);
             UpdateObjective(QuestObjectiveType.SucceedCSI, ActivateUnit.CreatureId);
 
             try
@@ -116,11 +136,27 @@ namespace NexusForever.Game.CSI
             return true;
         }
 
-        private void UpdateObjective(QuestObjectiveType type, uint data)
+        private IReadOnlySet<uint> CaptureSuppressedActivateEntityObjectives()
+        {
+            lock (suppressedActivateEntityObjectiveIds)
+            {
+                return suppressedActivateEntityObjectiveIds.Count == 0
+                    ? null
+                    : suppressedActivateEntityObjectiveIds.ToHashSet();
+            }
+        }
+
+        private void UpdateObjective(
+            QuestObjectiveType type,
+            uint data,
+            IReadOnlySet<uint> excludedObjectiveIds = null)
         {
             try
             {
-                owner.QuestManager?.ObjectiveUpdate(type, data, 1u);
+                if (excludedObjectiveIds is { Count: > 0 })
+                    owner.QuestManager?.ObjectiveUpdate(type, data, 1u, excludedObjectiveIds);
+                else
+                    owner.QuestManager?.ObjectiveUpdate(type, data, 1u);
             }
             catch (Exception exception)
             {

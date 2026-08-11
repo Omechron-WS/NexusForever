@@ -1,11 +1,19 @@
+using System.Collections.Immutable;
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
+using NexusForever.Database.Character.Model;
+using NexusForever.Game.Abstract;
 using NexusForever.Game.Abstract.CSI;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Abstract.Quest;
 using NexusForever.Game.Abstract.Spell;
+using NexusForever.Game.CSI;
 using NexusForever.Game.Entity;
+using NexusForever.Game.Quest;
 using NexusForever.Game.Spell;
 using NexusForever.Game.Spell.SpellType;
 using NexusForever.Game.Static.Entity;
+using NexusForever.Game.Static.Quest;
 using NexusForever.Game.Static.Spell;
 using NexusForever.Game.Tests.Combat;
 using NexusForever.GameTable.Model;
@@ -17,6 +25,7 @@ using NexusForever.Script;
 using NexusForever.Script.Template.Collection;
 using NexusForever.Shared;
 using Moq;
+using QuestEntity = NexusForever.Game.Quest.Quest;
 
 namespace NexusForever.Game.Tests.CSI
 {
@@ -491,6 +500,115 @@ namespace NexusForever.Game.Tests.CSI
             interaction.Verify(value => value.TriggerFail(), Times.Never);
         }
 
+        [Fact]
+        public void ProxyCast_Q5593ImmediateAdvanceSuppressesOnlyDuplicateActivationCredit()
+        {
+            RegisterQuestAdvanceObjectiveHandler();
+
+            var map = Mock.Of<NexusForever.Game.Abstract.Map.IBaseMap>();
+            Mock<IPlayer> player = CreatePlayer(out _);
+            player.SetupGet(value => value.CharacterId).Returns(42ul);
+            player.SetupGet(value => value.InWorld).Returns(true);
+            player.SetupGet(value => value.Map).Returns(map);
+
+            var activateUnit = new Mock<IUnitEntity>();
+            activateUnit.SetupGet(value => value.Guid).Returns(100u);
+            activateUnit.SetupGet(value => value.CreatureId).Returns(24_251u);
+            activateUnit.SetupGet(value => value.CreatureEntry).Returns(new Creature2Entry
+            {
+                Id                    = 24_251u,
+                ActivateSpellMinRange = 0f,
+                ActivateSpellMaxRange = 5f
+            });
+            activateUnit.SetupGet(value => value.InWorld).Returns(true);
+            activateUnit.SetupGet(value => value.Map).Returns(map);
+            player.Setup(value => value.GetVisible<IWorldEntity>(100u))
+                .Returns(activateUnit.Object);
+
+            var assetManager = new Mock<IAssetManager>();
+            assetManager
+                .Setup(value => value.GetQuestObjectiveTargetIds(8_247u))
+                .Returns(ImmutableList<uint>.Empty);
+            assetManager
+                .Setup(value => value.GetTargetGroupsForCreatureId(24_251u))
+                .Returns(ImmutableList<uint>.Empty);
+
+            var objectiveInfo = new QuestObjectiveInfo(new QuestObjectiveEntry
+            {
+                Id    = 8_247u,
+                Type  = (uint)QuestObjectiveType.ActivateEntity,
+                Data  = 24_251u,
+                Count = 3u
+            });
+            var questInfo = new Mock<IQuestInfo>();
+            questInfo.SetupGet(value => value.Entry).Returns(new Quest2Entry
+            {
+                Id               = 5_593u,
+                PushedItemIds    = [],
+                PushedItemCounts = []
+            });
+            questInfo.SetupGet(value => value.Objectives)
+                .Returns(ImmutableList.Create<IQuestObjectiveInfo>(objectiveInfo));
+
+            var globalQuestManager = new Mock<IGlobalQuestManager>();
+            var scriptManager = serviceProvider.GetRequiredService<IScriptManager>();
+            var quest = new QuestEntity(
+                player.Object,
+                questInfo.Object,
+                globalQuestManager.Object,
+                scriptManager,
+                assetManager.Object);
+            var questManager = new QuestManager(
+                player.Object,
+                new CharacterModel(),
+                globalQuestManager.Object,
+                null,
+                Mock.Of<IDisableManager>());
+            GetActiveQuests(questManager).Add(quest.Id, quest);
+            player.SetupGet(value => value.QuestManager).Returns(questManager);
+
+            var interaction = new ClientSideInteraction(
+                player.Object,
+                activateUnit.Object,
+                42u,
+                assetManager: assetManager.Object);
+            SpellParameters parameters = CreateParameters(
+                CastMethod.Normal,
+                interaction,
+                new Spell4Entry
+                {
+                    Id       = 42_303u,
+                    CastTime = 0u
+                });
+            parameters.PrimaryTargetId = activateUnit.Object.Guid;
+            Mock.Get(parameters.SpellInfo).SetupGet(value => value.Effects).Returns(
+            [
+                new Spell4EffectsEntry
+                {
+                    Id          = 95_973u,
+                    SpellId     = 42_303u,
+                    EffectType  = SpellEffectType.QuestAdvanceObjective,
+                    TargetFlags = (uint)SpellEffectTargetFlags.Caster,
+                    DataBits00  = 5_593u,
+                    DataBits01  = 0u,
+                    DataBits02  = 1u,
+                    PhaseFlags  = uint.MaxValue
+                }
+            ]);
+            var spell = new SpellClientSideInteraction(player.Object, parameters);
+
+            spell.Cast();
+            spell.Update(0d);
+
+            IQuestObjective objective = Assert.Single(quest);
+            Assert.Equal(1u, objective.Progress);
+            Assert.False(spell.SucceedClientInteraction());
+            Assert.False(spell.CancelClientInteraction());
+            Assert.False(interaction.CompleteSuccess());
+            Assert.Equal(1u, objective.Progress);
+            activateUnit.Verify(value => value.OnActivateSuccess(player.Object), Times.Once);
+        }
+
         [Theory]
         [InlineData(0u, false)]
         [InlineData(1u, true)]
@@ -561,6 +679,24 @@ namespace NexusForever.Game.Tests.CSI
                 SpellInfo = spellInfo.Object,
                 ClientSideInteraction = interaction
             };
+        }
+
+        private void RegisterQuestAdvanceObjectiveHandler()
+        {
+            GlobalSpellManager globalSpellManager = serviceProvider.GetRequiredService<GlobalSpellManager>();
+            FieldInfo field = typeof(GlobalSpellManager).GetField(
+                "spellEffectDelegates",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            var handlers = (Dictionary<SpellEffectType, SpellEffectDelegate>)field.GetValue(globalSpellManager);
+            handlers[SpellEffectType.QuestAdvanceObjective] = SpellHandler.HandleEffectQuestAdvanceObjective;
+        }
+
+        private static Dictionary<ushort, IQuest> GetActiveQuests(QuestManager manager)
+        {
+            FieldInfo field = typeof(QuestManager).GetField(
+                "activeQuests",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            return (Dictionary<ushort, IQuest>)field.GetValue(manager);
         }
 
         private sealed class TestClientSideInteractionSpell : SpellClientSideInteraction

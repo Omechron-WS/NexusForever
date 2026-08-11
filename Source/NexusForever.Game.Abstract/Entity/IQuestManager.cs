@@ -68,6 +68,20 @@ namespace NexusForever.Game.Abstract.Entity
         void QuestAchieveObjective(ushort questId, byte index);
 
         /// <summary>
+        /// Attempts to apply raw progress to an exact objective slot on an active quest.
+        /// </summary>
+        /// <param name="questId">Quest identifier.</param>
+        /// <param name="objectiveIndex">Zero-based objective slot.</param>
+        /// <param name="progress">Raw objective progress value.</param>
+        /// <param name="objective">Resolved objective when the quest and slot are valid.</param>
+        /// <returns><see langword="true"/> when objective progress changed; otherwise, <see langword="false"/>.</returns>
+        bool TryObjectiveUpdate(
+            ushort questId,
+            byte objectiveIndex,
+            uint progress,
+            out IQuestObjective objective);
+
+        /// <summary>
         /// Complete an achieved quest supplying an optional reward and whether the quest was completed from the communicator.
         /// </summary>
         void QuestComplete(ushort questId, ushort reward, bool communicator);
@@ -106,6 +120,19 @@ namespace NexusForever.Game.Abstract.Entity
         /// Update any active quest <see cref="IQuestObjective"/>'s with supplied <see cref="QuestObjectiveType"/> and data with progress.
         /// </summary>
         void ObjectiveUpdate(QuestObjectiveType type, uint data, uint progress);
+
+        /// <summary>
+        /// Update matching active quest objectives except for exact static objective identifiers.
+        /// </summary>
+        /// <param name="type">Objective type.</param>
+        /// <param name="data">Objective target data.</param>
+        /// <param name="progress">Raw objective progress value.</param>
+        /// <param name="excludedObjectiveIds">Static objective identifiers excluded from this event.</param>
+        void ObjectiveUpdate(
+            QuestObjectiveType type,
+            uint data,
+            uint progress,
+            IReadOnlySet<uint> excludedObjectiveIds);
 
         // <summary>
         /// Update any active quest <see cref="IQuestObjective"/>'s with supplied ID with progress.

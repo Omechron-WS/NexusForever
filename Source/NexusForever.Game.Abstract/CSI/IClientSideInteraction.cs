@@ -34,6 +34,14 @@ namespace NexusForever.Game.Abstract.CSI
         bool IsValid();
 
         /// <summary>
+        /// Attempts to suppress generic activation credit for one exact objective already advanced by the
+        /// interaction spell while the interaction is still pending.
+        /// </summary>
+        /// <param name="questObjectiveId">Static quest-objective identifier.</param>
+        /// <returns><see langword="true"/> when the objective was recorded; otherwise, <see langword="false"/>.</returns>
+        bool TrySuppressActivateEntityObjective(uint questObjectiveId);
+
+        /// <summary>
         /// Called when the client reports CSI success.
         /// Routes to the activating entity's OnActivateSuccess callback.
         /// </summary>

@@ -490,6 +490,18 @@ namespace NexusForever.Game.Quest
         /// </summary>
         public void ObjectiveUpdate(QuestObjectiveType type, uint data, uint progress)
         {
+            ObjectiveUpdate(type, data, progress, null);
+        }
+
+        /// <summary>
+        /// Update matching objectives except for exact static objective identifiers.
+        /// </summary>
+        public void ObjectiveUpdate(
+            QuestObjectiveType type,
+            uint data,
+            uint progress,
+            IReadOnlySet<uint> excludedObjectiveIds)
+        {
             if (PendingDelete)
                 return;
 
@@ -500,7 +512,10 @@ namespace NexusForever.Game.Quest
 
             // Process in descending index order so one event cannot complete consecutive sequential objectives.
             foreach (IQuestObjective objective in objectives
-                .Where(o => o.ObjectiveInfo.Type == type && o.IsTarget(data))
+                .Where(o => o.ObjectiveInfo.Type == type
+                    && o.IsTarget(data)
+                    && (excludedObjectiveIds == null
+                        || !excludedObjectiveIds.Contains(o.ObjectiveInfo.Id)))
                 .OrderByDescending(o => o.Index))
                 UpdateObjective(objective, progress);
 
@@ -516,24 +531,75 @@ namespace NexusForever.Game.Quest
         /// </summary>
         public void ObjectiveUpdate(uint id, uint progress)
         {
-            if (PendingDelete)
-                return;
-
-            if (State == QuestState.Achieved)
-                return;
-
             IQuestObjective objective = objectives.SingleOrDefault(o => o.ObjectiveInfo.Id == id);
             if (objective == null)
                 return;
 
-            Dictionary<IQuestObjective, uint> previousProgress = CaptureObjectiveProgress();
-            UpdateObjective(objective, progress);
+            TryObjectiveUpdate(objective.Index, progress, out _);
+        }
 
-            bool requiredObjectivesComplete = RequiredObjectivesComplete();
-            SendChangedObjectives(previousProgress);
+        /// <summary>
+        /// Attempts to apply raw progress to an exact zero-based objective slot.
+        /// </summary>
+        public bool TryObjectiveUpdate(
+            byte objectiveIndex,
+            uint progress,
+            out IQuestObjective objective)
+        {
+            objective = null;
+            if (PendingDelete || State != QuestState.Accepted || progress == 0u)
+                return false;
 
-            if (requiredObjectivesComplete)
-                State = QuestState.Achieved;
+            objective = objectives.FirstOrDefault(candidate => candidate.Index == objectiveIndex);
+            if (objective == null || objective.IsComplete() || !CanUpdateObjective(objective))
+                return false;
+
+            IQuestObjective updatedObjective = objective;
+            uint previousProgress = updatedObjective.Progress;
+            try
+            {
+                updatedObjective.ObjectiveUpdate(progress);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Quest {Id} objective {objectiveIndex} failed while applying progress.");
+            }
+
+            if (updatedObjective.Progress == previousProgress)
+                return false;
+
+            try
+            {
+                scriptCollection?.Invoke<IQuestScript>(script => script.OnObjectiveUpdate(updatedObjective));
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Quest {Id} objective {objectiveIndex} progress callback failed after progress committed.");
+            }
+
+            try
+            {
+                SendQuestObjectiveUpdate(updatedObjective);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Quest {Id} objective {objectiveIndex} update notification failed after progress committed.");
+            }
+
+            if (RequiredObjectivesComplete())
+            {
+                try
+                {
+                    State = QuestState.Achieved;
+                }
+                catch (Exception exception)
+                {
+                    // State is assigned before OnStateChange publishes notifications and callbacks.
+                    log.Error(exception, $"Quest {Id} achieved-state notification failed after state committed.");
+                }
+            }
+
+            return true;
         }
 
         private Dictionary<IQuestObjective, uint> CaptureObjectiveProgress()

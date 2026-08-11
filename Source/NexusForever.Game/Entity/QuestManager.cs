@@ -742,6 +742,26 @@ namespace NexusForever.Game.Entity
         }
 
         /// <summary>
+        /// Attempts to apply raw progress to an exact objective slot on an active quest.
+        /// </summary>
+        public bool TryObjectiveUpdate(
+            ushort questId,
+            byte objectiveIndex,
+            uint progress,
+            out IQuestObjective objective)
+        {
+            objective = null;
+            if (progress == 0u)
+                return false;
+
+            IQuest quest = GetQuest(questId, GetQuestFlags.Active);
+            if (quest == null || quest.PendingDelete || quest.State != QuestState.Accepted)
+                return false;
+
+            return quest.TryObjectiveUpdate(objectiveIndex, progress, out objective);
+        }
+
+        /// <summary>
         /// Complete an achieved quest supplying an optional reward and whether the quest was completed from the communicator.
         /// </summary>
         public void QuestComplete(ushort questId, ushort reward, bool communicator)
@@ -1332,6 +1352,19 @@ namespace NexusForever.Game.Entity
         {
             foreach (IQuest quest in activeQuests.Values)
                 quest.ObjectiveUpdate(type, data, progress);
+        }
+
+        /// <summary>
+        /// Update matching active quest objectives except for exact static objective identifiers.
+        /// </summary>
+        public void ObjectiveUpdate(
+            QuestObjectiveType type,
+            uint data,
+            uint progress,
+            IReadOnlySet<uint> excludedObjectiveIds)
+        {
+            foreach (IQuest quest in activeQuests.Values)
+                quest.ObjectiveUpdate(type, data, progress, excludedObjectiveIds);
         }
 
         /// <summary>
