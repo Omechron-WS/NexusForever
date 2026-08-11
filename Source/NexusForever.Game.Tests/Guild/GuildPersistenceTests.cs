@@ -7,8 +7,10 @@ using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract;
 using NexusForever.Game.Abstract.Achievement;
 using NexusForever.Game.Abstract.Guild;
+using NexusForever.Game.Abstract.Housing;
 using NexusForever.Game.Achievement;
 using NexusForever.Game.Guild;
+using NexusForever.Game.Static.Guild;
 using NexusForever.GameTable.Model;
 using NexusForever.Network.Internal;
 using GuildEntity = NexusForever.Game.Guild.Guild;
@@ -172,6 +174,56 @@ namespace NexusForever.Game.Tests.Guild
             Assert.Equal(3u, model.Data0);
         }
 
+        [Fact]
+        public void CommunityPrivateFlag_UnacknowledgedSaveRemainsRetryable()
+        {
+            Community community = CreatePersistedCommunity();
+            community.SetCommunityPrivate(true);
+
+            using (CharacterContext context = CreateContext())
+            {
+                community.Save(context, new SaveCommitScope());
+                AssertCommunityFlagUpdate(context, GuildFlag.CommunityPrivate);
+            }
+
+            using CharacterContext retryContext = CreateContext();
+            community.Save(retryContext, new SaveCommitScope());
+            AssertCommunityFlagUpdate(retryContext, GuildFlag.CommunityPrivate);
+        }
+
+        [Fact]
+        public void CommunityPrivateFlag_AcknowledgedSaveClearsUnchangedDirtyState()
+        {
+            Community community = CreatePersistedCommunity();
+            community.SetCommunityPrivate(true);
+            var scope = new SaveCommitScope();
+
+            using (CharacterContext context = CreateContext())
+                community.Save(context, scope);
+            scope.CreateAcknowledgement().Acknowledge();
+
+            using CharacterContext retryContext = CreateContext();
+            community.Save(retryContext, new SaveCommitScope());
+            Assert.Empty(retryContext.ChangeTracker.Entries<GuildModel>());
+        }
+
+        [Fact]
+        public void CommunityPrivateFlag_ConcurrentReplaySurvivesAcknowledgement()
+        {
+            Community community = CreatePersistedCommunity();
+            community.SetCommunityPrivate(true);
+            var scope = new SaveCommitScope();
+
+            using (CharacterContext context = CreateContext())
+                community.Save(context, scope);
+            community.SetCommunityPrivate(false);
+            scope.CreateAcknowledgement().Acknowledge();
+
+            using CharacterContext retryContext = CreateContext();
+            community.Save(retryContext, new SaveCommitScope());
+            AssertCommunityFlagUpdate(retryContext, GuildFlag.None);
+        }
+
         private static GuildRank CreateRank()
         {
             return new GuildRank(new GuildRankModel
@@ -184,6 +236,32 @@ namespace NexusForever.Game.Tests.Guild
                 MoneyWithdrawalLimit     = 0ul,
                 RepairLimit              = 0ul
             });
+        }
+
+        private static Community CreatePersistedCommunity()
+        {
+            var community = new Community(
+                Mock.Of<IRealmContext>(),
+                Mock.Of<IInternalMessagePublisher>(),
+                Mock.Of<IGlobalResidenceManager>());
+            PropertyInfo identityProperty = typeof(GuildBase).GetProperty(
+                nameof(GuildBase.Identity),
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            identityProperty.SetValue(community, new Identity
+            {
+                RealmId = 1,
+                Id      = 77ul
+            });
+            return community;
+        }
+
+        private static void AssertCommunityFlagUpdate(
+            CharacterContext context,
+            GuildFlag expectedFlags)
+        {
+            var entry = Assert.Single(context.ChangeTracker.Entries<GuildModel>());
+            Assert.Equal((uint)expectedFlags, entry.Entity.Flags);
+            Assert.True(entry.Property(model => model.Flags).IsModified);
         }
 
         private static (GuildEntity Guild, Achievement<GuildAchievementModel> Achievement) CreateGuildWithAchievement()

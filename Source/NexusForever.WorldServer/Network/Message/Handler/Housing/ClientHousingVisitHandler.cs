@@ -1,11 +1,13 @@
 ﻿using System;
 using NexusForever.Game;
 using NexusForever.Game.Abstract;
+using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Guild;
 using NexusForever.Game.Abstract.Housing;
 using NexusForever.Game.Abstract.Map.Instance;
 using NexusForever.Game.Abstract.Map.Lock;
 using NexusForever.Game.Map;
+using NexusForever.Game.Static.Guild;
 using NexusForever.Game.Static.Housing;
 using NexusForever.Network;
 using NexusForever.Network.Message;
@@ -46,15 +48,16 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Housing
                 residence = globalResidenceManager.GetResidenceByOwner(housingVisit.PlayerToVisitName);
             else if (!string.IsNullOrEmpty(housingVisit.CommunityToVisitName))
                 residence = globalResidenceManager.GetCommunityByOwner(housingVisit.CommunityToVisitName);
-            else if (housingVisit.IdentityToVisit != null)
+            else if (housingVisit.IdentityToVisit.Id != 0ul)
                 residence = globalResidenceManager.GetResidenceByOwner(housingVisit.IdentityToVisit.ToGameIdentity());
-            else if (housingVisit.CommunityToVisitIdentity != null)
+            else if (housingVisit.CommunityToVisitIdentity.Id != 0ul)
             {
-                Identity residenceIdentity = globalGuildManager.GetGuild<ICommunity>(housingVisit.CommunityToVisitIdentity.ToGameIdentity())?.Residence?.Identity ?? null;
-                residence = globalResidenceManager.GetResidence(residenceIdentity);
+                Identity communityIdentity = housingVisit.CommunityToVisitIdentity.ToGameIdentity();
+                ICommunity community = globalGuildManager.GetGuild(communityIdentity) as ICommunity;
+                residence = community?.Identity == communityIdentity ? community.Residence : null;
             }
             else
-                throw new NotImplementedException();
+                throw new InvalidPacketValueException();
 
             if (residence == null)
             {
@@ -63,9 +66,7 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Housing
                 return;
             }
 
-            bool isOwner = residence.Type == ResidenceType.Residence
-                && residence.OwnerIdentity == session.Player.Identity;
-            if (!isOwner && residence.PrivacyLevel != ResidencePrivacyLevel.Public)
+            if (!CanVisitResidence(session.Player, residence))
                 return;
 
             IMapLock mapLock = mapLockManager.GetResidenceLock(residence.Parent ?? residence);
@@ -82,6 +83,32 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Housing
                 },
                 Position = entrance.Position
             });
+        }
+
+        private bool CanVisitResidence(IPlayer player, IResidence residence)
+        {
+            switch (residence.Type)
+            {
+                case ResidenceType.Residence:
+                    return residence.OwnerIdentity == player.Identity
+                        || residence.PrivacyLevel == ResidencePrivacyLevel.Public;
+                case ResidenceType.Community:
+                {
+                    if (residence.GuildOwnerIdentity == null)
+                        return false;
+
+                    IGuildBase guild = globalGuildManager.GetGuild(residence.GuildOwnerIdentity);
+                    if (guild is not ICommunity community
+                        || community.Identity != residence.GuildOwnerIdentity
+                        || !ReferenceEquals(community.Residence, residence))
+                        return false;
+
+                    bool isPrivate = (community.Flags & GuildFlag.CommunityPrivate) != 0;
+                    return !isPrivate || community.GetMember(player.CharacterId) != null;
+                }
+                default:
+                    return false;
+            }
         }
     }
 }

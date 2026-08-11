@@ -11,7 +11,10 @@ namespace NexusForever.Network.Tests.Packet
         {
             Assert.Equal(0x00C9, (ushort)GameMessageOpcode.ClientHousingResidencePrivacyLevel);
             Assert.Equal(0x010E, (ushort)GameMessageOpcode.ServerHousingBasics);
+            Assert.Equal(0x0526, (ushort)GameMessageOpcode.ServerHousingRandomCommunityList);
+            Assert.Equal(0x052C, (ushort)GameMessageOpcode.ClientHousingRequestRandomCommunityList);
             Assert.Equal(0x0531, (ushort)GameMessageOpcode.ClientHousingVisit);
+            Assert.Equal(0x0538, (ushort)GameMessageOpcode.ClientHousingCommunityPrivacyLevel);
         }
 
         [Fact]
@@ -27,6 +30,29 @@ namespace NexusForever.Network.Tests.Packet
             message.Read(reader);
 
             Assert.Equal(ResidencePrivacyLevel.Private, message.PrivacyLevel);
+            Assert.Equal(0u, reader.BytesRemaining);
+        }
+
+        [Theory]
+        [InlineData(0x00, CommunityPrivacyLevel.Public)]
+        [InlineData(0x40, CommunityPrivacyLevel.Private)]
+        public void ClientHousingCommunityPrivacyLevel_ReadsIdentityThenOneBitPrivacy(
+            byte finalByte,
+            CommunityPrivacyLevel expectedPrivacy)
+        {
+            byte[] payload =
+            [
+                0x34, 0x12, 0xC2, 0x81, 0x41,
+                0x01, 0xC1, 0x80, 0x40, finalByte
+            ];
+            var message = new ClientHousingCommunityPrivacyLevel();
+
+            using var reader = new GamePacketReader(new MemoryStream(payload));
+            message.Read(reader);
+
+            Assert.Equal((ushort)0x1234, message.GuildIdentity.RealmId);
+            Assert.Equal(0x0102030405060708ul, message.GuildIdentity.Id);
+            Assert.Equal(expectedPrivacy, message.PrivacyLevel);
             Assert.Equal(0u, reader.BytesRemaining);
         }
 

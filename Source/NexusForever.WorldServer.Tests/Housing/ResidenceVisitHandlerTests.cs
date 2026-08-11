@@ -9,6 +9,7 @@ using NexusForever.Game.Abstract.Map.Instance;
 using NexusForever.Game.Abstract.Map.Lock;
 using NexusForever.Game.Map.Lock;
 using NexusForever.Game.Static.Entity;
+using NexusForever.Game.Static.Guild;
 using NexusForever.Game.Static.Housing;
 using NexusForever.GameTable.Model;
 using NexusForever.Network.World.Message.Model.Housing;
@@ -75,34 +76,14 @@ namespace NexusForever.WorldServer.Tests.Housing
             AssertDeniedBeforeMapLock(fixture);
         }
 
-        [Theory]
-        [InlineData(ResidencePrivacyLevel.NeighboursOnly)]
-        [InlineData(ResidencePrivacyLevel.RoommatesOnly)]
-        [InlineData(ResidencePrivacyLevel.Private)]
-        public void RestrictedCommunity_IsDeniedBeforeMapLock(
-            ResidencePrivacyLevel privacyLevel)
-        {
-            VisitFixture fixture = CreateFixture(
-                privacyLevel,
-                owner: false,
-                residenceType: ResidenceType.Community);
-            ResolveByCommunityName(fixture);
-
-            Handle(fixture, CreateVisit(communityName: CommunityName));
-
-            fixture.GlobalResidenceManager.Verify(
-                manager => manager.GetCommunityByOwner(CommunityName),
-                Times.Once);
-            AssertDeniedBeforeMapLock(fixture);
-        }
-
         [Fact]
-        public void PublicCommunityName_UsesCommunityResolverAndTeleports()
+        public void PublicCommunityName_UsesLiveGuildFlagAndTeleports()
         {
             VisitFixture fixture = CreateFixture(
-                ResidencePrivacyLevel.Public,
+                ResidencePrivacyLevel.Private,
                 owner: false,
-                residenceType: ResidenceType.Community);
+                residenceType: ResidenceType.Community,
+                communityPrivate: false);
             ResolveByCommunityName(fixture);
 
             Handle(fixture, CreateVisit(communityName: CommunityName));
@@ -113,7 +94,84 @@ namespace NexusForever.WorldServer.Tests.Housing
             fixture.GlobalResidenceManager.Verify(
                 manager => manager.GetResidenceByOwner(It.IsAny<string>()),
                 Times.Never);
+            fixture.GlobalGuildManager.Verify(
+                manager => manager.GetGuild(
+                    It.Is<GameIdentity>(identity => identity == fixture.CommunityIdentity)),
+                Times.Once);
+            fixture.Community.Verify(
+                community => community.GetMember(It.IsAny<ulong>()),
+                Times.Never);
             AssertTeleported(fixture);
+        }
+
+        [Fact]
+        public void PrivateCommunity_CurrentMemberCanVisit()
+        {
+            VisitFixture fixture = CreateFixture(
+                ResidencePrivacyLevel.Public,
+                owner: false,
+                residenceType: ResidenceType.Community,
+                communityPrivate: true,
+                communityMember: true);
+            ResolveByCommunityName(fixture);
+
+            Handle(fixture, CreateVisit(communityName: CommunityName));
+
+            fixture.Community.Verify(
+                community => community.GetMember(fixture.Player.Object.CharacterId),
+                Times.Once);
+            AssertTeleported(fixture);
+        }
+
+        [Fact]
+        public void PrivateCommunity_NonMemberIsDeniedBeforeMapLock()
+        {
+            VisitFixture fixture = CreateFixture(
+                ResidencePrivacyLevel.Public,
+                owner: false,
+                residenceType: ResidenceType.Community,
+                communityPrivate: true,
+                communityMember: false);
+            ResolveByCommunityName(fixture);
+
+            Handle(fixture, CreateVisit(communityName: CommunityName));
+
+            fixture.Community.Verify(
+                community => community.GetMember(fixture.Player.Object.CharacterId),
+                Times.Once);
+            AssertDeniedBeforeMapLock(fixture);
+        }
+
+        [Theory]
+        [InlineData(CommunityLinkFailure.MissingGuildOwner)]
+        [InlineData(CommunityLinkFailure.WrongGuildIdentity)]
+        [InlineData(CommunityLinkFailure.WrongResidence)]
+        public void MalformedCommunityLink_IsDeniedBeforeMapLock(CommunityLinkFailure failure)
+        {
+            VisitFixture fixture = CreateFixture(
+                ResidencePrivacyLevel.Public,
+                owner: false,
+                residenceType: ResidenceType.Community);
+            ResolveByCommunityName(fixture);
+            switch (failure)
+            {
+                case CommunityLinkFailure.MissingGuildOwner:
+                    fixture.Residence.SetupGet(value => value.GuildOwnerIdentity).Returns((GameIdentity)null);
+                    break;
+                case CommunityLinkFailure.WrongGuildIdentity:
+                    fixture.Community.SetupGet(value => value.Identity).Returns(
+                        new GameIdentity { RealmId = 1, Id = 501ul });
+                    break;
+                case CommunityLinkFailure.WrongResidence:
+                    fixture.Community.SetupGet(value => value.Residence).Returns(Mock.Of<IResidence>());
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(failure));
+            }
+
+            Handle(fixture, CreateVisit(communityName: CommunityName));
+
+            AssertDeniedBeforeMapLock(fixture);
         }
 
         [Fact]
@@ -145,10 +203,52 @@ namespace NexusForever.WorldServer.Tests.Housing
             AssertTeleported(fixture);
         }
 
+        [Fact]
+        public void CommunityIdentity_WithDefaultPersonalIdentity_UsesCommunityResolverAndTeleports()
+        {
+            VisitFixture fixture = CreateFixture(
+                ResidencePrivacyLevel.Private,
+                owner: false,
+                residenceType: ResidenceType.Community,
+                communityPrivate: false);
+            ClientHousingVisit message = CreateVisit();
+            message.CommunityToVisitIdentity.RealmId = fixture.CommunityIdentity.RealmId;
+            message.CommunityToVisitIdentity.Id = fixture.CommunityIdentity.Id;
+
+            Handle(fixture, message);
+
+            fixture.GlobalResidenceManager.Verify(
+                manager => manager.GetResidenceByOwner(It.IsAny<GameIdentity>()),
+                Times.Never);
+            fixture.GlobalGuildManager.Verify(
+                manager => manager.GetGuild(
+                    It.Is<GameIdentity>(identity => identity == fixture.CommunityIdentity)),
+                Times.Exactly(2));
+            AssertTeleported(fixture);
+        }
+
+        [Fact]
+        public void CommunityIdentity_WrongRealmIsDeniedBeforeMapLock()
+        {
+            VisitFixture fixture = CreateFixture(
+                ResidencePrivacyLevel.Public,
+                owner: false,
+                residenceType: ResidenceType.Community);
+            ClientHousingVisit message = CreateVisit();
+            message.CommunityToVisitIdentity.RealmId = (ushort)(fixture.CommunityIdentity.RealmId + 1);
+            message.CommunityToVisitIdentity.Id = fixture.CommunityIdentity.Id;
+
+            Handle(fixture, message);
+
+            AssertDeniedBeforeMapLock(fixture);
+        }
+
         private static VisitFixture CreateFixture(
             ResidencePrivacyLevel privacyLevel,
             bool owner,
-            ResidenceType residenceType)
+            ResidenceType residenceType,
+            bool communityPrivate = false,
+            bool communityMember = false)
         {
             var playerIdentity = new GameIdentity
             {
@@ -160,14 +260,28 @@ namespace NexusForever.WorldServer.Tests.Housing
                 RealmId = 1,
                 Id      = owner ? 100ul : 101ul
             };
+            var residenceIdentity = new GameIdentity
+            {
+                RealmId = 1,
+                Id      = 700ul
+            };
+            var communityIdentity = new GameIdentity
+            {
+                RealmId = 1,
+                Id      = 500ul
+            };
             var residence = new Mock<IResidence>();
+            residence.SetupGet(value => value.Identity).Returns(residenceIdentity);
             residence.SetupGet(value => value.Type).Returns(residenceType);
             residence.SetupGet(value => value.OwnerIdentity).Returns(ownerIdentity);
+            residence.SetupGet(value => value.GuildOwnerIdentity).Returns(
+                residenceType == ResidenceType.Community ? communityIdentity : null);
             residence.SetupGet(value => value.PrivacyLevel).Returns(privacyLevel);
             residence.SetupGet(value => value.PropertyInfoId).Returns(Property);
 
             var player = new Mock<IPlayer>();
             player.SetupGet(value => value.Identity).Returns(playerIdentity);
+            player.SetupGet(value => value.CharacterId).Returns(playerIdentity.Id);
             player.SetupGet(value => value.Map).Returns(Mock.Of<IResidenceMapInstance>());
             player.Setup(value => value.CanTeleport()).Returns(true);
             var session = new Mock<IWorldSession>();
@@ -175,6 +289,17 @@ namespace NexusForever.WorldServer.Tests.Housing
 
             var globalResidenceManager = new Mock<IGlobalResidenceManager>();
             var globalGuildManager = new Mock<IGlobalGuildManager>();
+            var community = new Mock<ICommunity>();
+            community.SetupGet(value => value.Identity).Returns(communityIdentity);
+            community.SetupGet(value => value.Residence).Returns(residence.Object);
+            community.SetupGet(value => value.Flags).Returns(
+                communityPrivate ? GuildFlag.CommunityPrivate : GuildFlag.None);
+            community.Setup(value => value.GetMember(playerIdentity.Id)).Returns(
+                communityMember ? Mock.Of<IGuildMember>() : null);
+            globalGuildManager
+                .Setup(manager => manager.GetGuild(
+                    It.Is<GameIdentity>(identity => identity == communityIdentity)))
+                .Returns(community.Object);
             var mapLockManager = new Mock<IMapLockManager>();
             var mapLock = new Mock<IResidenceMapLock>();
             mapLockManager
@@ -198,13 +323,16 @@ namespace NexusForever.WorldServer.Tests.Housing
             return new VisitFixture(
                 handler,
                 globalResidenceManager,
+                globalGuildManager,
                 mapLockManager,
                 residence,
+                community,
                 mapLock,
                 player,
                 session,
                 entry,
-                destination);
+                destination,
+                communityIdentity);
         }
 
         private static void ResolveByPlayerName(VisitFixture fixture)
@@ -279,15 +407,25 @@ namespace NexusForever.WorldServer.Tests.Housing
             property.SetValue(instance, value);
         }
 
+        public enum CommunityLinkFailure
+        {
+            MissingGuildOwner,
+            WrongGuildIdentity,
+            WrongResidence
+        }
+
         private sealed record VisitFixture(
             ClientHousingVisitHandler Handler,
             Mock<IGlobalResidenceManager> GlobalResidenceManager,
+            Mock<IGlobalGuildManager> GlobalGuildManager,
             Mock<IMapLockManager> MapLockManager,
             Mock<IResidence> Residence,
+            Mock<ICommunity> Community,
             Mock<IResidenceMapLock> MapLock,
             Mock<IPlayer> Player,
             Mock<IWorldSession> Session,
             WorldEntry Entry,
-            Vector3 Destination);
+            Vector3 Destination,
+            GameIdentity CommunityIdentity);
     }
 }

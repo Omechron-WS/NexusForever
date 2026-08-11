@@ -1,13 +1,17 @@
+using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Moq;
 using NexusForever.Database;
 using NexusForever.Database.Character;
 using NexusForever.Game.Abstract;
+using NexusForever.Game.Abstract.Character;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Abstract.Guild;
 using NexusForever.Game.Abstract.Housing;
 using NexusForever.Game.Abstract.Map.Instance;
 using NexusForever.Game.Housing;
+using NexusForever.Game.Static.Guild;
 using NexusForever.Game.Static.Housing;
 using NexusForever.Network.Message;
 using NexusForever.Network.Session;
@@ -44,6 +48,7 @@ namespace NexusForever.Game.Tests.Housing
                 Mock.Of<ILogger<GlobalResidenceManager>>(),
                 Mock.Of<IRealmContext>(),
                 databaseManager.Object,
+                Mock.Of<ICharacterManager>(),
                 residenceFactory.Object);
             manager.CreateResidence(CreatePlayer("Successful", 11ul));
             manager.CreateResidence(CreatePlayer("Failed", 12ul));
@@ -102,6 +107,112 @@ namespace NexusForever.Game.Tests.Housing
             Assert.Empty(manager.GetRandomVisitableResidences());
         }
 
+        [Fact]
+        public void RegisterCommunityVisits_ReplayUpsertsCurrentSnapshot()
+        {
+            Identity residenceIdentity = new() { RealmId = 1, Id = 31ul };
+            Identity communityIdentity = new() { RealmId = 1, Id = 41ul };
+            string communityName = "First community";
+            var residence = new Mock<IResidence>();
+            residence.SetupGet(value => value.Identity).Returns(residenceIdentity);
+            var community = new Mock<ICommunity>();
+            community.SetupGet(value => value.Identity).Returns(communityIdentity);
+            community.SetupGet(value => value.Name).Returns(() => communityName);
+            var manager = CreateManager();
+
+            manager.RegisterCommunityVisits(residence.Object, community.Object, "First leader");
+            communityName = "Current community";
+            manager.RegisterCommunityVisits(residence.Object, community.Object, "Current leader");
+
+            IPublicCommunity publicCommunity = Assert.Single(manager.GetRandomVisitableCommunities());
+            Assert.Equal(communityIdentity, publicCommunity.GuildIdentity);
+            Assert.Equal("Current leader", publicCommunity.Owner);
+            Assert.Equal("Current community", publicCommunity.Name);
+        }
+
+        [Fact]
+        public void DeregisterCommunityVists_ReplayIsIdempotent()
+        {
+            Identity residenceIdentity = new() { RealmId = 1, Id = 31ul };
+            var residence = new Mock<IResidence>();
+            residence.SetupGet(value => value.Identity).Returns(residenceIdentity);
+            var community = new Mock<ICommunity>();
+            community.SetupGet(value => value.Identity).Returns(
+                new Identity { RealmId = 1, Id = 41ul });
+            var manager = CreateManager();
+            manager.RegisterCommunityVisits(residence.Object, community.Object, "Leader");
+
+            manager.DeregisterCommunityVists(residenceIdentity);
+            manager.DeregisterCommunityVists(residenceIdentity);
+
+            Assert.Empty(manager.GetRandomVisitableCommunities());
+        }
+
+        [Theory]
+        [InlineData(GuildFlag.None, true)]
+        [InlineData(GuildFlag.CommunityPrivate, false)]
+        public void StoreCommunityPath_DerivesPublicIndexFromPersistedFlag(
+            GuildFlag flags,
+            bool expectedVisitable)
+        {
+            Identity residenceIdentity = new() { RealmId = 1, Id = 31ul };
+            Identity communityIdentity = new() { RealmId = 1, Id = 41ul };
+            var residence = new Mock<IResidence>();
+            residence.SetupGet(value => value.Identity).Returns(residenceIdentity);
+            residence.SetupGet(value => value.GuildOwnerIdentity).Returns(communityIdentity);
+            var leader = new Mock<ICharacter>();
+            leader.SetupGet(value => value.Name).Returns("Persisted leader");
+            var characterManager = new Mock<ICharacterManager>();
+            characterManager.Setup(manager => manager.GetCharacter(51ul)).Returns(leader.Object);
+            var community = new Mock<ICommunity>();
+            community.SetupGet(value => value.Identity).Returns(communityIdentity);
+            community.SetupGet(value => value.Name).Returns("Persisted community");
+            community.SetupGet(value => value.Residence).Returns(residence.Object);
+            community.SetupGet(value => value.LeaderId).Returns(51ul);
+            community.SetupGet(value => value.Flags).Returns(flags);
+            var manager = CreateManager(characterManager.Object);
+
+            StorePersistedCommunity(manager, residence.Object, community.Object);
+
+            Assert.Same(residence.Object, manager.GetCommunityByOwner(communityIdentity));
+            Assert.Equal(expectedVisitable, manager.GetRandomVisitableCommunities().Any());
+            if (expectedVisitable)
+            {
+                IPublicCommunity publicCommunity = Assert.Single(manager.GetRandomVisitableCommunities());
+                Assert.Equal(communityIdentity, publicCommunity.GuildIdentity);
+                Assert.Equal("Persisted leader", publicCommunity.Owner);
+                Assert.Equal("Persisted community", publicCommunity.Name);
+            }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void StoreCommunityPath_MalformedLeaderRemainsUnlistedWithoutChangingPersistedFlag(
+            bool hasLeaderId)
+        {
+            Identity residenceIdentity = new() { RealmId = 1, Id = 31ul };
+            Identity communityIdentity = new() { RealmId = 1, Id = 41ul };
+            var residence = new Mock<IResidence>();
+            residence.SetupGet(value => value.Identity).Returns(residenceIdentity);
+            residence.SetupGet(value => value.GuildOwnerIdentity).Returns(communityIdentity);
+            var community = new Mock<ICommunity>();
+            community.SetupGet(value => value.Identity).Returns(communityIdentity);
+            community.SetupGet(value => value.Name).Returns("Community");
+            community.SetupGet(value => value.Residence).Returns(residence.Object);
+            community.SetupGet(value => value.LeaderId).Returns(hasLeaderId ? 51ul : null);
+            community.SetupGet(value => value.Flags).Returns(GuildFlag.None);
+            var manager = CreateManager();
+
+            StorePersistedCommunity(manager, residence.Object, community.Object);
+
+            Assert.Empty(manager.GetRandomVisitableCommunities());
+            Assert.Equal(GuildFlag.None, community.Object.Flags);
+            community.Verify(
+                value => value.SetCommunityPrivate(It.IsAny<bool>()),
+                Times.Never);
+        }
+
         [Theory]
         [InlineData(ResidencePrivacyLevel.Public, true)]
         [InlineData(ResidencePrivacyLevel.Private, false)]
@@ -127,6 +238,7 @@ namespace NexusForever.Game.Tests.Housing
                 Mock.Of<ILogger<GlobalResidenceManager>>(),
                 Mock.Of<IRealmContext>(),
                 Mock.Of<IDatabaseManager>(),
+                Mock.Of<ICharacterManager>(),
                 residenceFactory.Object);
 
             manager.CreateResidence(player.Object);
@@ -273,13 +385,27 @@ namespace NexusForever.Game.Tests.Housing
             return residence;
         }
 
-        private static GlobalResidenceManager CreateManager()
+        private static GlobalResidenceManager CreateManager(
+            ICharacterManager characterManager = null,
+            IFactory<IResidence> residenceFactory = null)
         {
             return new GlobalResidenceManager(
                 Mock.Of<ILogger<GlobalResidenceManager>>(),
                 Mock.Of<IRealmContext>(),
                 Mock.Of<IDatabaseManager>(),
-                Mock.Of<IFactory<IResidence>>());
+                characterManager ?? Mock.Of<ICharacterManager>(),
+                residenceFactory ?? Mock.Of<IFactory<IResidence>>());
+        }
+
+        private static void StorePersistedCommunity(
+            GlobalResidenceManager manager,
+            IResidence residence,
+            ICommunity community)
+        {
+            MethodInfo method = typeof(GlobalResidenceManager).GetMethod(
+                "StoreCommunity",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            method.Invoke(manager, [residence, community]);
         }
 
         private static ResidenceManagerFixture CreateResidenceManagerFixture(

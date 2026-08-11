@@ -7,8 +7,8 @@ using NexusForever.Game.Abstract.Character;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Guild;
 using NexusForever.Game.Abstract.Housing;
-using NexusForever.Game.Character;
 using NexusForever.Game.Guild;
+using NexusForever.Game.Static.Guild;
 using NexusForever.Game.Static.Housing;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
@@ -54,17 +54,20 @@ namespace NexusForever.Game.Housing
         private readonly ILogger<GlobalResidenceManager> log;
         private readonly IRealmContext realmContext;
         private readonly IDatabaseManager databaseManager;
+        private readonly ICharacterManager characterManager;
         private readonly IFactory<IResidence> residenceFactory;
 
         public GlobalResidenceManager(
             ILogger<GlobalResidenceManager> log,
             IRealmContext realmContext,
             IDatabaseManager databaseManager,
+            ICharacterManager characterManager,
             IFactory<IResidence> residenceFactory)
         {
             this.log              = log;
             this.realmContext     = realmContext;
             this.databaseManager  = databaseManager;
+            this.characterManager = characterManager;
             this.residenceFactory = residenceFactory;
         }
 
@@ -87,7 +90,7 @@ namespace NexusForever.Game.Housing
             {
                 if (model.OwnerId.HasValue)
                 {
-                    ICharacter character = CharacterManager.Instance.GetCharacter(model.OwnerId.Value);
+                    ICharacter character = characterManager.GetCharacter(model.OwnerId.Value);
                     if (character == null)
                         throw new DatabaseDataException($"Character owner {model.OwnerId.Value} of residence {model.Id} is invalid!");
 
@@ -278,12 +281,15 @@ namespace NexusForever.Game.Housing
             communityOwnerCache.Add(residence.GuildOwnerIdentity, residence.Identity);
             communitySearchCache.Add(community.Name, residence.Identity);
 
-            // community residences store the privacy level in the community it self as a guild flag
-            /*if ((community.Flags & GuildFlag.CommunityPrivate) == 0)
+            // Community residences store privacy in the owning guild flag. Rebuild the derived
+            // public index from that persisted authority, omitting entries with malformed leader data.
+            if ((community.Flags & GuildFlag.CommunityPrivate) == 0
+                && community.LeaderId.HasValue)
             {
-                ICharacter character = CharacterManager.Instance.GetCharacter(community.LeaderId.Value);
-                RegisterCommunityVisits(residence, community, character.Name);
-            }*/
+                ICharacter character = characterManager.GetCharacter(community.LeaderId.Value);
+                if (character != null)
+                    RegisterCommunityVisits(residence, community, character.Name);
+            }
         }
 
         /// <summary>
@@ -323,7 +329,7 @@ namespace NexusForever.Game.Housing
         /// </summary>
         public IResidence GetCommunityByOwner(Identity identity)
         {
-            return residenceOwnerCache.TryGetValue(identity, out Identity residenceId) ? GetResidence(residenceId) : null;
+            return communityOwnerCache.TryGetValue(identity, out Identity residenceId) ? GetResidence(residenceId) : null;
         }
 
         /// <summary>
@@ -383,12 +389,12 @@ namespace NexusForever.Game.Housing
         /// </summary>
         public void RegisterCommunityVisits(IResidence residence, ICommunity community, string name)
         {
-            visitableCommunities.Add(residence.Identity, new PublicCommunity
+            visitableCommunities[residence.Identity] = new PublicCommunity
             {
                 GuildIdentity   = community.Identity,
                 Owner           = name,
                 Name            = community.Name
-            });
+            };
         }
 
         /// <summary>
