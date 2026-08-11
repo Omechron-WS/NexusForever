@@ -35,7 +35,7 @@ namespace NexusForever.Network.World.Message.Model
             public class Objective
             {
                 public uint Progress { get; set; } // Sometimes flags, sometimes numbers
-                public uint TimeElapsed { get; set; }
+                public uint TimeRemaining { get; set; }
             }
 
             public ushort QuestId { get; set; }
@@ -43,7 +43,7 @@ namespace NexusForever.Network.World.Message.Model
             public uint QuestObjectiveId { get; set; } // See questObjective tbl
             public QuestStateFlags Flags { get; set; }
             public List<Objective> Objectives { get; set; } = new();
-            public uint QuestTimeElapsed { get; set; }
+            public uint QuestTimeRemaining { get; set; }
 
             public void Write(GamePacketWriter writer)
             {
@@ -57,10 +57,10 @@ namespace NexusForever.Network.World.Message.Model
                 foreach (Objective objective in Objectives)
                     writer.Write(objective.Progress);
 
-                writer.Write(QuestTimeElapsed);
+                writer.Write(QuestTimeRemaining);
 
                 foreach (Objective objective in Objectives)
-                    writer.Write(objective.TimeElapsed);
+                    writer.Write(objective.TimeRemaining);
             }
         }
 

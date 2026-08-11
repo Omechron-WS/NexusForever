@@ -41,7 +41,7 @@ namespace NexusForever.Game.Quest
         {
             Stopwatch sw = Stopwatch.StartNew();
 
-            CalculateResetTimes(); 
+            CalculateResetTimes(DateTime.UtcNow);
             InitialiseQuestInfo();
             InitialiseQuestRelations();
 
@@ -52,16 +52,12 @@ namespace NexusForever.Game.Quest
             log.Info($"Cached {questInfoStore.Count} quests in {sw.ElapsedMilliseconds}ms.");
         }
 
-        private void CalculateResetTimes()
+        internal void CalculateResetTimes(DateTime now)
         {
-            DateTime now = DateTime.UtcNow;
-            var resetTime = new DateTime(now.Year, now.Month, now.Day, 10, 0, 0);
-
-            // calculate daily reset (every day 10AM UTC)
-            NextDailyReset = resetTime.AddDays(1);
-
-            // calculate weekly reset (every tuesday 10AM UTC)
-            NextWeeklyReset = resetTime.AddDays((DayOfWeek.Tuesday - now.DayOfWeek + 7) % 7);
+            QuestResetCalculator.TryCalculateNext(QuestRepeatPeriod.Daily, now, out DateTime dailyReset);
+            QuestResetCalculator.TryCalculateNext(QuestRepeatPeriod.Weekly, now, out DateTime weeklyReset);
+            NextDailyReset = dailyReset;
+            NextWeeklyReset = weeklyReset;
         }
 
         private void InitialiseQuestInfo()
@@ -218,12 +214,29 @@ namespace NexusForever.Game.Quest
 
         public void Update(double lastTick)
         {
-            DateTime now = DateTime.UtcNow;
-            if (NextDailyReset <= now)
-                NextDailyReset = NextDailyReset.AddDays(1);
+            UpdateResetTimes(DateTime.UtcNow);
+        }
 
-            if (NextWeeklyReset <= now)
-                NextWeeklyReset = NextWeeklyReset.AddDays(7);
+        internal void UpdateResetTimes(DateTime now)
+        {
+            DateTime nowUtc = QuestResetCalculator.AsUtc(now);
+            if (NextDailyReset <= nowUtc)
+            {
+                QuestResetCalculator.TryCalculateNext(
+                    QuestRepeatPeriod.Daily,
+                    nowUtc,
+                    out DateTime nextDailyReset);
+                NextDailyReset = nextDailyReset;
+            }
+
+            if (NextWeeklyReset <= nowUtc)
+            {
+                QuestResetCalculator.TryCalculateNext(
+                    QuestRepeatPeriod.Weekly,
+                    nowUtc,
+                    out DateTime nextWeeklyReset);
+                NextWeeklyReset = nextWeeklyReset;
+            }
         }
 
         /// <summary>

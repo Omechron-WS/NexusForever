@@ -39,6 +39,7 @@ namespace NexusForever.Game.Entity
         private readonly IGlobalQuestManager globalQuestManager;
         private IQuestRewardManager questRewardManager;
         private readonly IDisableManager disableManager;
+        private readonly Func<DateTime> utcNow;
 
         private readonly Dictionary<ushort, IQuest> completedQuests = new();
         private readonly Dictionary<ushort, IQuest> inactiveQuests = new();
@@ -49,7 +50,7 @@ namespace NexusForever.Game.Entity
         /// Create a new <see cref="IQuestManager"/> from existing <see cref="CharacterModel"/> database model.
         /// </summary>
         public QuestManager(IPlayer owner, CharacterModel model)
-            : this(owner, model, null, null, null)
+            : this(owner, model, null, null, null, null)
         {
         }
 
@@ -58,12 +59,14 @@ namespace NexusForever.Game.Entity
             CharacterModel model,
             IGlobalQuestManager globalQuestManager,
             IQuestRewardManager questRewardManager,
-            IDisableManager disableManager)
+            IDisableManager disableManager,
+            Func<DateTime> utcNow = null)
         {
             player = owner;
             this.globalQuestManager = globalQuestManager;
             this.questRewardManager = questRewardManager;
             this.disableManager = disableManager;
+            this.utcNow = utcNow ?? (() => DateTime.UtcNow);
 
             foreach (CharacterQuestModel questModel in model.Quest)
             {
@@ -160,14 +163,15 @@ namespace NexusForever.Game.Entity
 
         public void SendInitialPackets()
         {
-            DateTime now = DateTime.UtcNow;
+            DateTime now = GetUtcNow();
             player.Session.EnqueueMessageEncrypted(new ServerQuestInit
             {
                 Completed = completedQuests.Values
                     .Select(q => new ServerQuestInit.QuestComplete
                     {
                         QuestId        = q.Id,
-                        CompletedToday = now < q.Reset
+                        CompletedToday = q.Reset is DateTime reset
+                            && now < QuestResetCalculator.AsUtc(reset)
                     }).ToList(),
                 Inactive = inactiveQuests.Values
                     .Select(q => new ServerQuestInit.QuestInactive
@@ -181,13 +185,13 @@ namespace NexusForever.Game.Entity
                         QuestId    = q.Id,
                         State      = q.State,
                         Flags      = q.Flags,
-                        QuestTimeElapsed      = q.Timer ?? 0u,
+                        QuestTimeRemaining = q.Timer ?? 0u,
                         Objectives = q
                             .OrderBy(objective => objective.Index)
                             .Select(objective => new ServerQuestInit.QuestActive.Objective
                             {
-                                Progress    = objective.Progress,
-                                TimeElapsed = 0u
+                                Progress      = objective.Progress,
+                                TimeRemaining = objective.Timer ?? 0u
                             }).ToList()
                     }).ToList()
             });
@@ -295,11 +299,25 @@ namespace NexusForever.Game.Entity
             // if quest has already been completed make sure it's repeatable and the reset period has elapsed
             if (quest?.State == QuestState.Completed)
             {
-                if (info.Entry.QuestRepeatPeriodEnum == 0u)
+                QuestRepeatPeriod repeatPeriod = (QuestRepeatPeriod)info.Entry.QuestRepeatPeriodEnum;
+                if (repeatPeriod == QuestRepeatPeriod.None)
                     throw new QuestException($"Player {player.CharacterId} tried to start quest {info.Entry.Id} which they have already completed!");
 
-                DateTime? resetTime = GetQuest((ushort)info.Entry.Id, GetQuestFlags.Completed).Reset;
-                if (DateTime.UtcNow < resetTime)
+                if (!QuestResetCalculator.IsSupported(repeatPeriod))
+                {
+                    log.Error($"Quest {info.Entry.Id} has unsupported repeat period {info.Entry.QuestRepeatPeriodEnum}.");
+                    throw new QuestException($"Player {player.CharacterId} tried to start quest {info.Entry.Id} with invalid repeat metadata!");
+                }
+
+                DateTime? persistedReset = GetQuest((ushort)info.Entry.Id, GetQuestFlags.Completed).Reset;
+                if (persistedReset == null)
+                {
+                    log.Error($"Completed repeatable quest {info.Entry.Id} has no persisted reset time.");
+                    throw new QuestException($"Player {player.CharacterId} tried to start quest {info.Entry.Id} with missing reset metadata!");
+                }
+
+                DateTime resetTime = QuestResetCalculator.AsUtc(persistedReset.Value);
+                if (GetUtcNow() < resetTime)
                     throw new QuestException($"Player {player.CharacterId} tried to start quest {info.Entry.Id} which hasn't reset yet!");
             }
 
@@ -564,6 +582,8 @@ namespace NexusForever.Game.Entity
                 return;
             }
 
+            DateTime? completionReset = CalculateCompletionReset(questInfo);
+
             IQuest quest = GetQuest(questId, GetQuestFlags.Active);
             if (quest == null)
             {
@@ -614,16 +634,8 @@ namespace NexusForever.Game.Entity
 
                 quest.State = QuestState.Completed;
 
-                // mark repeatable quests for reset
-                switch ((QuestRepeatPeriod)quest.Info.Entry.QuestRepeatPeriodEnum)
-                {
-                    case QuestRepeatPeriod.Daily:
-                        quest.Reset = globalQuestManager.NextDailyReset;
-                        break;
-                    case QuestRepeatPeriod.Weekly:
-                        quest.Reset = globalQuestManager.NextWeeklyReset;
-                        break;
-                }
+                if (completionReset != null)
+                    quest.Reset = completionReset;
 
                 activeQuests.Remove(questId);
                 completedQuests.Add(questId, quest);
@@ -656,6 +668,26 @@ namespace NexusForever.Game.Entity
         private IDisableManager GetDisableManager()
         {
             return disableManager ?? DisableManager.Instance;
+        }
+
+        private DateTime GetUtcNow()
+        {
+            return QuestResetCalculator.AsUtc(utcNow());
+        }
+
+        private DateTime? CalculateCompletionReset(IQuestInfo questInfo)
+        {
+            QuestRepeatPeriod repeatPeriod = (QuestRepeatPeriod)questInfo.Entry.QuestRepeatPeriodEnum;
+            if (repeatPeriod == QuestRepeatPeriod.None)
+                return null;
+
+            if (!QuestResetCalculator.TryCalculateNext(repeatPeriod, GetUtcNow(), out DateTime resetTime))
+            {
+                log.Error($"Quest {questInfo.Entry.Id} has unsupported repeat period {questInfo.Entry.QuestRepeatPeriodEnum}.");
+                throw new QuestException($"Quest {questInfo.Entry.Id} has invalid repeat metadata!");
+            }
+
+            return resetTime;
         }
 
         private bool HasEligibleCommunicatorMessage(IGlobalQuestManager manager, ushort questId)

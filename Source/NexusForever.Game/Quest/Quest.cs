@@ -71,6 +71,9 @@ namespace NexusForever.Game.Quest
             get => timer;
             set
             {
+                if (timer == value)
+                    return;
+
                 timer = value;
                 saveMask.Mark(QuestSaveMask.Timer);
             }
@@ -83,6 +86,9 @@ namespace NexusForever.Game.Quest
             get => reset;
             set
             {
+                if (reset == value)
+                    return;
+
                 reset = value;
                 saveMask.Mark(QuestSaveMask.Reset);
             }
@@ -139,8 +145,7 @@ namespace NexusForever.Game.Quest
             reset                   = model.Reset;
             saveMask = new VersionedSaveMask<QuestSaveMask>();
 
-            if (timer != null)
-                questTimer = new UpdateTimer(timer.Value);
+            InitialisePersistedTimer();
 
             ValidateObjectiveCount(info);
             var objectiveModels = new Dictionary<byte, CharacterQuestObjectiveModel>();
@@ -237,7 +242,7 @@ namespace NexusForever.Game.Quest
             if (Info.Entry.MaxTimeAllowedMS != 0u)
             {
                 questTimer = new UpdateTimer(Info.Entry.MaxTimeAllowedMS / 1000d);
-                Timer = (uint)(questTimer.Time * 1000d);
+                Timer = Info.Entry.MaxTimeAllowedMS;
             }
 
             // TODO: objective timers
@@ -365,20 +370,75 @@ namespace NexusForever.Game.Quest
 
         public void Update(double lastTick)
         {
+            if (!double.IsFinite(lastTick) || lastTick <= 0d)
+                return;
+
             scriptCollection?.Invoke<IUpdate>(s => s.Update(lastTick));
 
-            if (questTimer != null)
-            {
-                questTimer.Update(lastTick);
-                Timer = (uint)(questTimer.Time * 1000d);
+            if (questTimer == null
+                || State != QuestState.Accepted)
+                return;
 
-                if (questTimer.HasElapsed)
+            questTimer.Update(lastTick);
+            Timer = GetRemainingMilliseconds(questTimer.Time);
+
+            if (!questTimer.HasElapsed)
+                return;
+
+            // Ran out of time to complete the quest.
+            State = QuestState.Botched;
+            questTimer = null;
+        }
+
+        private void InitialisePersistedTimer()
+        {
+            if (timer == null)
+            {
+                if (state == QuestState.Accepted && Info.Entry.MaxTimeAllowedMS != 0u)
                 {
-                    // ran out of time to complete quest
-                    State = QuestState.Botched;
-                    questTimer = null;
+                    log.Error($"Timed quest {Id} has no persisted timer and will be botched.");
+                    state = QuestState.Botched;
+                    saveMask.Mark(QuestSaveMask.State);
                 }
+
+                return;
             }
+
+            uint maximum = Info.Entry.MaxTimeAllowedMS;
+            if (maximum == 0u)
+            {
+                timer = null;
+                saveMask.Mark(QuestSaveMask.Timer);
+                return;
+            }
+
+            if (timer > maximum)
+            {
+                log.Warn($"Clamping invalid persisted timer {timer}ms for quest {Id} to {maximum}ms.");
+                timer = maximum;
+                saveMask.Mark(QuestSaveMask.Timer);
+            }
+
+            if (state != QuestState.Accepted)
+                return;
+
+            if (timer == 0u)
+            {
+                state = QuestState.Botched;
+                saveMask.Mark(QuestSaveMask.State);
+                return;
+            }
+
+            questTimer = new UpdateTimer(timer.Value / 1000d);
+        }
+
+        private static uint GetRemainingMilliseconds(double seconds)
+        {
+            if (!double.IsFinite(seconds) || seconds <= 0d)
+                return 0u;
+
+            double milliseconds = Math.Ceiling(seconds * 1000d);
+            return milliseconds >= uint.MaxValue ? uint.MaxValue : (uint)milliseconds;
         }
 
         /// <summary>
