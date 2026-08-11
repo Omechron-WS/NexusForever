@@ -6,6 +6,7 @@ using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Static.Achievement;
 using NexusForever.Game.Static.Entity;
+using NexusForever.Game.Static.Quest;
 using NexusForever.GameTable.Model;
 using NexusForever.Network;
 using NexusForever.Network.World.Message.Model;
@@ -275,60 +276,79 @@ namespace NexusForever.Game.Entity
             if (bag == null)
                 throw new ArgumentException();
 
-            // update any existing stacks before creating new items
-            if (info.IsStackable())
+            uint itemId = info.Id;
+            uint grantedCount = 0u;
+            try
             {
-                foreach (IItem item in bag.Where(i => i.Info.Id == info.Id))
+                // update any existing stacks before creating new items
+                if (info.IsStackable())
                 {
-                    if (count == 0u)
-                        break;
-
-                    if (item.StackCount >= info.Entry.MaxStackCount)
-                        continue;
-
-                    uint added = Math.Min(count, info.Entry.MaxStackCount - item.StackCount);
-                    uint newStackCount = item.StackCount + added;
-                    count -= added;
-                    ItemStackCountUpdate(item, newStackCount, reason);
-                }
-            }
-
-            // create new stacks for the remaining count
-            while (count > 0)
-            {
-                uint? bagIndex = location == InventoryLocation.Equipped ? bag.GetFirstAvailableBagIndex((ItemSlot)info.SlotEntry.Id) : bag.GetFirstAvailableBagIndex();
-                if (!bagIndex.HasValue)
-                {
-                    // If there is remaining count left, and this was created by SupplySatchelManager, then return the rest to the client.
-                    if (count > 0 && reason == ItemUpdateReason.ResourceConversion)
-                        player.SupplySatchelManager.AddAmount(new Item(characterId, info, count, charges), count);
-                    else
+                    foreach (IItem item in bag.Where(i => i.Info.Id == itemId))
                     {
-                        player.Session.EnqueueMessageEncrypted(new ServerItemError
+                        if (count == 0u)
+                            break;
+
+                        if (item.StackCount >= info.Entry.MaxStackCount)
+                            continue;
+
+                        uint previousStackCount = item.StackCount;
+                        uint added = Math.Min(count, info.Entry.MaxStackCount - previousStackCount);
+                        uint newStackCount = previousStackCount + added;
+                        count -= added;
+                        try
                         {
-                            ErrorCode = GenericError.ItemInventoryFull
+                            ItemStackCountUpdate(item, newStackCount, reason);
+                        }
+                        finally
+                        {
+                            if (item.StackCount > previousStackCount)
+                                grantedCount += item.StackCount - previousStackCount;
+                        }
+                    }
+                }
+
+                // create new stacks for the remaining count
+                while (count > 0)
+                {
+                    uint? bagIndex = location == InventoryLocation.Equipped ? bag.GetFirstAvailableBagIndex((ItemSlot)info.SlotEntry.Id) : bag.GetFirstAvailableBagIndex();
+                    if (!bagIndex.HasValue)
+                    {
+                        // If there is remaining count left, and this was created by SupplySatchelManager, then return the rest to the client.
+                        if (count > 0 && reason == ItemUpdateReason.ResourceConversion)
+                            player.SupplySatchelManager.AddAmount(new Item(characterId, info, count, charges), count);
+                        else
+                        {
+                            player.Session.EnqueueMessageEncrypted(new ServerItemError
+                            {
+                                ErrorCode = GenericError.ItemInventoryFull
+                            });
+                        }
+
+                        return;
+                    }
+
+                    var item = new Item(characterId, info, Math.Min(count, info.IsStackable() ? info.Entry.MaxStackCount : 1), charges);
+                    AddItem(item, location, bagIndex.Value);
+                    grantedCount += item.StackCount;
+
+                    if (!player?.IsLoading ?? false)
+                    {
+                        player.Session.EnqueueMessageEncrypted(new ServerItemAdd
+                        {
+                            InventoryItem = new InventoryItem
+                            {
+                                Item   = item.Build(),
+                                Reason = reason
+                            }
                         });
                     }
 
-                    return;
+                    count -= item.StackCount;
                 }
-
-                var item = new Item(characterId, info, Math.Min(count, info.IsStackable() ? info.Entry.MaxStackCount : 1), charges);
-                AddItem(item, location, bagIndex.Value);
-
-                if (!player?.IsLoading ?? false)
-                {
-                    player.Session.EnqueueMessageEncrypted(new ServerItemAdd
-                    {
-                        InventoryItem = new InventoryItem
-                        {
-                            Item   = item.Build(),
-                            Reason = reason
-                        }
-                    });
-                }
-
-                count -= item.StackCount;
+            }
+            finally
+            {
+                NotifyItemGranted(location, itemId, grantedCount);
             }
         }
 
@@ -923,19 +943,51 @@ namespace NexusForever.Game.Entity
             if (!bagIndex.HasValue)
                 throw new ArgumentException();
 
-            // Stacks are bought back in full, so no need to worry about splitting stacks
-            AddItem(item, location, bagIndex.Value);
-
-            if (!player?.IsLoading ?? false)
+            uint itemId = 0u;
+            uint grantedCount = 0u;
+            bool itemAdded = false;
+            try
             {
-                player.Session.EnqueueMessageEncrypted(new ServerItemAdd
+                // Stacks are bought back in full, so no need to worry about splitting stacks
+                AddItem(item, location, bagIndex.Value);
+                itemId = item.Id;
+                grantedCount = item.StackCount;
+                itemAdded = true;
+
+                if (!player?.IsLoading ?? false)
                 {
-                    InventoryItem = new InventoryItem
+                    player.Session.EnqueueMessageEncrypted(new ServerItemAdd
                     {
-                        Item   = item.Build(),
-                        Reason = reason
-                    }
-                });
+                        InventoryItem = new InventoryItem
+                        {
+                            Item   = item.Build(),
+                            Reason = reason
+                        }
+                    });
+                }
+            }
+            finally
+            {
+                if (itemAdded)
+                    NotifyItemGranted(location, itemId, grantedCount);
+            }
+        }
+
+        private void NotifyItemGranted(InventoryLocation location, uint itemId, uint count)
+        {
+            if (location != InventoryLocation.Inventory
+                || itemId == 0u
+                || count == 0u
+                || player == null)
+                return;
+
+            try
+            {
+                player.QuestManager?.ObjectiveUpdate(QuestObjectiveType.CollectItem, itemId, count);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to update CollectItem quest objectives for item {itemId} after granting {count}.");
             }
         }
 
