@@ -702,16 +702,18 @@ namespace NexusForever.Game.Housing
         }
 
         /// <summary>
-        /// Returns true if <see cref="IPlayer"/> can modify the <see cref="IResidence"/>.
+        /// Returns true if <see cref="IPlayer"/> can perform the supplied loaded-map mutation on
+        /// the <see cref="IResidence"/>.
         /// </summary>
         /// <remarks>
         /// This is valid for both community and individual residences.
         /// </remarks>
-        public bool CanModifyResidence(IPlayer player)
+        public bool CanModifyResidence(IPlayer player, ResidenceModification modification)
         {
             if (player == null
                 || Map == null
-                || !ReferenceEquals(Map, player.Map))
+                || !ReferenceEquals(Map, player.Map)
+                || !Enum.IsDefined(typeof(ResidenceModification), modification))
                 return false;
 
             switch (Type)
@@ -724,8 +726,18 @@ namespace NexusForever.Game.Housing
                         || !ReferenceEquals(community.Residence, this))
                         return false;
 
+                    GuildRankPermission? permission = modification switch
+                    {
+                        ResidenceModification.Decorate    => GuildRankPermission.DecorateCommunity,
+                        ResidenceModification.DeleteDecor => GuildRankPermission.DeleteCommunityDecor,
+                        ResidenceModification.Remodel     => GuildRankPermission.ChangeCommunityRemodelOptions,
+                        _                                 => null
+                    };
+                    if (permission == null)
+                        return false;
+
                     IGuildMember member = community.GetMember(player.CharacterId);
-                    return member?.Rank?.HasPermission(GuildRankPermission.DecorateCommunity) == true;
+                    return member?.Rank?.HasPermission(permission.Value) == true;
                 }
                 case ResidenceType.Residence:
                 {

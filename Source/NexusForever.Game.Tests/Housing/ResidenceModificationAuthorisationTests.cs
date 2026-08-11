@@ -19,16 +19,21 @@ namespace NexusForever.Game.Tests.Housing
         private const ulong OwnerId = 10ul;
         private const ulong CommunityId = 20ul;
         private const ulong CharacterId = 30ul;
+        private const ResidenceModification DefaultModification = ResidenceModification.Decorate;
 
-        [Fact]
-        public void PersonalResidence_ExactOwnerOnExactMap_IsAllowed()
+        [Theory]
+        [InlineData(ResidenceModification.Decorate)]
+        [InlineData(ResidenceModification.DeleteDecor)]
+        [InlineData(ResidenceModification.Remodel)]
+        [InlineData(ResidenceModification.Rename)]
+        public void PersonalResidence_ExactOwnerOnExactMap_IsAllowed(ResidenceModification modification)
         {
             Residence residence = CreatePersonalResidence();
             var map = new Mock<IResidenceMapInstance>();
             residence.Map = map.Object;
             Mock<IPlayer> player = CreatePlayer(map.Object, OwnerId);
 
-            Assert.True(residence.CanModifyResidence(player.Object));
+            Assert.True(residence.CanModifyResidence(player.Object, modification));
         }
 
         [Fact]
@@ -37,7 +42,7 @@ namespace NexusForever.Game.Tests.Housing
             Residence residence = CreatePersonalResidence();
             Mock<IPlayer> player = CreatePlayer(Mock.Of<IResidenceMapInstance>(), OwnerId);
 
-            Assert.False(residence.CanModifyResidence(player.Object));
+            Assert.False(residence.CanModifyResidence(player.Object, DefaultModification));
         }
 
         [Fact]
@@ -47,7 +52,7 @@ namespace NexusForever.Game.Tests.Housing
             residence.Map = Mock.Of<IResidenceMapInstance>();
             Mock<IPlayer> player = CreatePlayer(Mock.Of<IResidenceMapInstance>(), OwnerId);
 
-            Assert.False(residence.CanModifyResidence(player.Object));
+            Assert.False(residence.CanModifyResidence(player.Object, DefaultModification));
         }
 
         [Fact]
@@ -58,7 +63,7 @@ namespace NexusForever.Game.Tests.Housing
             residence.Map = map.Object;
             Mock<IPlayer> player = CreatePlayer(map.Object, OwnerId + 1ul);
 
-            Assert.False(residence.CanModifyResidence(player.Object));
+            Assert.False(residence.CanModifyResidence(player.Object, DefaultModification));
         }
 
         [Fact]
@@ -67,7 +72,7 @@ namespace NexusForever.Game.Tests.Housing
             Residence residence = CreatePersonalResidence();
             residence.Map = Mock.Of<IResidenceMapInstance>();
 
-            Assert.False(residence.CanModifyResidence(null));
+            Assert.False(residence.CanModifyResidence(null, DefaultModification));
         }
 
         [Fact]
@@ -75,7 +80,7 @@ namespace NexusForever.Game.Tests.Housing
         {
             CommunityFixture fixture = CreateCommunityFixture();
 
-            Assert.True(fixture.Residence.CanModifyResidence(fixture.Player.Object));
+            Assert.True(fixture.Residence.CanModifyResidence(fixture.Player.Object, DefaultModification));
         }
 
         [Fact]
@@ -86,7 +91,7 @@ namespace NexusForever.Game.Tests.Housing
                 .SetupGet(player => player.Map)
                 .Returns(Mock.Of<IResidenceMapInstance>());
 
-            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object));
+            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object, DefaultModification));
         }
 
         [Fact]
@@ -95,7 +100,7 @@ namespace NexusForever.Game.Tests.Housing
             CommunityFixture fixture = CreateCommunityFixture();
             fixture.Residence.GuildOwnerIdentity = null;
 
-            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object));
+            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object, DefaultModification));
         }
 
         [Fact]
@@ -106,7 +111,7 @@ namespace NexusForever.Game.Tests.Housing
                 .Setup(manager => manager.GetGuild<ICommunity>(GuildType.Community))
                 .Returns((ICommunity)null);
 
-            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object));
+            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object, DefaultModification));
         }
 
         [Fact]
@@ -119,7 +124,7 @@ namespace NexusForever.Game.Tests.Housing
                 Id      = CommunityId + 1ul
             });
 
-            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object));
+            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object, DefaultModification));
             fixture.Community.Verify(
                 community => community.GetMember(It.IsAny<ulong>()),
                 Times.Never);
@@ -133,7 +138,7 @@ namespace NexusForever.Game.Tests.Housing
             staleResidence.SetupGet(residence => residence.Identity).Returns(fixture.Residence.Identity);
             fixture.Community.SetupGet(community => community.Residence).Returns(staleResidence.Object);
 
-            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object));
+            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object, DefaultModification));
             fixture.Community.Verify(
                 community => community.GetMember(It.IsAny<ulong>()),
                 Times.Never);
@@ -145,7 +150,7 @@ namespace NexusForever.Game.Tests.Housing
             CommunityFixture fixture = CreateCommunityFixture();
             fixture.Community.SetupGet(community => community.Residence).Returns((IResidence)null);
 
-            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object));
+            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object, DefaultModification));
             fixture.Community.Verify(
                 community => community.GetMember(It.IsAny<ulong>()),
                 Times.Never);
@@ -159,7 +164,7 @@ namespace NexusForever.Game.Tests.Housing
                 .Setup(community => community.GetMember(CharacterId))
                 .Returns((IGuildMember)null);
 
-            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object));
+            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object, DefaultModification));
         }
 
         [Fact]
@@ -168,21 +173,97 @@ namespace NexusForever.Game.Tests.Housing
             CommunityFixture fixture = CreateCommunityFixture();
             fixture.Member.SetupGet(member => member.Rank).Returns((IGuildRank)null);
 
-            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object));
+            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object, DefaultModification));
         }
 
         [Fact]
         public void CommunityResidence_MissingDecoratePermission_IsDenied()
         {
-            CommunityFixture fixture = CreateCommunityFixture();
-            fixture.Rank
-                .Setup(rank => rank.HasPermission(GuildRankPermission.DecorateCommunity))
-                .Returns(false);
+            CommunityFixture fixture = CreateCommunityFixture(GuildRankPermission.DeleteCommunityDecor);
 
-            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object));
+            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object, DefaultModification));
         }
 
-        private static CommunityFixture CreateCommunityFixture()
+        [Theory]
+        [InlineData(ResidenceModification.Decorate, GuildRankPermission.DecorateCommunity)]
+        [InlineData(ResidenceModification.DeleteDecor, GuildRankPermission.DeleteCommunityDecor)]
+        [InlineData(ResidenceModification.Remodel, GuildRankPermission.ChangeCommunityRemodelOptions)]
+        public void CommunityResidence_OperationUsesOneExactPermission(
+            ResidenceModification modification,
+            GuildRankPermission permission)
+        {
+            CommunityFixture fixture = CreateCommunityFixture(permission);
+
+            Assert.True(fixture.Residence.CanModifyResidence(fixture.Player.Object, modification));
+            fixture.Rank.Verify(rank => rank.HasPermission(permission), Times.Once);
+        }
+
+        [Theory]
+        [InlineData(ResidenceModification.Decorate, GuildRankPermission.DeleteCommunityDecor)]
+        [InlineData(ResidenceModification.DeleteDecor, GuildRankPermission.DecorateCommunity)]
+        [InlineData(ResidenceModification.Remodel, GuildRankPermission.DecorateCommunity)]
+        public void CommunityResidence_DifferentHousingPermission_IsDenied(
+            ResidenceModification modification,
+            GuildRankPermission grantedPermission)
+        {
+            CommunityFixture fixture = CreateCommunityFixture(grantedPermission);
+
+            Assert.False(fixture.Residence.CanModifyResidence(fixture.Player.Object, modification));
+        }
+
+        [Fact]
+        public void CommunityResidence_GenericPropertyRename_IsDeniedBeforeMemberLookup()
+        {
+            CommunityFixture fixture = CreateCommunityFixture();
+
+            Assert.False(fixture.Residence.CanModifyResidence(
+                fixture.Player.Object,
+                ResidenceModification.Rename));
+            fixture.Community.Verify(
+                community => community.GetMember(It.IsAny<ulong>()),
+                Times.Never);
+        }
+
+        [Fact]
+        public void Residence_UnknownModification_IsDenied()
+        {
+            Residence personalResidence = CreatePersonalResidence();
+            var personalMap = new Mock<IResidenceMapInstance>();
+            personalResidence.Map = personalMap.Object;
+            Mock<IPlayer> owner = CreatePlayer(personalMap.Object, OwnerId);
+            CommunityFixture community = CreateCommunityFixture();
+
+            Assert.False(personalResidence.CanModifyResidence(
+                owner.Object,
+                (ResidenceModification)999));
+            Assert.False(community.Residence.CanModifyResidence(
+                community.Player.Object,
+                (ResidenceModification)999));
+            community.GuildManager.Verify(
+                manager => manager.GetGuild<ICommunity>(It.IsAny<GuildType>()),
+                Times.Never);
+        }
+
+        [Fact]
+        public void CommunityChild_RemainsExactOwnerOnly()
+        {
+            Residence child = CreatePersonalResidence();
+            child.GuildOwnerIdentity = new Identity
+            {
+                RealmId = RealmId,
+                Id      = CommunityId
+            };
+            var map = new Mock<IResidenceMapInstance>();
+            child.Map = map.Object;
+            Mock<IPlayer> owner = CreatePlayer(map.Object, OwnerId);
+            Mock<IPlayer> communityMember = CreatePlayer(map.Object, CharacterId);
+
+            Assert.True(child.CanModifyResidence(owner.Object, ResidenceModification.Decorate));
+            Assert.False(child.CanModifyResidence(communityMember.Object, ResidenceModification.Decorate));
+        }
+
+        private static CommunityFixture CreateCommunityFixture(
+            GuildRankPermission grantedPermission = GuildRankPermission.DecorateCommunity)
         {
             Residence residence = CreateCommunityResidence();
             var map = new Mock<IResidenceMapInstance>();
@@ -190,8 +271,8 @@ namespace NexusForever.Game.Tests.Housing
 
             var rank = new Mock<IGuildRank>();
             rank
-                .Setup(value => value.HasPermission(GuildRankPermission.DecorateCommunity))
-                .Returns(true);
+                .Setup(value => value.HasPermission(It.IsAny<GuildRankPermission>()))
+                .Returns((GuildRankPermission permission) => permission == grantedPermission);
 
             var member = new Mock<IGuildMember>();
             member.SetupGet(value => value.Rank).Returns(rank.Object);

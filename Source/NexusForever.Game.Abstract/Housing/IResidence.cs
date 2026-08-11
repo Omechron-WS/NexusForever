@@ -108,14 +108,16 @@ namespace NexusForever.Game.Abstract.Housing
         void RemoveChild(IResidence residence);
 
         /// <summary>
-        /// Returns true if <see cref="IPlayer"/> can modify the <see cref="IResidence"/>.
+        /// Returns true if <see cref="IPlayer"/> can perform the supplied loaded-map mutation on
+        /// the <see cref="IResidence"/>.
         /// </summary>
         /// <remarks>
         /// The player must occupy this residence's exact live map. Personal residences require
         /// the exact owner, while community residences require the exact owning community,
-        /// residence reference, current member rank, and decorate permission.
+        /// residence reference, current member rank, and the one exact permission mapped from
+        /// <paramref name="modification"/>. Community property rename is not admitted here.
         /// </remarks>
-        bool CanModifyResidence(IPlayer player);
+        bool CanModifyResidence(IPlayer player, ResidenceModification modification);
 
         /// <summary>
         /// Return all <see cref="IPlot"/>'s for the <see cref="IResidence"/>.

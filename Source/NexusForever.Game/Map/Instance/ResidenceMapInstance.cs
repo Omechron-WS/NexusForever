@@ -288,7 +288,7 @@ namespace NexusForever.Game.Map.Instance
         public void CrateAllDecor(Abstract.Identity targetResidence, IPlayer player)
         {
             if (!residences.TryGetValue(targetResidence, out IResidence residence)
-                || !residence.CanModifyResidence(player))
+                || !residence.CanModifyResidence(player, ResidenceModification.Decorate))
                 throw new InvalidPacketValueException();
 
             var housingResidenceDecor = new ServerHousingResidenceDecor();
@@ -306,29 +306,133 @@ namespace NexusForever.Game.Map.Instance
         /// </summary>
         public void DecorUpdate(IPlayer player, ClientHousingDecorUpdate housingDecorUpdate)
         {
+            if (housingDecorUpdate?.DecorUpdates == null)
+                throw new InvalidPacketValueException();
+
+            ResidenceModification modification = housingDecorUpdate.Operation switch
+            {
+                DecorUpdateOperation.Create => ResidenceModification.Decorate,
+                DecorUpdateOperation.Change => ResidenceModification.Decorate,
+                DecorUpdateOperation.Delete => ResidenceModification.DeleteDecor,
+                _                           => throw new InvalidPacketValueException()
+            };
+
+            // Validate and resolve the entire packet before applying its first mutation. Besides
+            // preventing late authority failures, retaining the resolved entry/decor ensures the
+            // apply pass cannot be redirected by packet-supplied state.
+            var preparedUpdates = new List<PreparedDecorUpdate>(housingDecorUpdate.DecorUpdates.Count);
+            var preparedExistingDecor = new HashSet<(Identity ResidenceIdentity, ulong DecorId)>();
             foreach (DecorUpdate update in housingDecorUpdate.DecorUpdates)
             {
                 // TODO: decide how to use the UseServiceToken value in DecorUpdate
 
-                if (!residences.TryGetValue(update.DecorInfo.TargetResidence.ToGameIdentity(), out IResidence residence)
-                    || !residence.CanModifyResidence(player))
+                if (update?.DecorInfo == null
+                    || !residences.TryGetValue(update.DecorInfo.TargetResidence.ToGameIdentity(), out IResidence residence)
+                    || !residence.CanModifyResidence(player, modification))
                     throw new InvalidPacketValueException();
 
                 switch (housingDecorUpdate.Operation)
                 {
                     case DecorUpdateOperation.Create:
-                        DecorCreate(residence, player, update.DecorInfo);
+                    {
+                        HousingDecorInfoEntry entry = gameTableManager.HousingDecorInfo.GetEntry(update.DecorInfo.DecorInfoId);
+                        if (entry == null)
+                            throw new InvalidPacketValueException();
+
+                        ValidateDecorUpdate(update.DecorInfo, entry);
+                        preparedUpdates.Add(new PreparedDecorUpdate(residence, update.DecorInfo, entry, null, HousingResult.Success));
                         break;
+                    }
                     case DecorUpdateOperation.Change:
-                        DecorMove(residence, player, update.DecorInfo);
+                    {
+                        IDecor decor = residence.GetDecor(update.DecorInfo.DecorId);
+                        if (decor == null
+                            || !preparedExistingDecor.Add((residence.Identity, decor.DecorId)))
+                            throw new InvalidPacketValueException();
+
+                        ValidateDecorUpdate(update.DecorInfo, decor.Entry);
+                        HousingResult result = IsValidPlotForPosition(update.DecorInfo)
+                            ? HousingResult.Success
+                            : HousingResult.Decor_InvalidPosition;
+                        preparedUpdates.Add(new PreparedDecorUpdate(residence, update.DecorInfo, null, decor, result));
                         break;
+                    }
                     case DecorUpdateOperation.Delete:
-                        DecorDelete(residence, update.DecorInfo);
+                    {
+                        IDecor decor = residence.GetDecor(update.DecorInfo.DecorId);
+                        if (decor?.Type != DecorType.Crate
+                            || !preparedExistingDecor.Add((residence.Identity, decor.DecorId)))
+                            throw new InvalidPacketValueException();
+
+                        preparedUpdates.Add(new PreparedDecorUpdate(residence, update.DecorInfo, null, decor, HousingResult.Success));
                         break;
+                    }
                     default:
                         throw new InvalidPacketValueException();
                 }
             }
+
+            foreach (PreparedDecorUpdate prepared in preparedUpdates)
+            {
+                switch (housingDecorUpdate.Operation)
+                {
+                    case DecorUpdateOperation.Create:
+                        DecorCreate(prepared.Residence, player, prepared.Update, prepared.Entry);
+                        break;
+                    case DecorUpdateOperation.Change:
+                        DecorMove(prepared.Residence, player, prepared.Update, prepared.Decor, prepared.Result);
+                        break;
+                    case DecorUpdateOperation.Delete:
+                        DecorDelete(prepared.Residence, prepared.Decor);
+                        break;
+                }
+            }
+        }
+
+        private sealed record PreparedDecorUpdate(
+            IResidence Residence,
+            DecorInfo Update,
+            HousingDecorInfoEntry Entry,
+            IDecor Decor,
+            HousingResult Result);
+
+        private void ValidateDecorUpdate(DecorInfo update, HousingDecorInfoEntry entry)
+        {
+            if (!Enum.IsDefined(typeof(DecorType), update.DecorType))
+                throw new InvalidPacketValueException();
+
+            if (update.ColourShiftId != 0u
+                && gameTableManager.ColorShift.GetEntry(update.ColourShiftId) == null)
+                throw new InvalidPacketValueException();
+
+            if (update.DecorType == DecorType.Crate)
+                return;
+
+            if (entry == null
+                || !float.IsFinite(entry.MinScale)
+                || !float.IsFinite(entry.MaxScale)
+                || entry.MinScale > entry.MaxScale
+                || !float.IsFinite(update.Scale)
+                || update.Scale < entry.MinScale
+                || update.Scale > entry.MaxScale
+                || !IsFinite(update.Position)
+                || !IsFinite(update.Rotation))
+                throw new InvalidPacketValueException();
+        }
+
+        private static bool IsFinite(Vector3 value)
+        {
+            return float.IsFinite(value.X)
+                && float.IsFinite(value.Y)
+                && float.IsFinite(value.Z);
+        }
+
+        private static bool IsFinite(Quaternion value)
+        {
+            return float.IsFinite(value.X)
+                && float.IsFinite(value.Y)
+                && float.IsFinite(value.Z)
+                && float.IsFinite(value.W);
         }
 
         /// <summary>
@@ -346,12 +450,12 @@ namespace NexusForever.Game.Map.Instance
             EnqueueToAll(residenceDecor);
         }
 
-        private void DecorCreate(IResidence residence, IPlayer player, DecorInfo update)
+        private void DecorCreate(
+            IResidence residence,
+            IPlayer player,
+            DecorInfo update,
+            HousingDecorInfoEntry entry)
         {
-            HousingDecorInfoEntry entry = gameTableManager.HousingDecorInfo.GetEntry(update.DecorInfoId);
-            if (entry == null)
-                throw new InvalidPacketValueException();
-
             if (entry.CostCurrencyTypeId != 0u && entry.Cost != 0u)
             {
                 /*if (!player.CurrencyManager.CanAfford((byte)entry.CostCurrencyTypeId, entry.Cost))
@@ -364,30 +468,16 @@ namespace NexusForever.Game.Map.Instance
             }
 
             IDecor decor = residence.DecorCreate(entry);
-            decor.Type = update.DecorType;
-            decor.PlotIndex = update.PlotIndex;
 
             if (update.ColourShiftId != decor.ColourShiftId)
-            {
-                if (update.ColourShiftId != 0u)
-                {
-                    ColorShiftEntry colourEntry = gameTableManager.ColorShift.GetEntry(update.ColourShiftId);
-                    if (colourEntry == null)
-                        throw new InvalidPacketValueException();
-                }
-
                 decor.ColourShiftId = update.ColourShiftId;
-            }
 
-            if (update.DecorType != DecorType.Crate)
+            if (update.DecorType == DecorType.Crate)
+                decor.Crate();
+            else
             {
-                if (update.Scale < 0f)
-                    throw new InvalidPacketValueException();
-
                 // new decor is being placed directly in the world
-                decor.Position = update.Position;
-                decor.Rotation = update.Rotation;
-                decor.Scale    = update.Scale;
+                decor.Move(update.DecorType, update.Position, update.Rotation, update.Scale, update.PlotIndex);
             }
 
             EnqueueToAll(new ServerHousingResidenceDecor
@@ -400,60 +490,31 @@ namespace NexusForever.Game.Map.Instance
             });
         }
 
-        private void DecorMove(IResidence residence, IPlayer player, DecorInfo update)
+        private void DecorMove(
+            IResidence residence,
+            IPlayer player,
+            DecorInfo update,
+            IDecor decor,
+            HousingResult result)
         {
-            IDecor decor = residence.GetDecor(update.DecorId);
-            if (decor == null)
-                throw new InvalidPacketValueException();
-
-            HousingResult GetResult()
-            {
-                if (!IsValidPlotForPosition(update))
-                    return HousingResult.Decor_InvalidPosition;
-
-                return HousingResult.Success;
-            }
-
-            HousingResult result = GetResult();
             if (result == HousingResult.Success)
             {
-                if (update.PlotIndex != decor.PlotIndex)
-                {
-                    decor.PlotIndex = update.PlotIndex;
-                }
-
                 if (update.ColourShiftId != decor.ColourShiftId)
-                {
-                    if (update.ColourShiftId != 0u)
-                    {
-                        ColorShiftEntry colourEntry = gameTableManager.ColorShift.GetEntry(update.ColourShiftId);
-                        if (colourEntry == null)
-                            throw new InvalidPacketValueException();
-                    }
-
                     decor.ColourShiftId = update.ColourShiftId;
-                }
 
-                if (decor.Type == DecorType.Crate)
+                bool wasCrated = decor.Type == DecorType.Crate;
+                if (update.DecorType == DecorType.Crate)
+                    decor.Crate();
+                else
                 {
-                    if (decor.Entry.Creature2IdActiveProp != 0u)
+                    if (wasCrated && decor.Entry.Creature2IdActiveProp != 0u)
                     {
                         // TODO: used for decor that have an associated entity
                     }
 
-                    // crate->world
                     decor.Move(update.DecorType, update.Position, update.Rotation, update.Scale, update.PlotIndex);
-                }
-                else
-                {
-                    if (update.DecorType == DecorType.Crate)
-                        decor.Crate();
-                    else
-                    {
-                        // world->world
-                        decor.Move(update.DecorType, update.Position, update.Rotation, update.Scale, update.PlotIndex);
+                    if (!wasCrated)
                         decor.DecorParentId = update.ParentDecorId;
-                    }
                 }
             }
             else
@@ -474,18 +535,6 @@ namespace NexusForever.Game.Map.Instance
                     decor.Build()
                 }
             });
-        }
-
-        private void DecorDelete(IResidence residence, DecorInfo update)
-        {
-            IDecor decor = residence.GetDecor(update.DecorId);
-            if (decor == null)
-                throw new InvalidPacketValueException();
-
-            if (decor.Position != Vector3.Zero)
-                throw new InvalidOperationException();
-
-            DecorDelete(residence, decor);
         }
 
         /// <summary>
@@ -559,7 +608,7 @@ namespace NexusForever.Game.Map.Instance
         public void RenameResidence(IPlayer player, Abstract.Identity targetResidence, string name)
         {
             if (!residences.TryGetValue(targetResidence, out IResidence residence)
-                || !residence.CanModifyResidence(player))
+                || !residence.CanModifyResidence(player, ResidenceModification.Rename))
                 throw new InvalidPacketValueException();
 
             RenameResidence(residence, name);
@@ -579,9 +628,28 @@ namespace NexusForever.Game.Map.Instance
         /// </summary>
         public void Remodel(Abstract.Identity targetResidence, IPlayer player, ClientHousingRemodel housingRemodel)
         {
-            if (!residences.TryGetValue(targetResidence, out IResidence residence)
-                || !residence.CanModifyResidence(player))
+            if (housingRemodel == null
+                || housingRemodel.Operation != 1u
+                || !residences.TryGetValue(targetResidence, out IResidence residence)
+                || !residence.CanModifyResidence(player, ResidenceModification.Remodel))
                 throw new InvalidPacketValueException();
+
+            // Community maps only expose their shared sky, music, and ground options through
+            // this packet. A member rank must not be able to mutate a child's house exterior.
+            if (residence.Type == ResidenceType.Community
+                && (housingRemodel.RoofDecorInfoId != 0u
+                    || housingRemodel.WallpaperId != 0u
+                    || housingRemodel.EntrywayDecorInfoId != 0u
+                    || housingRemodel.DoorDecorInfoId != 0u))
+                throw new InvalidPacketValueException();
+
+            ValidateHousingDecorInfo(housingRemodel.RoofDecorInfoId, 2u);
+            ValidateHousingWallpaperInfo(housingRemodel.WallpaperId, 0x2u);
+            ValidateHousingDecorInfo(housingRemodel.EntrywayDecorInfoId, 3u);
+            ValidateHousingDecorInfo(housingRemodel.DoorDecorInfoId, 1u);
+            ValidateHousingWallpaperInfo(housingRemodel.SkyWallpaperId, 0x40u);
+            ValidateHousingWallpaperInfo(housingRemodel.MusicId, 0x100u);
+            ValidateHousingWallpaperInfo(housingRemodel.GroundWallpaperId, 0x200u);
 
             if (housingRemodel.RoofDecorInfoId != 0u)
                 residence.Roof = (ushort)housingRemodel.RoofDecorInfoId;
@@ -601,13 +669,54 @@ namespace NexusForever.Game.Map.Instance
             SendResidences();
         }
 
+        private void ValidateHousingDecorInfo(uint decorInfoId, uint expectedDecorTypeId)
+        {
+            if (decorInfoId == 0u)
+                return;
+
+            if (decorInfoId > ushort.MaxValue)
+                throw new InvalidPacketValueException();
+
+            HousingDecorInfoEntry entry = gameTableManager.HousingDecorInfo.GetEntry(decorInfoId);
+            if (entry == null
+                || entry.HousingDecorTypeId != expectedDecorTypeId)
+                throw new InvalidPacketValueException();
+        }
+
+        private void ValidateHousingWallpaperInfo(uint wallpaperInfoId, uint requiredFlags)
+        {
+            if (wallpaperInfoId == 0u)
+                return;
+
+            if (wallpaperInfoId > ushort.MaxValue)
+                throw new InvalidPacketValueException();
+
+            HousingWallpaperInfoEntry entry = gameTableManager.HousingWallpaperInfo.GetEntry(wallpaperInfoId);
+            if (entry == null
+                || (requiredFlags != 0u && (entry.Flags & requiredFlags) == 0u))
+                throw new InvalidPacketValueException();
+        }
+
         /// <summary>
         /// UpdateResidenceFlags <see cref="IResidence"/>.
         /// </summary>
         public void UpdateResidenceFlags(Abstract.Identity targetResidence, IPlayer player, ClientHousingFlagsUpdate flagsUpdate)
         {
-            if (!residences.TryGetValue(targetResidence, out IResidence residence)
-                || !residence.CanModifyResidence(player))
+            if (flagsUpdate == null
+                || !residences.TryGetValue(targetResidence, out IResidence residence)
+                || !residence.CanModifyResidence(player, ResidenceModification.Remodel))
+                throw new InvalidPacketValueException();
+
+            const ResidenceFlags SupportedFlags = ResidenceFlags.HideGroundClutter
+                | ResidenceFlags.HideNeighbourSkyplots;
+            if ((flagsUpdate.Flags & ~SupportedFlags) != 0
+                || flagsUpdate.NeighbourHarvestSplit > 5u
+                || flagsUpdate.NeighbourGardenSplit > 5u)
+                throw new InvalidPacketValueException();
+
+            if (residence.Type == ResidenceType.Community
+                && (flagsUpdate.NeighbourHarvestSplit != residence.ResourceSharing
+                    || flagsUpdate.NeighbourGardenSplit != residence.GardenSharing))
                 throw new InvalidPacketValueException();
 
             residence.Flags           = flagsUpdate.Flags;
