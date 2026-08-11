@@ -50,6 +50,7 @@ namespace NexusForever.Network.Message
         ServerCostumeList               = 0x00D9,
         ServerCharacterCreate           = 0x00DC,
         ServerChannelUpdateLoot         = 0x00DD,
+        ClientDash                      = 0x00DE,
         ServerDatacubeUpdateList        = 0x00E0,
         ServerDatacubeUpdate            = 0x00E1,
         ServerDatacubeVolumeUpdate      = 0x00E2,
