@@ -520,10 +520,20 @@ namespace NexusForever.Game.Quest
                 UpdateObjective(objective, progress);
 
             bool requiredObjectivesComplete = RequiredObjectivesComplete();
-            SendChangedObjectives(previousProgress);
+            SendChangedObjectives(previousProgress, containNotificationFailures: true);
 
             if (requiredObjectivesComplete)
-                State = QuestState.Achieved;
+            {
+                try
+                {
+                    State = QuestState.Achieved;
+                }
+                catch (Exception exception)
+                {
+                    // State is assigned before OnStateChange publishes notifications and callbacks.
+                    log.Error(exception, $"Quest {Id} achieved-state notification failed after state committed.");
+                }
+            }
         }
 
         /// <summary>
@@ -613,9 +623,26 @@ namespace NexusForever.Game.Quest
                 return;
 
             uint previousProgress = objective.Progress;
-            objective.ObjectiveUpdate(progress);
-            if (objective.Progress != previousProgress)
+            try
+            {
+                objective.ObjectiveUpdate(progress);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Quest {Id} objective {objective.Index} failed while applying progress.");
+            }
+
+            if (objective.Progress == previousProgress)
+                return;
+
+            try
+            {
                 scriptCollection?.Invoke<IQuestScript>(script => script.OnObjectiveUpdate(objective));
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Quest {Id} objective {objective.Index} progress callback failed after progress committed.");
+            }
         }
 
         private bool CanUpdateObjective(IQuestObjective objective)
@@ -687,12 +714,29 @@ namespace NexusForever.Game.Quest
                 State = QuestState.Achieved;
         }
 
-        private void SendChangedObjectives(IReadOnlyDictionary<IQuestObjective, uint> previousProgress)
+        private void SendChangedObjectives(
+            IReadOnlyDictionary<IQuestObjective, uint> previousProgress,
+            bool containNotificationFailures = false)
         {
             foreach (IQuestObjective objective in objectives.OrderBy(objective => objective.Index))
                 if (previousProgress.TryGetValue(objective, out uint progress)
                     && objective.Progress != progress)
-                    SendQuestObjectiveUpdate(objective);
+                {
+                    if (!containNotificationFailures)
+                    {
+                        SendQuestObjectiveUpdate(objective);
+                        continue;
+                    }
+
+                    try
+                    {
+                        SendQuestObjectiveUpdate(objective);
+                    }
+                    catch (Exception exception)
+                    {
+                        log.Error(exception, $"Quest {Id} objective {objective.Index} update notification failed after progress committed.");
+                    }
+                }
         }
 
         private void SendQuestObjectiveUpdate(IQuestObjective objective)

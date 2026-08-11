@@ -1,7 +1,10 @@
 using System.Collections.Immutable;
 using System.Reflection;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
+using NexusForever.Database;
+using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract;
 using NexusForever.Game.Abstract.Entity;
@@ -17,6 +20,8 @@ using NexusForever.Network.Message;
 using NexusForever.Network.Session;
 using NexusForever.Network.World.Message.Model;
 using NexusForever.Script;
+using NexusForever.Script.Template;
+using NexusForever.Script.Template.Collection;
 using NexusForever.Shared;
 using QuestEntity = NexusForever.Game.Quest.Quest;
 
@@ -251,6 +256,123 @@ namespace NexusForever.Game.Tests.Quest
             Assert.Equal([0u, 1u], GetMessages<ServerQuestObjectiveUpdate>(fixture.Session)
                 .Select(message => message.QuestObjectiveIndex));
             Assert.Equal(QuestState.Accepted, fixture.Quest.State);
+        }
+
+        [Fact]
+        public void ObjectiveUpdate_ScriptFailuresCannotSuppressCommittedProgressNotificationsOrAchievement()
+        {
+            QuestDependencies dependencies = CreateDependencies();
+            var scriptCollection = new Mock<IScriptCollection>();
+            scriptCollection
+                .Setup(collection => collection.Invoke<IQuestScript>(It.IsAny<Action<IQuestScript>>()))
+                .Throws(new InvalidOperationException("Test quest script failure."));
+            dependencies.ScriptManager
+                .Setup(manager => manager.InitialiseOwnedScripts<IQuest>(
+                    It.IsAny<IQuest>(), It.IsAny<uint>()))
+                .Returns(scriptCollection.Object);
+            var quest = new QuestEntity(
+                dependencies.Player.Object,
+                QuestObjectiveChecklistTests.CreateQuestInfo(
+                    QuestObjectiveChecklistTests.CreateObjectiveInfo(
+                        1u, QuestObjectiveType.CollectItem, 1u),
+                    QuestObjectiveChecklistTests.CreateObjectiveInfo(
+                        2u, QuestObjectiveType.CollectItem, 1u)),
+                dependencies.GlobalQuestManager.Object,
+                dependencies.ScriptManager.Object,
+                dependencies.AssetManager.Object);
+
+            Exception exception = Record.Exception(() => quest.ObjectiveUpdate(
+                QuestObjectiveType.CollectItem, 1u, 1u));
+
+            Assert.Null(exception);
+            Assert.Equal([1u, 1u], quest.Select(objective => objective.Progress));
+            Assert.Equal(QuestState.Achieved, quest.State);
+            Assert.Equal([0u, 1u], GetMessages<ServerQuestObjectiveUpdate>(dependencies.Session)
+                .Select(message => message.QuestObjectiveIndex));
+            Assert.Single(GetMessages<ServerQuestStateChange>(dependencies.Session));
+            scriptCollection.Verify(collection => collection.Invoke<IQuestScript>(
+                It.IsAny<Action<IQuestScript>>()), Times.Exactly(3));
+        }
+
+        [Fact]
+        public void ObjectiveUpdate_NotificationFailuresContinueInAscendingOrderAndStillAchieve()
+        {
+            QuestDependencies dependencies = CreateDependencies();
+            var attemptedObjectiveIndices = new List<uint>();
+            dependencies.Session
+                .Setup(session => session.EnqueueMessageEncrypted(
+                    It.IsAny<ServerQuestObjectiveUpdate>()))
+                .Callback<IWritable>(message => attemptedObjectiveIndices.Add(
+                    ((ServerQuestObjectiveUpdate)message).QuestObjectiveIndex))
+                .Throws(new InvalidOperationException("Test objective packet failure."));
+            var quest = new QuestEntity(
+                dependencies.Player.Object,
+                QuestObjectiveChecklistTests.CreateQuestInfo(
+                    QuestObjectiveChecklistTests.CreateObjectiveInfo(
+                        1u, QuestObjectiveType.CollectItem, 1u),
+                    QuestObjectiveChecklistTests.CreateObjectiveInfo(
+                        2u, QuestObjectiveType.CollectItem, 1u)),
+                dependencies.GlobalQuestManager.Object,
+                dependencies.ScriptManager.Object,
+                dependencies.AssetManager.Object);
+
+            Exception exception = Record.Exception(() => quest.ObjectiveUpdate(
+                QuestObjectiveType.CollectItem, 1u, 1u));
+
+            Assert.Null(exception);
+            Assert.Equal([1u, 1u], quest.Select(objective => objective.Progress));
+            Assert.Equal([0u, 1u], attemptedObjectiveIndices);
+            Assert.Equal(QuestState.Achieved, quest.State);
+            Assert.Single(GetMessages<ServerQuestStateChange>(dependencies.Session));
+        }
+
+        [Fact]
+        public void ObjectiveUpdate_NotificationFailuresPreserveAchievedPersistenceAndRejectReplay()
+        {
+            QuestDependencies dependencies = CreateDependencies();
+            dependencies.Session
+                .Setup(session => session.EnqueueMessageEncrypted(
+                    It.IsAny<ServerQuestObjectiveUpdate>()))
+                .Throws(new InvalidOperationException("Test objective packet failure."));
+            dependencies.Session
+                .Setup(session => session.EnqueueMessageEncrypted(
+                    It.IsAny<ServerQuestStateChange>()))
+                .Throws(new InvalidOperationException("Test state packet failure."));
+            IQuestInfo questInfo = QuestObjectiveChecklistTests.CreateQuestInfo(
+                QuestObjectiveChecklistTests.CreateObjectiveInfo(
+                    1u, QuestObjectiveType.CollectItem, 1u));
+            CharacterQuestModel model = CreateQuestModel();
+            model.QuestObjective.Add(CreateObjectiveModel(0, 0u));
+            var quest = new QuestEntity(
+                dependencies.Player.Object,
+                questInfo,
+                model,
+                dependencies.GlobalQuestManager.Object,
+                dependencies.ScriptManager.Object,
+                dependencies.AssetManager.Object);
+
+            Exception exception = Record.Exception(() => quest.ObjectiveUpdate(
+                QuestObjectiveType.CollectItem, 1u, 1u));
+            quest.ObjectiveUpdate(QuestObjectiveType.CollectItem, 1u, 1u);
+
+            Assert.Null(exception);
+            Assert.Equal(1u, Assert.Single(quest).Progress);
+            Assert.Equal(QuestState.Achieved, quest.State);
+            dependencies.Session.Verify(session => session.EnqueueMessageEncrypted(
+                It.IsAny<ServerQuestObjectiveUpdate>()), Times.Once);
+            dependencies.Session.Verify(session => session.EnqueueMessageEncrypted(
+                It.IsAny<ServerQuestStateChange>()), Times.Once);
+
+            using var context = new TestCharacterContext();
+            quest.Save(context, new SaveCommitScope());
+
+            var questEntry = Assert.Single(context.ChangeTracker.Entries<CharacterQuestModel>());
+            Assert.Equal((byte)QuestState.Achieved, questEntry.Entity.State);
+            Assert.True(questEntry.Property(value => value.State).IsModified);
+            var objectiveEntry = Assert.Single(
+                context.ChangeTracker.Entries<CharacterQuestObjectiveModel>());
+            Assert.Equal(1u, objectiveEntry.Entity.Progress);
+            Assert.True(objectiveEntry.Property(value => value.Progress).IsModified);
         }
 
         [Fact]
@@ -859,5 +981,17 @@ namespace NexusForever.Game.Tests.Quest
             Mock<IGlobalQuestManager> GlobalQuestManager,
             Mock<IScriptManager> ScriptManager,
             Mock<IAssetManager> AssetManager);
+
+        private sealed class TestCharacterContext : CharacterContext
+        {
+            public TestCharacterContext()
+                : base(new DbContextOptionsBuilder<CharacterContext>()
+                    .UseMySql(
+                        "Server=localhost;Database=nexus_forever_test;User=test;Password=test;",
+                        new MySqlServerVersion(new Version(8, 0, 36)))
+                    .Options)
+            {
+            }
+        }
     }
 }
