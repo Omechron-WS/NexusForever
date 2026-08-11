@@ -69,7 +69,29 @@ namespace NexusForever.Game.Spell
             ArgumentNullException.ThrowIfNull(entity);
             ArgumentNullException.ThrowIfNull(entry);
 
-            CastResult result = TryBuildCosts(entry, out List<VitalCost> costs);
+            CastResult result = TryBuildCosts(
+                entry.InnateCostType0,
+                entry.InnateCost0,
+                entry.InnateCostType1,
+                entry.InnateCost1,
+                out List<VitalCost> costs);
+            if (result != CastResult.Ok)
+                return result;
+
+            return CheckCosts(entity, costs);
+        }
+
+        /// <summary>
+        /// Validate every eligible effect-row innate cost as one activation transaction without mutation.
+        /// </summary>
+        public static CastResult CheckCosts(
+            IUnitEntity entity,
+            IEnumerable<Spell4EffectsEntry> entries)
+        {
+            ArgumentNullException.ThrowIfNull(entity);
+            ArgumentNullException.ThrowIfNull(entries);
+
+            CastResult result = TryBuildCosts(entries, out List<VitalCost> costs);
             if (result != CastResult.Ok)
                 return result;
 
@@ -84,6 +106,16 @@ namespace NexusForever.Game.Spell
             ArgumentNullException.ThrowIfNull(entry);
 
             return entry.InnateCost0 != 0u || entry.InnateCost1 != 0u;
+        }
+
+        /// <summary>
+        /// Return whether an effect row declares a non-zero per-invocation innate vital cost.
+        /// </summary>
+        public static bool HasCost(Spell4EffectsEntry entry)
+        {
+            ArgumentNullException.ThrowIfNull(entry);
+
+            return entry.InnateCostPerTick0 != 0u || entry.InnateCostPerTick1 != 0u;
         }
 
         /// <summary>
@@ -113,11 +145,42 @@ namespace NexusForever.Game.Spell
             ArgumentNullException.ThrowIfNull(entity);
             ArgumentNullException.ThrowIfNull(entry);
 
-            CastResult result = TryBuildCosts(entry, out List<VitalCost> costs);
+            CastResult result = TryBuildCosts(
+                entry.InnateCostType0,
+                entry.InnateCost0,
+                entry.InnateCostType1,
+                entry.InnateCost1,
+                out List<VitalCost> costs);
             if (result != CastResult.Ok)
                 return result;
 
-            result = CheckCosts(entity, costs);
+            return TryConsumeCosts(entity, costs);
+        }
+
+        /// <summary>
+        /// Validate and consume every eligible effect-row innate cost as one activation transaction.
+        /// </summary>
+        /// <remarks>
+        /// Each row contributes both declared slots exactly once, regardless of its target count. Costs
+        /// which share canonical storage are aggregated across the complete activation before mutation.
+        /// </remarks>
+        public static CastResult TryConsumeCosts(
+            IUnitEntity entity,
+            IEnumerable<Spell4EffectsEntry> entries)
+        {
+            ArgumentNullException.ThrowIfNull(entity);
+            ArgumentNullException.ThrowIfNull(entries);
+
+            CastResult result = TryBuildCosts(entries, out List<VitalCost> costs);
+            if (result != CastResult.Ok)
+                return result;
+
+            return TryConsumeCosts(entity, costs);
+        }
+
+        private static CastResult TryConsumeCosts(IUnitEntity entity, List<VitalCost> costs)
+        {
+            CastResult result = CheckCosts(entity, costs);
             if (result != CastResult.Ok)
                 return result;
 
@@ -139,13 +202,27 @@ namespace NexusForever.Game.Spell
 
         private static bool TryApplyCost(IUnitEntity entity, VitalCost cost)
         {
-            if (!entity.TryGetVitalValue(cost.Vital, out float previous) || !float.IsFinite(previous))
+            if (!TryConvertCostAmount(cost, out float amount))
             {
-                log.Error($"Failed to re-read preflighted spell vital cost {cost.Vital} before mutation.");
+                log.Error($"Spell vital cost {cost.Amount} for {cost.Vital} cannot be represented exactly by the entity vital API.");
                 return false;
             }
 
-            float amount = (float)cost.Amount;
+            float previous;
+            try
+            {
+                if (!entity.TryGetVitalValue(cost.Vital, out previous) || !float.IsFinite(previous))
+                {
+                    log.Error($"Failed to re-read preflighted spell vital cost {cost.Vital} before mutation.");
+                    return false;
+                }
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Spell vital cost {cost.Amount} for {cost.Vital} failed during its pre-mutation re-read.");
+                return false;
+            }
+
             float expected = CalculateExpectedValue(cost, previous, amount);
             try
             {
@@ -157,11 +234,21 @@ namespace NexusForever.Game.Spell
             }
             catch (Exception exception)
             {
-                if (!entity.TryGetVitalValue(cost.Vital, out float current)
-                    || !float.IsFinite(current)
-                    || current != expected)
+                float current;
+                try
                 {
-                    log.Error(exception, $"Spell vital cost {cost.Amount} for {cost.Vital} failed before its expected mutation committed.");
+                    if (!entity.TryGetVitalValue(cost.Vital, out current)
+                        || !float.IsFinite(current)
+                        || current != expected)
+                    {
+                        log.Error(exception, $"Spell vital cost {cost.Amount} for {cost.Vital} failed before its expected mutation committed.");
+                        return false;
+                    }
+                }
+                catch (Exception reconciliationException)
+                {
+                    log.Error(exception, $"Spell vital cost {cost.Amount} for {cost.Vital} threw during mutation.");
+                    log.Error(reconciliationException, $"Spell vital cost {cost.Amount} for {cost.Vital} could not reconcile the failed mutation.");
                     return false;
                 }
 
@@ -298,15 +385,52 @@ namespace NexusForever.Game.Spell
             return meets ? CastResult.Ok : GetFailureResult((Vital)vitalValue);
         }
 
-        private static CastResult TryBuildCosts(Spell4Entry entry, out List<VitalCost> costs)
+        private static CastResult TryBuildCosts(
+            IEnumerable<Spell4EffectsEntry> entries,
+            out List<VitalCost> costs)
         {
             costs = [];
 
-            CastResult result = AddCost(costs, entry.InnateCostType0, entry.InnateCost0);
+            foreach (Spell4EffectsEntry entry in entries)
+            {
+                if (entry == null)
+                {
+                    log.Warn("Spell effect activation contains a null effect row.");
+                    return CastResult.SpellBad;
+                }
+
+                CastResult result = AddCost(
+                    costs,
+                    entry.InnateCostPerTickType0,
+                    entry.InnateCostPerTick0);
+                if (result != CastResult.Ok)
+                    return result;
+
+                result = AddCost(
+                    costs,
+                    entry.InnateCostPerTickType1,
+                    entry.InnateCostPerTick1);
+                if (result != CastResult.Ok)
+                    return result;
+            }
+
+            return CastResult.Ok;
+        }
+
+        private static CastResult TryBuildCosts(
+            uint vitalType0,
+            uint amount0,
+            uint vitalType1,
+            uint amount1,
+            out List<VitalCost> costs)
+        {
+            costs = [];
+
+            CastResult result = AddCost(costs, vitalType0, amount0);
             if (result != CastResult.Ok)
                 return result;
 
-            return AddCost(costs, entry.InnateCostType1, entry.InnateCost1);
+            return AddCost(costs, vitalType1, amount1);
         }
 
         private static CastResult AddCost(List<VitalCost> costs, uint vitalValue, uint amount)
@@ -345,14 +469,35 @@ namespace NexusForever.Game.Spell
         {
             foreach (VitalCost cost in costs)
             {
-                if (!entity.TryGetVitalValue(cost.Vital, out float current) || !float.IsFinite(current))
+                if (!TryConvertCostAmount(cost, out _))
+                {
+                    log.Warn($"Spell vital cost {cost.Amount} for {cost.Vital} cannot be represented exactly by the entity vital API.");
                     return CastResult.SpellBad;
+                }
+
+                float current;
+                try
+                {
+                    if (!entity.TryGetVitalValue(cost.Vital, out current) || !float.IsFinite(current))
+                        return CastResult.SpellBad;
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Spell vital cost {cost.Amount} for {cost.Vital} failed during preflight.");
+                    return CastResult.SpellBad;
+                }
 
                 if ((double)current < cost.Amount)
                     return GetFailureResult(cost.Vital);
             }
 
             return CastResult.Ok;
+        }
+
+        private static bool TryConvertCostAmount(VitalCost cost, out float amount)
+        {
+            amount = (float)cost.Amount;
+            return float.IsFinite(amount) && (double)amount == cost.Amount;
         }
 
         private static void RollBack(IUnitEntity entity, List<VitalCost> costs)

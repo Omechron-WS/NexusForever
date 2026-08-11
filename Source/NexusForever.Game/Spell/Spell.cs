@@ -669,44 +669,78 @@ namespace NexusForever.Game.Spell
         }
 
         /// <summary>
-        /// Applies the supplied effects to the current target snapshot and publishes successful later activations.
+        /// Applies the supplied activation batch to the current target snapshot.
         /// </summary>
+        /// <returns>
+        /// <see langword="true"/> when the activation transaction committed; otherwise,
+        /// <see langword="false"/> after the owning spell entered failure cleanup.
+        /// </returns>
         protected bool ExecuteEffects(IEnumerable<Spell4EffectsEntry> effects)
         {
-            bool applied = false;
-            foreach (Spell4EffectsEntry spell4EffectsEntry in effects)
+            List<EffectExecutionPlan> plans = BuildEffectExecutionPlans(effects);
+            if (!TryCommitEffectCosts(plans))
+                return false;
+
+            foreach (EffectExecutionPlan plan in plans.Where(plan => plan.Targets.Count != 0))
             {
-                // select targets for effect
-                List<ISpellTargetInfo> effectTargets = targets
-                    .Where(t => (t.Flags & (SpellEffectTargetFlags)spell4EffectsEntry.TargetFlags) != 0)
-                    .Where(t => CanApplyEffect(spell4EffectsEntry, t))
-                    .ToList();
-
-                SpellEffectDelegate handler = GlobalSpellManager.Instance.GetEffectHandler(spell4EffectsEntry.EffectType);
-                if (handler == null)
-                {
-                    log.Warn($"Unhandled spell effect {spell4EffectsEntry.EffectType}");
-                    continue;
-                }
-
                 uint effectId = GlobalSpellManager.Instance.NextEffectId;
-                foreach (SpellTargetInfo effectTarget in effectTargets)
+                foreach (SpellTargetInfo effectTarget in plan.Targets)
                 {
-                    var info = new SpellTargetInfo.SpellTargetEffectInfo(effectId, spell4EffectsEntry);
+                    var info = new SpellTargetInfo.SpellTargetEffectInfo(effectId, plan.Effect);
                     effectTarget.Effects.Add(info);
 
                     bool handlerSucceeded = TryInvokeEffectHandler(
-                        handler,
-                        spell4EffectsEntry,
+                        plan.Handler,
+                        plan.Effect,
                         effectTarget,
                         info);
                     TrySendSpellGoEffect(effectTarget.Entity, info, handlerSucceeded);
-                    if (handlerSucceeded && !info.DropEffect)
-                        applied = true;
                 }
             }
 
-            return applied;
+            return true;
+        }
+
+        private List<EffectExecutionPlan> BuildEffectExecutionPlans(
+            IEnumerable<Spell4EffectsEntry> effects)
+        {
+            var plans = new List<EffectExecutionPlan>();
+            foreach (Spell4EffectsEntry effect in effects)
+            {
+                SpellEffectDelegate handler = GlobalSpellManager.Instance.GetEffectHandler(effect.EffectType);
+                if (handler == null)
+                {
+                    log.Warn($"Unhandled spell effect {effect.EffectType}");
+                    continue;
+                }
+
+                List<SpellTargetInfo> effectTargets = targets
+                    .Where(target => target.TargetSelectionState != TargetSelectionState.Old)
+                    .Where(target => (target.Flags & (SpellEffectTargetFlags)effect.TargetFlags) != 0)
+                    .Where(target => CanApplyEffect(effect, target))
+                    .Cast<SpellTargetInfo>()
+                    .ToList();
+                plans.Add(new EffectExecutionPlan(effect, handler, effectTargets));
+            }
+
+            return plans;
+        }
+
+        private bool TryCommitEffectCosts(IReadOnlyList<EffectExecutionPlan> plans)
+        {
+            if (Caster is not IPlayer)
+                return true;
+
+            Spell4EffectsEntry[] eligibleEffects = plans
+                .Where(plan => plan.Targets.Count != 0)
+                .Select(plan => plan.Effect)
+                .ToArray();
+            CastResult result = SpellVitalPolicy.TryConsumeCosts(Caster, eligibleEffects);
+            if (result == CastResult.Ok)
+                return true;
+
+            FailExecution(result);
+            return false;
         }
 
         private bool IsEffectInCurrentPhase(Spell4EffectsEntry effect)
@@ -745,8 +779,7 @@ namespace NexusForever.Game.Spell
             IReadOnlyList<Spell4EffectsEntry> immediateEffects,
             byte phase)
         {
-            var immediate = new HashSet<Spell4EffectsEntry>(immediateEffects, ReferenceEqualityComparer.Instance);
-            foreach (Spell4EffectsEntry effect in immediate)
+            foreach (Spell4EffectsEntry effect in immediateEffects)
             {
                 try
                 {
@@ -758,18 +791,35 @@ namespace NexusForever.Game.Spell
                 }
             }
 
+            List<EffectExecutionPlan> immediatePlans = BuildEffectExecutionPlans(
+                registeredEffects.Where(effect => ContainsReference(immediateEffects, effect)));
+            if (!TryCommitEffectCosts(immediatePlans))
+                return;
+
+            int immediatePlanIndex = 0;
             foreach (Spell4EffectsEntry effect in registeredEffects)
             {
-                SpellEffectDelegate handler = GlobalSpellManager.Instance.GetEffectHandler(effect.EffectType);
-                if (handler == null)
-                    continue;
+                bool executeImmediately = ContainsReference(immediateEffects, effect);
+                SpellEffectDelegate handler;
+                IReadOnlyList<SpellTargetInfo> effectTargets;
+                if (executeImmediately)
+                {
+                    EffectExecutionPlan plan = immediatePlans[immediatePlanIndex++];
+                    handler = plan.Handler;
+                    effectTargets = plan.Targets;
+                }
+                else
+                {
+                    handler = GlobalSpellManager.Instance.GetEffectHandler(effect.EffectType);
+                    if (handler == null)
+                        continue;
 
-                bool executeImmediately = immediate.Contains(effect);
-                List<ISpellTargetInfo> effectTargets = targets
-                    .Where(target => target.TargetSelectionState != TargetSelectionState.Old)
-                    .Where(target => (target.Flags & (SpellEffectTargetFlags)effect.TargetFlags) != 0)
-                    .Where(target => !executeImmediately || CanApplyEffect(effect, target))
-                    .ToList();
+                    effectTargets = targets
+                        .Where(target => target.TargetSelectionState != TargetSelectionState.Old)
+                        .Where(target => (target.Flags & (SpellEffectTargetFlags)effect.TargetFlags) != 0)
+                        .Cast<SpellTargetInfo>()
+                        .ToList();
+                }
 
                 uint effectId = GlobalSpellManager.Instance.NextEffectId;
                 foreach (SpellTargetInfo effectTarget in effectTargets)
@@ -790,6 +840,13 @@ namespace NexusForever.Game.Spell
             {
                 log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} failed to publish its initial effect snapshot.");
             }
+        }
+
+        private static bool ContainsReference(
+            IReadOnlyList<Spell4EffectsEntry> effects,
+            Spell4EffectsEntry candidate)
+        {
+            return effects.Any(effect => ReferenceEquals(effect, candidate));
         }
 
         private void ProcessEffectTimeline(IEnumerable<SpellEffectTimelineEvent> timelineEvents)
@@ -939,6 +996,11 @@ namespace NexusForever.Game.Spell
             SpellEffectTargetFlags Flags,
             IUnitEntity Entity,
             TargetSelectionState SelectionState);
+
+        private sealed record EffectExecutionPlan(
+            Spell4EffectsEntry Effect,
+            SpellEffectDelegate Handler,
+            IReadOnlyList<SpellTargetInfo> Targets);
 
         public virtual bool IsMovingInterrupted()
         {

@@ -315,6 +315,248 @@ namespace NexusForever.Game.Tests.Spell
                 It.IsAny<Vital>(), out It.Ref<float>.IsAny), Times.Never);
         }
 
+        [Fact]
+        public void TryConsumeEffectCosts_AggregatesBothSlotsAndRowsByCanonicalStorage()
+        {
+            var values = new Dictionary<Vital, float> { [Vital.Resource1] = 100f };
+            var mutations = new List<(Vital Vital, float Delta)>();
+            Mock<IUnitEntity> entity = CreateEntity(values, mutations: mutations);
+            Spell4EffectsEntry[] entries =
+            [
+                new Spell4EffectsEntry
+                {
+                    InnateCostPerTickType0 = (uint)Vital.Resource1,
+                    InnateCostPerTick0     = 10u,
+                    InnateCostPerTickType1 = (uint)Vital.MedicCore,
+                    InnateCostPerTick1     = 20u
+                },
+                new Spell4EffectsEntry
+                {
+                    InnateCostPerTickType0 = (uint)Vital.KineticCell,
+                    InnateCostPerTick0     = 30u
+                }
+            ];
+
+            CastResult result = SpellVitalPolicy.TryConsumeCosts(entity.Object, entries);
+
+            Assert.Equal(CastResult.Ok, result);
+            Assert.Equal(40f, values[Vital.Resource1]);
+            Assert.Equal([(Vital.Resource1, -60f)], mutations);
+        }
+
+        [Fact]
+        public void CheckEffectCosts_CombinedAliasInsufficiencyDoesNotMutate()
+        {
+            var mutations = new List<(Vital Vital, float Delta)>();
+            Mock<IUnitEntity> entity = CreateEntity(
+                new Dictionary<Vital, float> { [Vital.Resource1] = 59f },
+                mutations: mutations);
+            Spell4EffectsEntry[] entries =
+            [
+                new Spell4EffectsEntry
+                {
+                    InnateCostPerTickType0 = (uint)Vital.Resource1,
+                    InnateCostPerTick0     = 30u
+                },
+                new Spell4EffectsEntry
+                {
+                    InnateCostPerTickType0 = (uint)Vital.MedicCore,
+                    InnateCostPerTick0     = 30u
+                }
+            ];
+
+            CastResult result = SpellVitalPolicy.CheckCosts(entity.Object, entries);
+
+            Assert.Equal(CastResult.CasterVitalCostResource1, result);
+            Assert.Empty(mutations);
+        }
+
+        [Theory]
+        [InlineData(0u, CastResult.Ok)]
+        [InlineData(10u, CastResult.SpellBad)]
+        public void CheckEffectCosts_UnsupportedVitalIgnoresOnlyZeroAmount(
+            uint amount,
+            CastResult expected)
+        {
+            Mock<IUnitEntity> entity = CreateEntity([]);
+            var entry = new Spell4EffectsEntry
+            {
+                InnateCostPerTickType0 = (uint)Vital.PublicResource1,
+                InnateCostPerTick0     = amount
+            };
+
+            CastResult result = SpellVitalPolicy.CheckCosts(entity.Object, [entry]);
+
+            Assert.Equal(expected, result);
+            entity.Verify(unit => unit.TryModifyVital(
+                It.IsAny<Vital>(), It.IsAny<float>(), It.IsAny<IUnitEntity>()), Times.Never);
+        }
+
+        [Fact]
+        public void TryConsumeEffectCosts_PreMutationFailureRollsBackEarlierCanonicalCost()
+        {
+            var values = new Dictionary<Vital, float>
+            {
+                [Vital.Resource1] = 100f,
+                [Vital.Focus]     = 100f
+            };
+            var mutations = new List<(Vital Vital, float Delta)>();
+            Mock<IUnitEntity> entity = CreateEntity(
+                values,
+                mutations: mutations,
+                throwBeforeMutation: (vital, delta) => vital == Vital.Focus && delta < 0f);
+            var entry = new Spell4EffectsEntry
+            {
+                InnateCostPerTickType0 = (uint)Vital.Resource1,
+                InnateCostPerTick0     = 25u,
+                InnateCostPerTickType1 = (uint)Vital.Focus,
+                InnateCostPerTick1     = 20u
+            };
+
+            CastResult result = SpellVitalPolicy.TryConsumeCosts(entity.Object, [entry]);
+
+            Assert.Equal(CastResult.SpellBad, result);
+            Assert.Equal(100f, values[Vital.Resource1]);
+            Assert.Equal(100f, values[Vital.Focus]);
+            Assert.Equal(
+                [(Vital.Resource1, -25f), (Vital.Resource1, 25f)],
+                mutations);
+        }
+
+        [Fact]
+        public void TryConsumeEffectCosts_PreMutationReadExceptionRollsBackEarlierCost()
+        {
+            var values = new Dictionary<Vital, float>
+            {
+                [Vital.Resource1] = 100f,
+                [Vital.Focus]     = 100f
+            };
+            var mutations = new List<(Vital Vital, float Delta)>();
+            Mock<IUnitEntity> entity = CreateEntity(
+                values,
+                mutations: mutations,
+                throwOnRead: (vital, attempt) => vital == Vital.Focus && attempt == 2);
+            var entry = new Spell4EffectsEntry
+            {
+                InnateCostPerTickType0 = (uint)Vital.Resource1,
+                InnateCostPerTick0     = 25u,
+                InnateCostPerTickType1 = (uint)Vital.Focus,
+                InnateCostPerTick1     = 20u
+            };
+
+            CastResult result = SpellVitalPolicy.TryConsumeCosts(entity.Object, [entry]);
+
+            Assert.Equal(CastResult.SpellBad, result);
+            Assert.Equal(100f, values[Vital.Resource1]);
+            Assert.Equal(100f, values[Vital.Focus]);
+            Assert.Equal(
+                [(Vital.Resource1, -25f), (Vital.Resource1, 25f)],
+                mutations);
+        }
+
+        [Fact]
+        public void TryConsumeEffectCosts_ReconciliationReadExceptionRollsBackEarlierCost()
+        {
+            var values = new Dictionary<Vital, float>
+            {
+                [Vital.Resource1] = 100f,
+                [Vital.Focus]     = 100f
+            };
+            var mutations = new List<(Vital Vital, float Delta)>();
+            Mock<IUnitEntity> entity = CreateEntity(
+                values,
+                mutations: mutations,
+                throwBeforeMutation: (vital, delta) => vital == Vital.Focus && delta < 0f,
+                throwOnRead: (vital, attempt) => vital == Vital.Focus && attempt == 3);
+            var entry = new Spell4EffectsEntry
+            {
+                InnateCostPerTickType0 = (uint)Vital.Resource1,
+                InnateCostPerTick0     = 25u,
+                InnateCostPerTickType1 = (uint)Vital.Focus,
+                InnateCostPerTick1     = 20u
+            };
+
+            CastResult result = SpellVitalPolicy.TryConsumeCosts(entity.Object, [entry]);
+
+            Assert.Equal(CastResult.SpellBad, result);
+            Assert.Equal(100f, values[Vital.Resource1]);
+            Assert.Equal(100f, values[Vital.Focus]);
+            Assert.Equal(
+                [(Vital.Resource1, -25f), (Vital.Resource1, 25f)],
+                mutations);
+        }
+
+        [Fact]
+        public void TryConsumeEffectCosts_UnrepresentableAggregateFailsBeforeMutation()
+        {
+            var mutations = new List<(Vital Vital, float Delta)>();
+            Mock<IUnitEntity> entity = CreateEntity(
+                new Dictionary<Vital, float> { [Vital.Resource1] = float.MaxValue },
+                mutations: mutations);
+            Spell4EffectsEntry[] entries =
+            [
+                new Spell4EffectsEntry
+                {
+                    InnateCostPerTickType0 = (uint)Vital.Resource1,
+                    InnateCostPerTick0     = 16_777_216u
+                },
+                new Spell4EffectsEntry
+                {
+                    InnateCostPerTickType0 = (uint)Vital.KineticCell,
+                    InnateCostPerTick0     = 1u
+                }
+            ];
+
+            CastResult result = SpellVitalPolicy.TryConsumeCosts(entity.Object, entries);
+
+            Assert.Equal(CastResult.SpellBad, result);
+            Assert.Empty(mutations);
+        }
+
+        [Fact]
+        public void TryConsumeEffectCosts_PostMutationNotificationFailureKeepsCommittedCost()
+        {
+            var values = new Dictionary<Vital, float> { [Vital.Resource1] = 100f };
+            var mutations = new List<(Vital Vital, float Delta)>();
+            Mock<IUnitEntity> entity = CreateEntity(
+                values,
+                mutations: mutations,
+                throwAfterMutation: (vital, delta) => vital == Vital.Resource1 && delta < 0f);
+            var entry = new Spell4EffectsEntry
+            {
+                InnateCostPerTickType0 = (uint)Vital.Resource1,
+                InnateCostPerTick0     = 25u
+            };
+
+            CastResult result = SpellVitalPolicy.TryConsumeCosts(entity.Object, [entry]);
+
+            Assert.Equal(CastResult.Ok, result);
+            Assert.Equal(75f, values[Vital.Resource1]);
+            Assert.Equal([(Vital.Resource1, -25f)], mutations);
+        }
+
+        [Fact]
+        public void TryConsumeEffectCosts_HealthZeroNotificationFailureFailsClosed()
+        {
+            var values = new Dictionary<Vital, float> { [Vital.Health] = 25f };
+            var mutations = new List<(Vital Vital, float Delta)>();
+            Mock<IUnitEntity> entity = CreateEntity(
+                values,
+                mutations: mutations,
+                throwAfterMutation: (vital, delta) => vital == Vital.Health && delta < 0f);
+            var entry = new Spell4EffectsEntry
+            {
+                InnateCostPerTickType0 = (uint)Vital.Health,
+                InnateCostPerTick0     = 25u
+            };
+
+            CastResult result = SpellVitalPolicy.TryConsumeCosts(entity.Object, [entry]);
+
+            Assert.Equal(CastResult.SpellBad, result);
+            Assert.Equal(0f, values[Vital.Health]);
+            Assert.Equal([(Vital.Health, -25f)], mutations);
+        }
+
         [Theory]
         [InlineData(Vital.Health, CastResult.CasterVitalCostHealth)]
         [InlineData(Vital.Resource0, CastResult.CasterVitalCostResource0)]
@@ -337,10 +579,12 @@ namespace NexusForever.Game.Tests.Spell
             List<(Vital Vital, float Delta)> mutations = null,
             Func<Vital, float, bool> rejectMutation = null,
             Func<Vital, float, bool> throwBeforeMutation = null,
-            Func<Vital, float, bool> throwAfterMutation = null)
+            Func<Vital, float, bool> throwAfterMutation = null,
+            Func<Vital, int, bool> throwOnRead = null)
         {
             maxima ??= [];
             mutations ??= [];
+            var readAttempts = new Dictionary<Vital, int>();
 
             var entity = new Mock<IUnitEntity>();
             entity.Setup(unit => unit.TryGetVitalValue(
@@ -348,7 +592,13 @@ namespace NexusForever.Game.Tests.Spell
                     out It.Ref<float>.IsAny))
                 .Returns(new TryGetVitalValue((Vital vital, out float value) =>
                 {
-                    return values.TryGetValue(Canonical(vital), out value);
+                    Vital canonical = Canonical(vital);
+                    int attempt = readAttempts.GetValueOrDefault(canonical) + 1;
+                    readAttempts[canonical] = attempt;
+                    if (throwOnRead?.Invoke(canonical, attempt) == true)
+                        throw new InvalidOperationException("Test vital read failure.");
+
+                    return values.TryGetValue(canonical, out value);
                 }));
             entity.Setup(unit => unit.TryGetVitalMaximum(
                     It.IsAny<Vital>(),
