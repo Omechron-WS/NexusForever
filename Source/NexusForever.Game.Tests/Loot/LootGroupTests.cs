@@ -111,9 +111,8 @@ namespace NexusForever.Game.Tests.Loot
         }
 
         [Fact]
-        public void GenerateLootDrops_ClampsMaxDropWhenLessThanMinDrop()
+        public void Constructor_MaxDropLessThanMinDropIsRejected()
         {
-            // maxDrop < minDrop — constructor should clamp maxDrop = minDrop
             var model = CreateGroupModel(probability: 100f, minDrop: 3, maxDrop: 1, items: new[]
             {
                 CreateItemModel(probability: 100f, staticId: 1),
@@ -121,11 +120,7 @@ namespace NexusForever.Game.Tests.Loot
                 CreateItemModel(probability: 100f, staticId: 3)
             });
 
-            var group = new LootGroup(model);
-            var player = CreateMockPlayer();
-
-            var drops = group.GenerateLootDrops(player);
-            Assert.Equal(3, drops.Count);
+            Assert.Throws<ArgumentException>(() => new LootGroup(model));
         }
 
         [Theory]
@@ -250,17 +245,14 @@ namespace NexusForever.Game.Tests.Loot
         [InlineData(float.PositiveInfinity)]
         [InlineData(-1f)]
         [InlineData(100.01f)]
-        public void GenerateLootDrops_InvalidProbabilityFailsClosed(float probability)
+        public void Constructor_InvalidProbabilityIsRejected(float probability)
         {
             LootGroupModel model = CreateGroupModel(probability: probability, items: new[]
             {
                 CreateItemModel(probability: 100f)
             });
-            var group = new LootGroup(model);
 
-            Dictionary<ILootItem, uint> drops = group.GenerateLootDrops(CreateMockPlayer());
-
-            Assert.Empty(drops);
+            Assert.Throws<ArgumentException>(() => new LootGroup(model));
         }
 
         [Fact]

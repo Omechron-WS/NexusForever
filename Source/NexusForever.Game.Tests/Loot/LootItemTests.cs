@@ -48,6 +48,47 @@ namespace NexusForever.Game.Tests.Loot
         }
 
         [Fact]
+        public void GetDrop_FullUIntRangeUsesInclusiveInt64Bounds()
+        {
+            long actualMinimum = 0L;
+            long actualMaximum = 0L;
+            var model = CreateModel(
+                probability: 100f,
+                minCount: uint.MaxValue - 1u,
+                maxCount: uint.MaxValue);
+            var item = new LootItem(model, (minimum, maximum) =>
+            {
+                actualMinimum = minimum;
+                actualMaximum = maximum;
+                return maximum - 1L;
+            });
+
+            bool dropped = item.GetDrop(out uint count);
+
+            Assert.True(dropped);
+            Assert.Equal((long)uint.MaxValue - 1L, actualMinimum);
+            Assert.Equal((long)uint.MaxValue + 1L, actualMaximum);
+            Assert.Equal(uint.MaxValue, count);
+        }
+
+        [Theory]
+        [InlineData(0.499d, true)]
+        [InlineData(0.5d, false)]
+        public void GetDrop_ProbabilityBoundaryIsDeterministic(double probabilityRoll, bool expected)
+        {
+            var model = CreateModel(probability: 50f);
+            var item = new LootItem(
+                model,
+                () => probabilityRoll,
+                static (minimum, _) => minimum);
+
+            bool dropped = item.GetDrop(out uint count);
+
+            Assert.Equal(expected, dropped);
+            Assert.Equal(expected ? 1u : 0u, count);
+        }
+
+        [Fact]
         public void GetDrop_EqualMinMaxReturnsExactCount()
         {
             var model = CreateModel(probability: 100f, minCount: 7, maxCount: 7);
@@ -70,21 +111,28 @@ namespace NexusForever.Game.Tests.Loot
             Assert.Equal(42u, item.StaticId);
         }
 
-        [Fact]
-        public void GetDrop_PartialProbability_SometimesDrops()
+        [Theory]
+        [InlineData(float.NaN)]
+        [InlineData(float.NegativeInfinity)]
+        [InlineData(float.PositiveInfinity)]
+        [InlineData(-1f)]
+        [InlineData(100.01f)]
+        public void Constructor_InvalidProbabilityIsRejected(float probability)
         {
-            var model = CreateModel(probability: 50f, minCount: 1, maxCount: 1);
-            var item = new LootItem(model);
+            LootItemModel model = CreateModel(probability: probability);
 
-            int drops = 0;
-            int iterations = 10000;
-            for (int i = 0; i < iterations; i++)
-                if (item.GetDrop(out _))
-                    drops++;
+            Assert.Throws<ArgumentException>(() => new LootItem(model));
+        }
 
-            // With 50% probability over 10k iterations, expect roughly 5000
-            // Allow wide margin (40-60%) to avoid flaky test
-            Assert.InRange(drops, iterations * 0.35, iterations * 0.65);
+        [Theory]
+        [InlineData(0u, 0u)]
+        [InlineData(0u, 1u)]
+        [InlineData(2u, 1u)]
+        public void Constructor_InvalidCountRangeIsRejected(uint minCount, uint maxCount)
+        {
+            LootItemModel model = CreateModel(minCount: minCount, maxCount: maxCount);
+
+            Assert.Throws<ArgumentException>(() => new LootItem(model));
         }
 
         private static LootItemModel CreateModel(

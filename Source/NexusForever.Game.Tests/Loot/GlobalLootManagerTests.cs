@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Numerics;
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using NexusForever.Database;
 using NexusForever.Database.World.Model;
@@ -112,6 +113,78 @@ namespace NexusForever.Game.Tests.Loot
             Assert.Contains("unsupported type", exception.Message, StringComparison.OrdinalIgnoreCase);
         }
 
+        [Theory]
+        [InlineData(float.NaN)]
+        [InlineData(float.NegativeInfinity)]
+        [InlineData(float.PositiveInfinity)]
+        [InlineData(-0.01f)]
+        [InlineData(100.01f)]
+        public void Initialise_InvalidGroupProbabilityIsRejected(float probability)
+        {
+            LootGroupModel group = CreateLootGroup(1ul, staticItemId: 1001u);
+            group.Probability = probability;
+            GlobalLootManager manager = CreateManager(CreateLootTableData(
+                [CreateEntityMapping(100u, 1ul)],
+                [group]));
+
+            DatabaseDataException exception = Assert.Throws<DatabaseDataException>(() => manager.Initialise());
+
+            Assert.Contains("invalid probability", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Initialise_ReversedGroupDropRangeIsRejected()
+        {
+            LootGroupModel group = CreateLootGroup(1ul, staticItemId: 1001u);
+            group.MinDrop = 2u;
+            group.MaxDrop = 1u;
+            GlobalLootManager manager = CreateManager(CreateLootTableData(
+                [CreateEntityMapping(100u, 1ul)],
+                [group]));
+
+            DatabaseDataException exception = Assert.Throws<DatabaseDataException>(() => manager.Initialise());
+
+            Assert.Contains("invalid drop range", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Theory]
+        [InlineData(float.NaN)]
+        [InlineData(float.NegativeInfinity)]
+        [InlineData(float.PositiveInfinity)]
+        [InlineData(-0.01f)]
+        [InlineData(100.01f)]
+        public void Initialise_InvalidItemProbabilityIsRejected(float probability)
+        {
+            LootGroupModel group = CreateLootGroup(1ul, staticItemId: 1001u);
+            group.Item.Single().Probability = probability;
+            GlobalLootManager manager = CreateManager(CreateLootTableData(
+                [CreateEntityMapping(100u, 1ul)],
+                [group]));
+
+            DatabaseDataException exception = Assert.Throws<DatabaseDataException>(() => manager.Initialise());
+
+            Assert.Contains("invalid probability", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Theory]
+        [InlineData(0u, 0u)]
+        [InlineData(0u, 1u)]
+        [InlineData(2u, 1u)]
+        public void Initialise_InvalidItemCountRangeIsRejected(uint minimum, uint maximum)
+        {
+            LootGroupModel group = CreateLootGroup(1ul, staticItemId: 1001u);
+            LootItemModel item = group.Item.Single();
+            item.MinCount = minimum;
+            item.MaxCount = maximum;
+            GlobalLootManager manager = CreateManager(CreateLootTableData(
+                [CreateEntityMapping(100u, 1ul)],
+                [group]));
+
+            DatabaseDataException exception = Assert.Throws<DatabaseDataException>(() => manager.Initialise());
+
+            Assert.Contains("invalid count range", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
         [Fact]
         public void Update_BeforeInitialise_ThrowsInvalidOperationException()
         {
@@ -132,6 +205,32 @@ namespace NexusForever.Game.Tests.Loot
             manager.Update(1801d);
 
             Assert.True(instance.HasExpired);
+        }
+
+        [Theory]
+        [InlineData(double.NaN)]
+        [InlineData(double.NegativeInfinity)]
+        [InlineData(double.PositiveInfinity)]
+        [InlineData(0d)]
+        [InlineData(-1d)]
+        public void Update_InvalidTickDoesNotAdvanceOrPoisonLifecycle(double lastTick)
+        {
+            GlobalLootManager manager = CreateManager(CreateLootTableData(
+                [CreateEntityMapping(100u, 1ul)],
+                [CreateLootGroup(1ul, staticItemId: 1001u)]));
+            Mock<IWorldEntity> entity = CreateEntityMock(100u);
+            manager.Initialise();
+            ILootInstance instance = manager.DropLoot(CreatePlayer(), entity.Object);
+
+            manager.Update(lastTick);
+            manager.Update(1799d);
+
+            Assert.False(instance.HasExpired);
+
+            manager.Update(1d);
+
+            Assert.True(instance.HasExpired);
+            entity.Verify(owner => owner.RemoveLoot(instance), Times.Once);
         }
 
         [Fact]
@@ -181,6 +280,8 @@ namespace NexusForever.Game.Tests.Loot
                     && message.LootItems.Count > 0
                     && message.LootItems.All(item => item.Type == LootItemType.AccountCurrency))),
                 Times.Once);
+            session.Verify(gameSession => gameSession.EnqueueMessageEncrypted(
+                It.IsAny<ServerLootRemove>()), Times.Never);
             entity.Verify(owner => owner.AddLoot(instance), Times.Once);
             entity.Verify(owner => owner.RemoveLoot(instance), Times.Once);
         }
@@ -331,12 +432,15 @@ namespace NexusForever.Game.Tests.Loot
         [Fact]
         public void GiveLoot_AfterOwnerLeavesWorld_RemovesStaleLoot()
         {
+            var map = new Mock<IBaseMap>();
+            var session = new Mock<IGameSession>();
+            IPlayer player = CreatePlayer(map: map.Object, session: session);
+            map.Setup(m => m.GetEntity<IGridEntity>(player.Guid)).Returns(player);
             GlobalLootManager manager = CreateManager(CreateLootTableData(
                 [CreateEntityMapping(100u, 1ul)],
                 [CreateLootGroup(1ul, staticItemId: 1001u)]));
-            IPlayer player = CreatePlayer();
             var entity = new Mock<IWorldEntity>();
-            IBaseMap entityMap = DefaultMap;
+            IBaseMap entityMap = map.Object;
             entity.Setup(e => e.CreatureId).Returns(100u);
             entity.Setup(e => e.Guid).Returns(() => entityMap == null ? 0u : 20u);
             entity.Setup(e => e.Map).Returns(() => entityMap);
@@ -350,15 +454,18 @@ namespace NexusForever.Game.Tests.Loot
 
             Assert.False(delivered);
             entity.Verify(e => e.RemoveLoot(instance), Times.Once);
+            session.Verify(s => s.EnqueueMessageEncrypted(It.Is<ServerLootRemove>(message =>
+                message.OwnerUnitId == 20u)), Times.Once);
         }
 
         [Fact]
         public void GiveLoot_FinalItem_DetachesLootFromOwner()
         {
+            var session = new Mock<IGameSession>();
             GlobalLootManager manager = CreateManager(CreateLootTableData(
                 [CreateEntityMapping(100u, 1ul)],
                 [CreateLootGroup(1ul, staticItemId: 1001u)]));
-            IPlayer player = CreatePlayer();
+            IPlayer player = CreatePlayer(session: session);
             Mock<IWorldEntity> entity = CreateEntityMock(100u);
             manager.Initialise();
             ILootInstance instance = manager.DropLoot(player, entity.Object);
@@ -369,6 +476,7 @@ namespace NexusForever.Game.Tests.Loot
             Assert.True(delivered);
             entity.Verify(e => e.AddLoot(instance), Times.Once);
             entity.Verify(e => e.RemoveLoot(instance), Times.Once);
+            session.Verify(s => s.EnqueueMessageEncrypted(It.IsAny<ServerLootRemove>()), Times.Never);
         }
 
         [Fact]
@@ -413,6 +521,177 @@ namespace NexusForever.Game.Tests.Loot
             manager.Update(1801d);
 
             entity.Verify(e => e.RemoveLoot(instance), Times.Once);
+        }
+
+        [Fact]
+        public void Update_TimedOutLootNotifiesEveryAuthorisedLooterAndIsolatesPacketFailure()
+        {
+            var map = new Mock<IBaseMap>();
+            var firstSession = new Mock<IGameSession>();
+            var secondSession = new Mock<IGameSession>();
+            IPlayer firstPlayer = CreatePlayer(
+                map: map.Object,
+                session: firstSession,
+                characterId: 1ul,
+                guid: 10u);
+            IPlayer secondPlayer = CreatePlayer(
+                map: map.Object,
+                session: secondSession,
+                characterId: 2ul,
+                guid: 11u);
+            map.Setup(m => m.GetEntity<IGridEntity>(10u)).Returns(firstPlayer);
+            map.Setup(m => m.GetEntity<IGridEntity>(11u)).Returns(secondPlayer);
+            Mock<IWorldEntity> entity = CreateEntityMock(100u, map.Object);
+            GlobalLootManager manager = CreateManager(CreateLootTableData(
+                [CreateEntityMapping(100u, 1ul)],
+                [CreateLootGroup(1ul, staticItemId: 1001u)]));
+            manager.Initialise();
+            var instance = Assert.IsType<LootInstance>(manager.DropLoot(firstPlayer, entity.Object));
+            instance.AddLooter(secondPlayer.CharacterId, secondPlayer.Guid);
+            uint lootItemId = instance.Single(item => item.Type == LootItemType.StaticItem).Id;
+            firstSession.Setup(s => s.EnqueueMessageEncrypted(It.IsAny<ServerLootRemove>()))
+                .Throws(new InvalidOperationException("output unavailable"));
+
+            manager.Update(1801d);
+            manager.Update(1d);
+
+            firstSession.Verify(s => s.EnqueueMessageEncrypted(It.Is<ServerLootRemove>(message =>
+                message.OwnerUnitId == entity.Object.Guid)), Times.Once);
+            secondSession.Verify(s => s.EnqueueMessageEncrypted(It.Is<ServerLootRemove>(message =>
+                message.OwnerUnitId == entity.Object.Guid)), Times.Once);
+            entity.Verify(owner => owner.RemoveLoot(instance), Times.Once);
+            Assert.False(IsLootItemIndexed(manager, lootItemId));
+        }
+
+        [Fact]
+        public void GiveAllLootInRange_TimedOutLootRefreshesStableCharacterGuidAndDetaches()
+        {
+            var map = new Mock<IBaseMap>();
+            var originalSession = new Mock<IGameSession>();
+            var reconnectedSession = new Mock<IGameSession>();
+            IPlayer originalPlayer = CreatePlayer(
+                map: map.Object,
+                session: originalSession,
+                characterId: 1ul,
+                guid: 10u);
+            IPlayer reconnectedPlayer = CreatePlayer(
+                map: map.Object,
+                session: reconnectedSession,
+                characterId: 1ul,
+                guid: 11u);
+            map.Setup(m => m.GetEntity<IGridEntity>(11u)).Returns(reconnectedPlayer);
+            Mock<IWorldEntity> entity = CreateEntityMock(100u, map.Object);
+            GlobalLootManager manager = CreateManager(CreateLootTableData(
+                [CreateEntityMapping(100u, 1ul)],
+                [CreateLootGroup(1ul, staticItemId: 1001u)]));
+            manager.Initialise();
+            var instance = Assert.IsType<LootInstance>(manager.DropLoot(originalPlayer, entity.Object));
+            instance.Update(1801d);
+
+            manager.GiveAllLootInRange(reconnectedPlayer);
+
+            reconnectedSession.Verify(s => s.EnqueueMessageEncrypted(It.Is<ServerLootRemove>(message =>
+                message.OwnerUnitId == entity.Object.Guid)), Times.Once);
+            originalSession.Verify(s => s.EnqueueMessageEncrypted(It.IsAny<ServerLootRemove>()), Times.Never);
+            entity.Verify(owner => owner.RemoveLoot(instance), Times.Once);
+        }
+
+        [Fact]
+        public void Update_TimedOutLootDoesNotNotifyReusedGuidWithDifferentCharacter()
+        {
+            var map = new Mock<IBaseMap>();
+            var authorisedSession = new Mock<IGameSession>();
+            var unrelatedSession = new Mock<IGameSession>();
+            IPlayer authorisedPlayer = CreatePlayer(
+                map: map.Object,
+                session: authorisedSession,
+                characterId: 1ul,
+                guid: 10u);
+            IPlayer unrelatedPlayer = CreatePlayer(
+                map: map.Object,
+                session: unrelatedSession,
+                characterId: 2ul,
+                guid: 10u);
+            map.Setup(m => m.GetEntity<IGridEntity>(10u)).Returns(unrelatedPlayer);
+            GlobalLootManager manager = CreateManager(CreateLootTableData(
+                [CreateEntityMapping(100u, 1ul)],
+                [CreateLootGroup(1ul, staticItemId: 1001u)]));
+            manager.Initialise();
+            manager.DropLoot(authorisedPlayer, CreateEntity(100u, map.Object));
+
+            manager.Update(1801d);
+
+            authorisedSession.Verify(s => s.EnqueueMessageEncrypted(It.IsAny<ServerLootRemove>()), Times.Never);
+            unrelatedSession.Verify(s => s.EnqueueMessageEncrypted(It.IsAny<ServerLootRemove>()), Times.Never);
+        }
+
+        [Fact]
+        public void TimedOutSameOwnerSiblingDoesNotHideSurvivingLoot()
+        {
+            var map = new Mock<IBaseMap>();
+            var session = new Mock<IGameSession>();
+            IPlayer player = CreatePlayer(map: map.Object, session: session);
+            map.Setup(m => m.GetEntity<IGridEntity>(player.Guid)).Returns(player);
+            IWorldEntity entity = CreateEntity(100u, map.Object);
+            GlobalLootManager manager = CreateManager(CreateLootTableData(
+                [CreateEntityMapping(100u, 1ul)],
+                [CreateLootGroup(1ul, staticItemId: 1001u)]));
+            manager.Initialise();
+            var first = Assert.IsType<LootInstance>(manager.DropLoot(player, entity));
+            var second = Assert.IsType<LootInstance>(manager.DropLoot(player, entity));
+            uint firstItemId = first.Single(item => item.Type == LootItemType.StaticItem).Id;
+            uint secondItemId = second.Single(item => item.Type == LootItemType.StaticItem).Id;
+            first.Update(1801d);
+
+            Assert.False(manager.GiveLoot(player, entity.Guid, firstItemId));
+            Assert.True(manager.GiveLoot(player, entity.Guid, secondItemId));
+
+            session.Verify(s => s.EnqueueMessageEncrypted(It.IsAny<ServerLootRemove>()), Times.Never);
+        }
+
+        [Fact]
+        public void TimedOutSameOwnerSiblingsEmitSingleRemoveWhenLastInstanceIsRemoved()
+        {
+            var map = new Mock<IBaseMap>();
+            var session = new Mock<IGameSession>();
+            IPlayer player = CreatePlayer(map: map.Object, session: session);
+            map.Setup(m => m.GetEntity<IGridEntity>(player.Guid)).Returns(player);
+            IWorldEntity entity = CreateEntity(100u, map.Object);
+            GlobalLootManager manager = CreateManager(CreateLootTableData(
+                [CreateEntityMapping(100u, 1ul)],
+                [CreateLootGroup(1ul, staticItemId: 1001u)]));
+            manager.Initialise();
+            var first = Assert.IsType<LootInstance>(manager.DropLoot(player, entity));
+            var second = Assert.IsType<LootInstance>(manager.DropLoot(player, entity));
+            uint firstItemId = first.Single(item => item.Type == LootItemType.StaticItem).Id;
+            uint secondItemId = second.Single(item => item.Type == LootItemType.StaticItem).Id;
+            first.Update(1801d);
+            second.Update(1801d);
+
+            Assert.False(manager.GiveLoot(player, entity.Guid, firstItemId));
+            Assert.False(manager.GiveLoot(player, entity.Guid, secondItemId));
+
+            session.Verify(s => s.EnqueueMessageEncrypted(It.Is<ServerLootRemove>(message =>
+                message.OwnerUnitId == entity.Guid)), Times.Once);
+        }
+
+        [Fact]
+        public void DropLoot_OwnerAttachmentFailureRollsBackAllIndexes()
+        {
+            GlobalLootManager manager = CreateManager(CreateLootTableData(
+                [CreateEntityMapping(100u, 1ul)],
+                [CreateLootGroup(1ul, staticItemId: 1001u)]));
+            Mock<IWorldEntity> entity = CreateEntityMock(100u);
+            entity.Setup(owner => owner.AddLoot(It.IsAny<ILootInstance>()))
+                .Throws(new InvalidOperationException("attachment failed"));
+            manager.Initialise();
+
+            Assert.Throws<InvalidOperationException>(() => manager.DropLoot(CreatePlayer(), entity.Object));
+
+            Assert.Equal(0, GetIndexCount(manager, "lootInstancesByItemId"));
+            Assert.Equal(0, GetIndexCount(manager, "lootMaps"));
+            Assert.Equal(0, GetIndexCount(manager, "lootOwners"));
+            entity.Verify(owner => owner.RemoveLoot(It.IsAny<ILootInstance>()), Times.Once);
         }
 
         [Fact]
@@ -462,6 +741,25 @@ namespace NexusForever.Game.Tests.Loot
             var provider = new Mock<ILootTableProvider>();
             provider.Setup(p => p.LoadLootTables()).Returns(data);
             return new GlobalLootManager(provider.Object, omnibitChanceRoll, omnibitAmountRoll);
+        }
+
+        private static bool IsLootItemIndexed(GlobalLootManager manager, uint lootItemId)
+        {
+            FieldInfo field = typeof(GlobalLootManager).GetField(
+                "lootInstancesByItemId",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            var index = Assert.IsType<ConcurrentDictionary<uint, LootInstance>>(field?.GetValue(manager));
+            return index.ContainsKey(lootItemId);
+        }
+
+        private static int GetIndexCount(GlobalLootManager manager, string fieldName)
+        {
+            FieldInfo field = typeof(GlobalLootManager).GetField(
+                fieldName,
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            object index = field?.GetValue(manager);
+            PropertyInfo countProperty = index?.GetType().GetProperty(nameof(ICollection<object>.Count));
+            return Assert.IsType<int>(countProperty?.GetValue(index));
         }
 
         private static LootTableData CreateLootTableData(
@@ -521,7 +819,10 @@ namespace NexusForever.Game.Tests.Loot
             bool configureInventory = true,
             uint level = 1u,
             Mock<IAccountCurrencyManager> accountCurrencyManager = null,
-            Mock<IGameSession> session = null)
+            Mock<IGameSession> session = null,
+            ulong characterId = 1ul,
+            uint guid = 10u,
+            bool inWorld = true)
         {
             accountCurrencyManager ??= new Mock<IAccountCurrencyManager>();
             var account = new Mock<IAccount>();
@@ -541,11 +842,12 @@ namespace NexusForever.Game.Tests.Loot
             }
 
             var player = new Mock<IPlayer>();
-            player.Setup(p => p.CharacterId).Returns(1ul);
-            player.Setup(p => p.Guid).Returns(10u);
+            player.Setup(p => p.CharacterId).Returns(characterId);
+            player.Setup(p => p.Guid).Returns(guid);
             player.Setup(p => p.Level).Returns(level);
             player.Setup(p => p.Position).Returns(Vector3.Zero);
             player.Setup(p => p.Map).Returns(map ?? DefaultMap);
+            player.Setup(p => p.InWorld).Returns(inWorld);
             player.Setup(p => p.Account).Returns(account.Object);
             player.Setup(p => p.Inventory).Returns(inventory.Object);
             player.Setup(p => p.Session).Returns((session ?? new Mock<IGameSession>()).Object);

@@ -25,8 +25,17 @@ namespace NexusForever.Game.Loot
         /// </summary>
         public Vector3 Position { get; }
 
-        public bool HasExpired => expiryTimer <= 0d
-            || lootItems.Values.All(i => i.Delivered);
+        public bool HasExpired => HasTimedOut || IsComplete;
+
+        /// <summary>
+        /// Returns whether the server-owned expiry duration has elapsed.
+        /// </summary>
+        internal bool HasTimedOut => expiryTimer <= 0d;
+
+        /// <summary>
+        /// Returns whether every item in this loot instance has been delivered.
+        /// </summary>
+        internal bool IsComplete => lootItems.Values.All(i => i.Delivered);
 
         private readonly Dictionary<ulong, uint> looterGuids = new();
         private readonly Dictionary<uint, LootInstanceItem> lootItems = new();
@@ -45,6 +54,9 @@ namespace NexusForever.Game.Loot
         /// </summary>
         public void Update(double lastTick)
         {
+            if (!double.IsFinite(lastTick) || lastTick <= 0d || HasTimedOut)
+                return;
+
             expiryTimer -= lastTick;
         }
 
@@ -57,10 +69,25 @@ namespace NexusForever.Game.Loot
         }
 
         /// <summary>
+        /// Refresh the world GUID used to route packets for an already-authorised character.
+        /// </summary>
+        internal bool TryRefreshLooter(ulong characterId, uint playerGuid)
+        {
+            if (!looterGuids.ContainsKey(characterId))
+                return false;
+
+            looterGuids[characterId] = playerGuid;
+            return true;
+        }
+
+        /// <summary>
         /// Add a loot item to this instance.
         /// </summary>
         public void AddLootItem(uint staticId, LootItemType type, uint count)
         {
+            if (count == 0u)
+                throw new ArgumentOutOfRangeException(nameof(count), count, "Loot item count must be positive.");
+
             var item = new LootInstanceItem(staticId, type, count);
             item.LootUnitGuid = Guid;
             lootItems.Add(item.Id, item);
@@ -73,7 +100,7 @@ namespace NexusForever.Game.Loot
         {
             ArgumentNullException.ThrowIfNull(player);
 
-            if (!HasLooter(player.CharacterId))
+            if (!TryRefreshLooter(player.CharacterId, player.Guid))
                 return;
 
             var lootItemList = new List<NetworkLootItem>();
@@ -131,6 +158,14 @@ namespace NexusForever.Game.Loot
         public bool HasLooter(ulong characterId)
         {
             return looterGuids.ContainsKey(characterId);
+        }
+
+        /// <summary>
+        /// Return a snapshot of stable character identifiers and their last authorised world GUIDs.
+        /// </summary>
+        internal IReadOnlyList<KeyValuePair<ulong, uint>> GetLooterIdentities()
+        {
+            return looterGuids.ToArray();
         }
 
         /// <summary>

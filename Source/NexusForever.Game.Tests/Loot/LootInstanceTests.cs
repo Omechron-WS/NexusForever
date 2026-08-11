@@ -83,6 +83,36 @@ namespace NexusForever.Game.Tests.Loot
             Assert.True(instance.HasExpired);
         }
 
+        [Theory]
+        [InlineData(double.NaN)]
+        [InlineData(double.NegativeInfinity)]
+        [InlineData(double.PositiveInfinity)]
+        [InlineData(0d)]
+        [InlineData(-1d)]
+        public void Update_InvalidTickDoesNotAdvanceOrPoisonExpiry(double lastTick)
+        {
+            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player, System.Numerics.Vector3.Zero);
+            instance.AddLootItem(100u, LootItemType.StaticItem, 1u);
+
+            instance.Update(lastTick);
+            instance.Update(1799d);
+
+            Assert.False(instance.HasExpired);
+
+            instance.Update(1d);
+
+            Assert.True(instance.HasExpired);
+        }
+
+        [Fact]
+        public void AddLootItem_ZeroCountIsRejected()
+        {
+            var instance = new LootInstance(1u, LootEntityType.Creature, LooterType.Player, System.Numerics.Vector3.Zero);
+
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                instance.AddLootItem(100u, LootItemType.StaticItem, 0u));
+        }
+
         [Fact]
         public void HasExpired_TrueWhenAllItemsDelivered()
         {

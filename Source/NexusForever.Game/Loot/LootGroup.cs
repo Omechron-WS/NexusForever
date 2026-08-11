@@ -24,10 +24,14 @@ namespace NexusForever.Game.Loot
 
         public LootGroup(LootGroupModel model)
         {
+            ArgumentNullException.ThrowIfNull(model);
+            if (!TryValidateModel(model, out string validationError))
+                throw new ArgumentException(validationError, nameof(model));
+
             Id            = model.Id;
             Probability   = model.Probability;
             minDrop       = model.MinDrop;
-            maxDrop       = model.MaxDrop >= model.MinDrop ? model.MaxDrop : model.MinDrop;
+            maxDrop       = model.MaxDrop;
             conditionType = (LootConditionType)model.ConditionType;
             condition     = model.Condition;
 
@@ -181,6 +185,35 @@ namespace NexusForever.Game.Loot
                 .Where(quest => quest != null)
                 .SelectMany(quest => quest)
                 .Any(objective => objective?.ObjectiveInfo?.Id == condition && !objective.IsComplete());
+        }
+
+        /// <summary>
+        /// Validate database-backed probability and drop-count bounds.
+        /// </summary>
+        internal static bool TryValidateModel(LootGroupModel model, out string error)
+        {
+            if (model == null)
+            {
+                error = "The loot group model is null.";
+                return false;
+            }
+
+            if (!float.IsFinite(model.Probability)
+                || model.Probability < 0f
+                || model.Probability > 100f)
+            {
+                error = $"has invalid probability {model.Probability}; expected a finite value from 0 through 100.";
+                return false;
+            }
+
+            if (model.MaxDrop < model.MinDrop)
+            {
+                error = $"has invalid drop range {model.MinDrop} through {model.MaxDrop}.";
+                return false;
+            }
+
+            error = null;
+            return true;
         }
     }
 }

@@ -14,6 +14,7 @@ using NexusForever.Game.Static.Loot;
 using NexusForever.Shared;
 using NetworkLootItem = NexusForever.Network.World.Message.Model.Loot.LootItem;
 using ServerLootGrant = NexusForever.Network.World.Message.Model.Loot.ServerLootGrant;
+using ServerLootRemove = NexusForever.Network.World.Message.Model.Loot.ServerLootRemove;
 using NLog;
 
 namespace NexusForever.Game.Loot
@@ -137,14 +138,17 @@ namespace NexusForever.Game.Loot
 
             while (pendingLootInstances.TryDequeue(out LootInstance pendingLootInstance))
             {
-                if (pendingLootInstance.HasExpired || !IsLootSourceActive(pendingLootInstance))
+                if (TryGetRemovalReason(pendingLootInstance, out LootRemovalReason pendingRemovalReason))
                 {
-                    RemoveLootInstance(pendingLootInstance);
+                    RemoveLootInstance(pendingLootInstance, pendingRemovalReason);
                     continue;
                 }
 
                 activeLootInstances.Add(pendingLootInstance);
             }
+
+            if (!double.IsFinite(lastTick) || lastTick <= 0d)
+                return;
 
             foreach (LootInstance lootInstance in activeLootInstances)
                 lootInstance.Update(lastTick);
@@ -157,10 +161,11 @@ namespace NexusForever.Game.Loot
 
             for (int i = activeLootInstances.Count - 1; i >= 0; i--)
             {
-                if (!activeLootInstances[i].HasExpired && IsLootSourceActive(activeLootInstances[i]))
+                LootInstance lootInstance = activeLootInstances[i];
+                if (!TryGetRemovalReason(lootInstance, out LootRemovalReason removalReason))
                     continue;
 
-                RemoveLootInstance(activeLootInstances[i]);
+                RemoveLootInstance(lootInstance, removalReason);
                 activeLootInstances.RemoveAt(i);
             }
         }
@@ -211,7 +216,7 @@ namespace NexusForever.Game.Loot
             finally
             {
                 if (instance.HasExpired)
-                    RemoveLootInstance(instance);
+                    RemoveLootInstance(instance, GetExpirationRemovalReason(instance));
             }
 
             return instance;
@@ -250,7 +255,7 @@ namespace NexusForever.Game.Loot
             finally
             {
                 if (instance.HasExpired)
-                    RemoveLootInstance(instance);
+                    RemoveLootInstance(instance, GetExpirationRemovalReason(instance));
             }
         }
 
@@ -278,18 +283,18 @@ namespace NexusForever.Game.Loot
             if (lootInstance.Guid != ownerUnitId)
                 return false;
 
-            if (!lootInstance.HasLooter(looter.CharacterId))
+            if (!lootInstance.TryRefreshLooter(looter.CharacterId, looter.Guid))
                 return false;
 
             if (lootInstance.HasExpired)
             {
-                RemoveLootInstance(lootInstance);
+                RemoveLootInstance(lootInstance, GetExpirationRemovalReason(lootInstance));
                 return false;
             }
 
             if (!IsLootSourceActive(lootInstance))
             {
-                RemoveLootInstance(lootInstance);
+                RemoveLootInstance(lootInstance, LootRemovalReason.StaleSource);
                 return false;
             }
 
@@ -308,7 +313,7 @@ namespace NexusForever.Game.Loot
             finally
             {
                 if (lootInstance.HasExpired)
-                    RemoveLootInstance(lootInstance);
+                    RemoveLootInstance(lootInstance, GetExpirationRemovalReason(lootInstance));
             }
         }
 
@@ -322,15 +327,18 @@ namespace NexusForever.Game.Loot
 
             foreach (LootInstance instance in lootInstancesByItemId.Values.Distinct().ToList())
             {
-                if (!instance.HasLooter(looter.CharacterId))
+                if (!instance.TryRefreshLooter(looter.CharacterId, looter.Guid))
                     continue;
 
                 if (instance.HasExpired)
+                {
+                    RemoveLootInstance(instance, GetExpirationRemovalReason(instance));
                     continue;
+                }
 
                 if (!IsLootSourceActive(instance))
                 {
-                    RemoveLootInstance(instance);
+                    RemoveLootInstance(instance, LootRemovalReason.StaleSource);
                     continue;
                 }
 
@@ -463,15 +471,46 @@ namespace NexusForever.Game.Loot
 
             if (owner != null)
             {
-                lootOwners.TryAdd(instance, owner);
-                owner.AddLoot(instance);
+                if (!lootOwners.TryAdd(instance, owner))
+                {
+                    lootMaps.TryRemove(instance, out _);
+                    foreach (uint registeredItemId in registeredItemIds)
+                        lootInstancesByItemId.TryRemove(registeredItemId, out _);
+
+                    throw new InvalidOperationException("The loot instance owner is already registered.");
+                }
+
+                try
+                {
+                    owner.AddLoot(instance);
+                }
+                catch
+                {
+                    lootOwners.TryRemove(instance, out _);
+                    lootMaps.TryRemove(instance, out _);
+                    foreach (uint registeredItemId in registeredItemIds)
+                        lootInstancesByItemId.TryRemove(registeredItemId, out _);
+
+                    try
+                    {
+                        owner.RemoveLoot(instance);
+                    }
+                    catch (Exception exception)
+                    {
+                        log.Error(exception, $"Failed to roll back loot instance {instance.Guid} from its source entity.");
+                    }
+
+                    throw;
+                }
             }
 
             pendingLootInstances.Enqueue(instance);
         }
 
-        private void RemoveLootInstance(LootInstance instance)
+        private void RemoveLootInstance(LootInstance instance, LootRemovalReason reason)
         {
+            bool wasRegistered = lootMaps.TryRemove(instance, out IBaseMap map);
+
             foreach (ILootInstanceItem item in instance)
             {
                 if (lootInstancesByItemId.TryGetValue(item.Id, out LootInstance registeredInstance)
@@ -479,10 +518,102 @@ namespace NexusForever.Game.Loot
                     lootInstancesByItemId.TryRemove(item.Id, out _);
             }
 
-            lootMaps.TryRemove(instance, out _);
-
             if (lootOwners.TryRemove(instance, out IWorldEntity owner))
-                owner.RemoveLoot(instance);
+            {
+                try
+                {
+                    owner.RemoveLoot(instance);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to detach loot instance {instance.Guid} from its source entity.");
+                }
+            }
+
+            if (!wasRegistered || reason == LootRemovalReason.Completed)
+                return;
+
+            SendLootRemove(instance, map);
+        }
+
+        private static LootRemovalReason GetExpirationRemovalReason(LootInstance instance)
+        {
+            return instance.IsComplete
+                ? LootRemovalReason.Completed
+                : LootRemovalReason.TimedOut;
+        }
+
+        private bool TryGetRemovalReason(LootInstance instance, out LootRemovalReason reason)
+        {
+            if (instance.IsComplete)
+            {
+                reason = LootRemovalReason.Completed;
+                return true;
+            }
+
+            if (instance.HasTimedOut)
+            {
+                reason = LootRemovalReason.TimedOut;
+                return true;
+            }
+
+            if (!IsLootSourceActive(instance))
+            {
+                reason = LootRemovalReason.StaleSource;
+                return true;
+            }
+
+            reason = default;
+            return false;
+        }
+
+        private void SendLootRemove(LootInstance instance, IBaseMap map)
+        {
+            foreach ((ulong characterId, uint playerGuid) in instance.GetLooterIdentities())
+            {
+                try
+                {
+                    if (HasVisibleSiblingLoot(instance, map, characterId))
+                        continue;
+
+                    IGridEntity gridEntity = map.GetEntity<IGridEntity>(playerGuid);
+                    if (gridEntity is not IPlayer player
+                        || player.CharacterId != characterId
+                        || player.Guid != playerGuid
+                        || !player.InWorld
+                        || !ReferenceEquals(player.Map, map))
+                        continue;
+
+                    player.Session.EnqueueMessageEncrypted(new ServerLootRemove
+                    {
+                        OwnerUnitId = instance.Guid
+                    });
+                }
+                catch (Exception exception)
+                {
+                    log.Error(
+                        exception,
+                        $"Failed to notify authorised character {characterId} that loot source {instance.Guid} was removed.");
+                }
+            }
+        }
+
+        private bool HasVisibleSiblingLoot(LootInstance removedInstance, IBaseMap map, ulong characterId)
+        {
+            foreach (LootInstance candidate in lootInstancesByItemId.Values.Distinct())
+            {
+                if (ReferenceEquals(candidate, removedInstance)
+                    || candidate.Guid != removedInstance.Guid
+                    || !candidate.HasLooter(characterId)
+                    || candidate.IsComplete)
+                    continue;
+
+                if (lootMaps.TryGetValue(candidate, out IBaseMap candidateMap)
+                    && ReferenceEquals(candidateMap, map))
+                    return true;
+            }
+
+            return false;
         }
 
         private bool IsLootSourceActive(LootInstance instance)
@@ -520,6 +651,9 @@ namespace NexusForever.Game.Loot
                 if (!lootGroups.TryAdd(model.Id, model))
                     throw new DatabaseDataException($"Loot group {model.Id} is defined more than once.");
 
+                if (!LootGroup.TryValidateModel(model, out string groupValidationError))
+                    throw new DatabaseDataException($"Loot group {model.Id} {groupValidationError}");
+
                 model.Parent     = null;
                 model.ChildGroup = new HashSet<LootGroupModel>();
                 model.Item     ??= new HashSet<LootItemModel>();
@@ -528,6 +662,12 @@ namespace NexusForever.Game.Loot
                 {
                     if (item == null)
                         throw new DatabaseDataException($"Loot group {model.Id} contains a null item record.");
+
+                    if (!LootItem.TryValidateModel(item, out string itemValidationError))
+                    {
+                        throw new DatabaseDataException(
+                            $"Loot item {item.Id} in group {model.Id} {itemValidationError}");
+                    }
 
                     var itemType = (LootItemType)item.Type;
                     if (!LootInstanceItem.CanDeliver(itemType))
@@ -569,6 +709,13 @@ namespace NexusForever.Game.Loot
 
             visiting.Remove(model.Id);
             visited.Add(model.Id);
+        }
+
+        private enum LootRemovalReason
+        {
+            Completed,
+            TimedOut,
+            StaleSource
         }
     }
 }
