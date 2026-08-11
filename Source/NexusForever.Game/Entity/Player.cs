@@ -896,7 +896,7 @@ namespace NexusForever.Game.Entity
 
             ResidenceManager.SendHousingBasics();
             Session.EnqueueMessageEncrypted(new ServerHousingNeighbours());
-            Session.EnqueueMessageEncrypted(new ServerInstanceSettings() { ClientEntitySendUpdateInterval = 125 });
+            Session.EnqueueMessageEncrypted(CreateInstanceSettings());
 
             SetControl(this);
 
@@ -972,6 +972,15 @@ namespace NexusForever.Game.Entity
             });
 
             log.Trace($"Player {Name} took {(DateTime.UtcNow - start).TotalMilliseconds}ms to send packets after add to map.");
+        }
+
+        internal ServerInstanceSettings CreateInstanceSettings()
+        {
+            return new ServerInstanceSettings
+            {
+                Difficulty                     = Map.Difficulty,
+                ClientEntitySendUpdateInterval = 125
+            };
         }
 
         public ItemProficiency GetItemProficiencies()

@@ -11,6 +11,7 @@ using NexusForever.Game.Configuration.Model;
 using NexusForever.Game.Map.Instance;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Map;
+using NexusForever.Game.Static.Setting;
 using NexusForever.GameTable.Model;
 using NexusForever.IO.Map;
 using NexusForever.Network.Message;
@@ -34,6 +35,11 @@ namespace NexusForever.Game.Map
         /// Distance between a <see cref="IPlayer"/> and a <see cref="IGridEntity"/> before the entity can be seen.
         /// </summary>
         public virtual float? VisionRange { get; protected set; } = DefaultVisionRange;
+
+        /// <summary>
+        /// Difficulty selected for this map instance.
+        /// </summary>
+        public virtual WorldDifficulty Difficulty { get; protected set; } = WorldDifficulty.Normal;
 
         public WorldEntry Entry { get; private set; }
         public MapFile File { get; private set; }

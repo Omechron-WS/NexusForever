@@ -7,6 +7,7 @@ using NexusForever.Game.Abstract.Map;
 using NexusForever.Game.Abstract.Matching.Match;
 using NexusForever.Game.Abstract.Matching.Queue;
 using NexusForever.Game.Entity;
+using NexusForever.Game.Static.Setting;
 using NexusForever.GameTable.Model;
 using NexusForever.Network.Internal;
 using NexusForever.Network.Message;
@@ -20,6 +21,17 @@ namespace NexusForever.Game.Tests.Entity
     {
         private const uint PlayerGuid = 10u;
         private const uint ChairGuid = 20u;
+
+        [Fact]
+        public void InstanceSettings_UseMapOwnedDifficulty()
+        {
+            ChairHarness harness = CreateHarness(WorldDifficulty.Veteran);
+
+            ServerInstanceSettings settings = harness.Player.CreateInstanceSettings();
+
+            Assert.Equal(WorldDifficulty.Veteran, settings.Difficulty);
+            Assert.Equal(125u, settings.ClientEntitySendUpdateInterval);
+        }
 
         [Fact]
         public void Unsit_ClearsStateAndPreservesPacketOrder()
@@ -157,7 +169,8 @@ namespace NexusForever.Game.Tests.Entity
             harness.Chair.Verify(value => value.RemoveVisible(harness.Player), Times.Once);
         }
 
-        private static ChairHarness CreateHarness()
+        private static ChairHarness CreateHarness(
+            WorldDifficulty difficulty = WorldDifficulty.Normal)
         {
             var packets = new List<IWritable>();
             var session = new Mock<IGameSession>();
@@ -167,6 +180,7 @@ namespace NexusForever.Game.Tests.Entity
 
             var map = new Mock<IBaseMap>();
             map.SetupGet(value => value.Entry).Returns(new WorldEntry { Id = 1u });
+            map.SetupGet(value => value.Difficulty).Returns(difficulty);
 
             var player = new TestPlayer(
                 Mock.Of<IMovementManager>(),

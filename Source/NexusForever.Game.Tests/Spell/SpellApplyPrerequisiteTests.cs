@@ -13,6 +13,7 @@ using NexusForever.Game.Spell.SpellType;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Prerequisite;
 using NexusForever.Game.Static.Reputation;
+using NexusForever.Game.Static.Setting;
 using NexusForever.Game.Static.Spell;
 using NexusForever.Game.Tests.Combat;
 using NexusForever.GameTable;
@@ -157,6 +158,39 @@ namespace NexusForever.Game.Tests.Spell
                 CasterHealth = currentHealth,
                 CasterMaxHealth = 100u
             };
+            Mock<IUnitEntity> target = context.CreateTarget(10u);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u),
+                casterCastPrerequisite: prerequisite,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            if (expectedInvocation)
+                spell.Update(0d);
+
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Invocations.Count);
+            if (!expectedInvocation)
+            {
+                ServerSpellCastResult result = Assert.Single(
+                    context.SessionPackets.OfType<ServerSpellCastResult>());
+                Assert.Equal(CastResult.PrereqCasterCast, result.CastResult);
+                Assert.Empty(context.Packets.OfType<ServerSpellStart>());
+            }
+        }
+
+        [Theory]
+        [InlineData(WorldDifficulty.Normal, false)]
+        [InlineData(WorldDifficulty.Veteran, true)]
+        public void LegacyCasterCast_DifficultyBuildRowUsesCasterMapAuthority(
+            WorldDifficulty difficulty,
+            bool expectedInvocation)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                14893u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Difficulty, PrerequisiteComparison.Equal, (uint)WorldDifficulty.Veteran, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            context.Map.SetupGet(value => value.Difficulty).Returns(difficulty);
             Mock<IUnitEntity> target = context.CreateTarget(10u);
             TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
                 CreateEffect(1u),
@@ -958,6 +992,47 @@ namespace NexusForever.Game.Tests.Spell
 
             Assert.Equal(expectedInvocation ? 1 : 0, context.InvocationAttempts);
             Assert.Equal(expectedInvocation ? 1 : 0, context.Invocations.Count);
+        }
+
+        [Theory]
+        [InlineData(WorldDifficulty.Normal, WorldDifficulty.Normal, WorldDifficulty.Normal, true)]
+        [InlineData(WorldDifficulty.Veteran, WorldDifficulty.Veteran, WorldDifficulty.Veteran, true)]
+        [InlineData(WorldDifficulty.Normal, WorldDifficulty.Normal, WorldDifficulty.Veteran, false)]
+        [InlineData(WorldDifficulty.Veteran, WorldDifficulty.Normal, WorldDifficulty.Veteran, false)]
+        public void UnitApply_DifficultyBuildRowsFilterBeforeCostAndHandler(
+            WorldDifficulty mapDifficulty,
+            WorldDifficulty casterRequirement,
+            WorldDifficulty targetRequirement,
+            bool expectedInvocation)
+        {
+            PrerequisiteEntry normal = CreateEntry(
+                14409u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Difficulty, PrerequisiteComparison.Equal, (uint)WorldDifficulty.Normal, 0u));
+            PrerequisiteEntry veteran = CreateEntry(
+                14893u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Difficulty, PrerequisiteComparison.Equal, (uint)WorldDifficulty.Veteran, 0u));
+            using var context = new SpellPrerequisiteContext(normal, veteran);
+            context.Map.SetupGet(value => value.Difficulty).Returns(mapDifficulty);
+            Mock<IUnitEntity> target = context.CreateTarget(10u);
+            Spell4EffectsEntry effect = CreateEffect(
+                1u,
+                casterPrerequisite: casterRequirement == WorldDifficulty.Normal ? normal.Id : veteran.Id,
+                targetPrerequisite: targetRequirement == WorldDifficulty.Normal ? normal.Id : veteran.Id,
+                cost: 10u);
+            TestApplyPrerequisiteSpell spell = context.CreateSpell(
+                effect,
+                (SpellEffectTargetFlags.Target, target.Object));
+
+            spell.ExecuteForTest();
+
+            Assert.Equal(expectedInvocation ? 90f : 100f, context.CasterResource1);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.CostMutations.Count);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Invocations.Count);
+            Assert.Equal(
+                expectedInvocation ? 1 : 0,
+                Assert.Single(context.Packets.OfType<ServerSpellGo>()).TargetInfoData.Count);
         }
 
         [Fact]
@@ -2183,6 +2258,7 @@ namespace NexusForever.Game.Tests.Spell
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckIsPlayer>(PrerequisiteType.IsPlayer);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealth>(PrerequisiteType.Health);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealthRequirement>(PrerequisiteType.HealthRequirement);
+                services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDifficulty>(PrerequisiteType.Difficulty);
                 services.AddSingleton<PrerequisiteManager>();
                 services.AddSingleton<IPrerequisiteManager>(provider => provider.GetRequiredService<PrerequisiteManager>());
                 serviceProvider = services.BuildServiceProvider();

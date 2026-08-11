@@ -3,12 +3,14 @@ using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Abstract.Map;
 using NexusForever.Game.Abstract.Prerequisite;
 using NexusForever.Game.Prerequisite;
 using NexusForever.Game.Prerequisite.Check;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Prerequisite;
 using NexusForever.Game.Static.Reputation;
+using NexusForever.Game.Static.Setting;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
 using NexusForever.Shared;
@@ -42,6 +44,111 @@ namespace NexusForever.Game.Tests.Prerequisite
             Assert.True(context.Manager.CanEvaluateForUnit(orEntry.Id));
             Assert.True(context.Manager.TryMeets(unit.Object, orEntry.Id, out bool meetsOr));
             Assert.True(meetsOr);
+        }
+
+        [Fact]
+        public void DifficultyBuildRows_ReevaluateMapAuthorityForPureAndMixedPredicates()
+        {
+            PrerequisiteEntry normal = CreateEntry(
+                14409u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Difficulty, PrerequisiteComparison.Equal, (uint)WorldDifficulty.Normal, 0u));
+            PrerequisiteEntry veteran = CreateEntry(
+                14893u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Difficulty, PrerequisiteComparison.Equal, (uint)WorldDifficulty.Veteran, 0u));
+            PrerequisiteEntry normalPlayer = CreateEntry(
+                29501u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsPlayer, PrerequisiteComparison.Equal, 0u, 0u),
+                (PrerequisiteType.Difficulty, PrerequisiteComparison.Equal, (uint)WorldDifficulty.Normal, 0u));
+            PrerequisiteEntry veteranPlayer = CreateEntry(
+                29502u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsPlayer, PrerequisiteComparison.Equal, 0u, 0u),
+                (PrerequisiteType.Difficulty, PrerequisiteComparison.Equal, (uint)WorldDifficulty.Veteran, 0u));
+            PrerequisiteEntry normalExile = CreateEntry(
+                30026u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.BaseFaction, PrerequisiteComparison.Equal, (uint)Faction.Exile, 0u),
+                (PrerequisiteType.Difficulty, PrerequisiteComparison.Equal, (uint)WorldDifficulty.Normal, 0u));
+            PrerequisiteEntry veteranExile = CreateEntry(
+                30027u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.BaseFaction, PrerequisiteComparison.Equal, (uint)Faction.Exile, 0u),
+                (PrerequisiteType.Difficulty, PrerequisiteComparison.Equal, (uint)WorldDifficulty.Veteran, 0u));
+            PrerequisiteEntry[] entries =
+            [
+                normal,
+                veteran,
+                normalPlayer,
+                veteranPlayer,
+                normalExile,
+                veteranExile
+            ];
+            using var context = new ManagerContext(entries);
+            WorldDifficulty difficulty = WorldDifficulty.Normal;
+            var map = new Mock<IBaseMap>();
+            map.SetupGet(value => value.Difficulty).Returns(() => difficulty);
+            var player = new Mock<IPlayer>();
+            player.SetupGet(value => value.Map).Returns(map.Object);
+            player.SetupGet(value => value.Faction1).Returns(Faction.Exile);
+
+            bool[] expectedNormal = [true, false, true, false, true, false];
+            for (int i = 0; i < entries.Length; i++)
+            {
+                Assert.True(context.Manager.CanEvaluateForUnit(entries[i].Id));
+                Assert.True(context.Manager.TryMeets(player.Object, entries[i].Id, out bool meets));
+                Assert.Equal(expectedNormal[i], meets);
+            }
+
+            difficulty = WorldDifficulty.Veteran;
+
+            for (int i = 0; i < entries.Length; i++)
+            {
+                Assert.True(context.Manager.TryMeets(player.Object, entries[i].Id, out bool meets));
+                Assert.Equal(!expectedNormal[i], meets);
+            }
+        }
+
+        [Fact]
+        public void UnsupportedDifficultyShapesRemainWhollyGated()
+        {
+            PrerequisiteEntry invalidComparison = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Difficulty, PrerequisiteComparison.NotEqual, (uint)WorldDifficulty.Normal, 0u));
+            PrerequisiteEntry invalidValue = CreateEntry(
+                2u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Difficulty, PrerequisiteComparison.Equal, (uint)WorldDifficulty.Count, 0u));
+            PrerequisiteEntry invalidObject = CreateEntry(
+                3u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Difficulty, PrerequisiteComparison.Equal, (uint)WorldDifficulty.Normal, 2149u));
+            PrerequisiteEntry mixedUnsupported = CreateEntry(
+                4u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Difficulty, PrerequisiteComparison.Equal, (uint)WorldDifficulty.Normal, 0u),
+                (PrerequisiteType.Race, PrerequisiteComparison.Equal, 1u, 0u));
+            PrerequisiteEntry[] entries =
+            [
+                invalidComparison,
+                invalidValue,
+                invalidObject,
+                mixedUnsupported
+            ];
+            using var context = new ManagerContext(entries);
+            var unit = new Mock<IUnitEntity>(MockBehavior.Strict);
+
+            foreach (PrerequisiteEntry entry in entries)
+            {
+                Assert.False(context.Manager.CanEvaluateForUnit(entry.Id));
+                Assert.False(context.Manager.TryMeets(unit.Object, entry.Id, out bool meets));
+                Assert.False(meets);
+            }
+
+            unit.VerifyNoOtherCalls();
         }
 
         [Fact]
@@ -834,6 +941,7 @@ namespace NexusForever.Game.Tests.Prerequisite
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckIsPlayer>(PrerequisiteType.IsPlayer)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealth>(PrerequisiteType.Health)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealthRequirement>(PrerequisiteType.HealthRequirement)
+                    .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDifficulty>(PrerequisiteType.Difficulty)
                     .BuildServiceProvider();
 
                 Manager = new PrerequisiteManager(
