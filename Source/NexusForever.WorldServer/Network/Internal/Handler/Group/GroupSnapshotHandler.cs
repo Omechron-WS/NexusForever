@@ -103,7 +103,8 @@ namespace NexusForever.WorldServer.Network.Internal.Handler.Group
         public Task Handle(GroupDisbandedMessage message)
         {
             ulong groupId = message?.Group?.Id ?? 0ul;
-            if (!groupSnapshotCache.MarkDisbanded(groupId))
+            ulong revision = message?.Group?.Revision ?? 0ul;
+            if (!groupSnapshotCache.MarkDisbanded(groupId, revision))
                 WarnRejectedUpdate(groupId, nameof(GroupDisbandedMessage));
 
             return Task.CompletedTask;
@@ -133,14 +134,14 @@ namespace NexusForever.WorldServer.Network.Internal.Handler.Group
         {
             if (!Enum.IsDefined(reason))
             {
-                groupSnapshotCache.Evict(group.Id);
+                groupSnapshotCache.Reject(group.Id, group.Revision);
                 WarnRejectedUpdate(group.Id, messageKind);
                 return Task.CompletedTask;
             }
 
             if (reason == RemoveReason.Disband)
             {
-                if (!groupSnapshotCache.MarkDisbanded(group.Id))
+                if (!groupSnapshotCache.MarkDisbanded(group.Id, group.Revision))
                     WarnRejectedUpdate(group.Id, messageKind);
 
                 return Task.CompletedTask;

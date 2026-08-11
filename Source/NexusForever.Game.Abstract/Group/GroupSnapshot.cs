@@ -40,6 +40,11 @@ namespace NexusForever.Game.Abstract.Group
         public required ulong Id { get; init; }
 
         /// <summary>
+        /// Monotonic authoritative revision within this group identifier's incarnation.
+        /// </summary>
+        public required ulong Revision { get; init; }
+
+        /// <summary>
         /// Validated group state flags.
         /// </summary>
         public required GroupFlags Flags { get; init; }

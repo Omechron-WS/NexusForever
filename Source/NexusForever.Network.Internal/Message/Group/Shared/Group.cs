@@ -7,6 +7,7 @@ namespace NexusForever.Network.Internal.Message.Group.Shared
     public class Group
     {
         public ulong Id { get; set; }
+        public ulong Revision { get; set; }
         public GroupFlags Flags { get; set; }
         public LootRule NormalRule { get; set; }
         public LootRule ThresholdRule { get; set; }

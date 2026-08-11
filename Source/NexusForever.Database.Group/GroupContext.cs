@@ -175,7 +175,8 @@ namespace NexusForever.Database.Group
 
             modelBuilder.Entity<GroupModel>(entity =>
             {
-                entity.ToTable("group");
+                entity.ToTable("group",
+                    t => t.HasCheckConstraint("CK_group_revision_nonzero", "`revision` > 0"));
 
                 entity.HasKey(entity => entity.GroupId)
                     .HasName("PRIMARY");
@@ -186,6 +187,11 @@ namespace NexusForever.Database.Group
                 entity.Property(entity => entity.GroupId)
                     .HasColumnName("groupId")
                     .ValueGeneratedOnAdd();
+
+                entity.Property(entity => entity.Revision)
+                    .HasColumnName("revision")
+                    .HasDefaultValue(1ul)
+                    .IsConcurrencyToken();
 
                 entity.Property(entity => entity.Flags)
                     .HasColumnName("flags");

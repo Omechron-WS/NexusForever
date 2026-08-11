@@ -6,6 +6,7 @@ namespace NexusForever.Database.Group.Model
     public class GroupModel
     {
         public ulong GroupId { get; set; }
+        public ulong Revision { get; set; } = 1ul;
         public GroupFlags Flags { get; set; }
         public LootRule LootRule { get; set; }
         public LootRule LootRuleThreshold { get; set; }

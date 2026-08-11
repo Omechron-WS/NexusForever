@@ -37,25 +37,29 @@ namespace NexusForever.WorldServer.Tests
             InternalGroup group = CreateGroup();
 
             await handler.Handle(new PlayerGroupAssociationUpdatedMessage { Group = group });
-            AssertSnapshot(cache, group.Id, LootRule.RoundRobin);
+            AssertSnapshot(cache, group.Id, 1ul, LootRule.RoundRobin);
 
             group.NormalRule = LootRule.FreeForAll;
+            group.Revision = 2ul;
             await handler.Handle(new GroupMemberAddedMessage { Group = group });
-            AssertSnapshot(cache, group.Id, LootRule.FreeForAll);
+            AssertSnapshot(cache, group.Id, 2ul, LootRule.FreeForAll);
 
             group.NormalRule = LootRule.NeedBeforeGreed;
+            group.Revision = 3ul;
             await handler.Handle(new GroupMemberJoinedMessage { Group = group });
-            AssertSnapshot(cache, group.Id, LootRule.NeedBeforeGreed);
+            AssertSnapshot(cache, group.Id, 3ul, LootRule.NeedBeforeGreed);
 
             group.NormalRule = LootRule.Master;
+            group.Revision = 4ul;
             await handler.Handle(new GroupMemberPromotedMessage { Group = group });
-            AssertSnapshot(cache, group.Id, LootRule.Master);
+            AssertSnapshot(cache, group.Id, 4ul, LootRule.Master);
 
             group.NormalRule = LootRule.RoundRobin;
+            group.Revision = 5ul;
             await handler.Handle(new GroupFlagsUpdatedMessage { Group = group });
             await handler.Handle(new GroupMemberFlagsUpdatedMessage { Group = group });
             await handler.Handle(new GroupLootRulesUpdatedMessage { Group = group });
-            AssertSnapshot(cache, group.Id, LootRule.RoundRobin);
+            AssertSnapshot(cache, group.Id, 5ul, LootRule.RoundRobin);
         }
 
         [Fact]
@@ -74,7 +78,9 @@ namespace NexusForever.WorldServer.Tests
             });
             AssertOnlyLeaderRemains(cache, group.Id);
 
+            group.Revision = 2ul;
             Assert.True(cache.TryUpsert(group));
+            group.Revision = 3ul;
             await handler.Handle(new GroupMemberLeftMessage
             {
                 Group         = group,
@@ -93,6 +99,7 @@ namespace NexusForever.WorldServer.Tests
             InternalGroup group = CreateGroup();
             Assert.True(cache.TryUpsert(group));
 
+            group.Revision = 2ul;
             await handler.Handle(new GroupDisbandedMessage { Group = group });
             await handler.Handle(new GroupMemberLeftMessage
             {
@@ -119,6 +126,7 @@ namespace NexusForever.WorldServer.Tests
             var handler = new GroupSnapshotHandler(cache);
             InternalGroup group = CreateGroup();
             Assert.True(cache.TryUpsert(group));
+            group.Revision = 2ul;
 
             await handler.Handle(new GroupMemberRemovedMessage
             {
@@ -143,6 +151,7 @@ namespace NexusForever.WorldServer.Tests
             var handler = new GroupSnapshotHandler(cache);
             InternalGroup group = CreateGroup();
             Assert.True(cache.TryUpsert(group));
+            group.Revision = 2ul;
 
             await handler.Handle(new GroupMemberRemovedMessage
             {
@@ -152,6 +161,8 @@ namespace NexusForever.WorldServer.Tests
             });
 
             Assert.False(cache.TryGet(group.Id, out _));
+            Assert.False(cache.TryUpsert(group));
+            group.Revision = 3ul;
             Assert.True(cache.TryUpsert(group));
         }
 
@@ -162,6 +173,7 @@ namespace NexusForever.WorldServer.Tests
             var handler = new GroupSnapshotHandler(cache);
             InternalGroup group = CreateGroup();
             Assert.True(cache.TryUpsert(group));
+            group.Revision = 2ul;
 
             await handler.Handle(new GroupMemberLeftMessage
             {
@@ -173,9 +185,33 @@ namespace NexusForever.WorldServer.Tests
             Assert.False(cache.TryGet(group.Id, out _));
         }
 
-        private static void AssertSnapshot(GroupSnapshotCache cache, ulong groupId, LootRule normalRule)
+        [Fact]
+        public async Task StaleMalformedRemovalCannotEvictNewerSnapshot()
+        {
+            var cache = new GroupSnapshotCache();
+            var handler = new GroupSnapshotHandler(cache);
+            InternalGroup current = CreateGroup();
+            current.Revision = 5ul;
+            Assert.True(cache.TryUpsert(current));
+            Assert.True(cache.TryGet(current.Id, out GroupSnapshot expected));
+
+            InternalGroup stale = CreateGroup();
+            stale.Revision = 4ul;
+            await handler.Handle(new GroupMemberRemovedMessage
+            {
+                Group         = stale,
+                RemovedMember = stale.Members[1],
+                Reason        = (RemoveReason)0,
+            });
+
+            Assert.True(cache.TryGet(current.Id, out GroupSnapshot actual));
+            Assert.Same(expected, actual);
+        }
+
+        private static void AssertSnapshot(GroupSnapshotCache cache, ulong groupId, ulong revision, LootRule normalRule)
         {
             Assert.True(cache.TryGet(groupId, out GroupSnapshot snapshot));
+            Assert.Equal(revision, snapshot.Revision);
             Assert.Equal(normalRule, snapshot.NormalRule);
             Assert.Equal(2, snapshot.Members.Length);
         }
@@ -193,6 +229,7 @@ namespace NexusForever.WorldServer.Tests
             return new InternalGroup
             {
                 Id               = 42ul,
+                Revision         = 1ul,
                 Flags            = GroupFlags.OpenWorld,
                 NormalRule       = LootRule.RoundRobin,
                 ThresholdRule    = LootRule.NeedBeforeGreed,

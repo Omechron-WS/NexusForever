@@ -9,6 +9,9 @@ namespace NexusForever.Server.GroupServer.Group
     {
         public static async Task<InternalGroup> ToInternalGroup(this Group group)
         {
+            if (group.Revision == 0ul)
+                throw new InvalidOperationException("Group revision must be nonzero.");
+
             var members = new List<InternalGroupMember>();
             foreach (GroupMember member in group.GetMembers())
                 members.Add(await member.ToInternalGroupMember());
@@ -16,6 +19,7 @@ namespace NexusForever.Server.GroupServer.Group
             var internalGroup = new InternalGroup
             {
                 Id               = group.Id,
+                Revision         = group.Revision,
                 Flags            = group.Flags,
                 NormalRule       = group.LootRule,
                 ThresholdRule    = group.LootRuleThreshold,

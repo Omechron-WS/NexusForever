@@ -14,6 +14,7 @@ namespace NexusForever.Server.GroupServer.Group
         public GroupModel Model { get; private set; }
 
         public ulong Id => Model.GroupId;
+        public ulong Revision => Model.Revision;
 
         public GroupFlags Flags
         {
@@ -99,6 +100,14 @@ namespace NexusForever.Server.GroupServer.Group
         private readonly Dictionary<Game.Static.Group.GroupMarker, GroupMarker> _markers = [];
         private readonly Dictionary<Identity, GroupMember> _members = [];
         private readonly Dictionary<Identity, GroupInvite> _invites = [];
+
+        internal void AdvanceRevision()
+        {
+            if (Revision == 0ul)
+                throw new InvalidOperationException("Group revision must be nonzero.");
+
+            Model.Revision = checked(Revision + 1ul);
+        }
 
         #region Dependency Injection
 
@@ -229,12 +238,14 @@ namespace NexusForever.Server.GroupServer.Group
             if (GetMember(character.Identity) != null)
                 return null;
 
-            Leader ??= character.Identity;
-
             var member = _serviceProvider.GetRequiredService<GroupMember>();
             member.Initialise(this);
             member.Identity = character.Identity;
             member.Index    = NextMemberId();
+
+            AdvanceRevision();
+            Leader ??= character.Identity;
+
             member.Flags    = Leader == character.Identity ? GroupMemberInfoFlags.GroupAdminFlags : GroupMemberInfoFlags.GroupMemberFlags;
             _members.Add(member.Identity, member);
 
@@ -301,6 +312,8 @@ namespace NexusForever.Server.GroupServer.Group
                 await PromoteMemberAsync(newLeader);
             }
 
+            AdvanceRevision();
+
             Character.Character character = await _characterManager.GetCharacterRemoteAsync(member.Identity);
             await character?.RemoveGroupAsync(this, removeReason);
 
@@ -358,6 +371,8 @@ namespace NexusForever.Server.GroupServer.Group
         /// </summary>
         public async Task DisbandAsync()
         {
+            AdvanceRevision();
+
             await _messagePublisher.PublishAsync(new GroupDisbandedMessage
             {
                 Group = await this.ToInternalGroup()
@@ -641,9 +656,13 @@ namespace NexusForever.Server.GroupServer.Group
 
         private async Task PromoteMemberAsync(GroupMember promotee)
         {
+            if (promotee.Identity == Leader)
+                return;
+
             GroupMember leaderMember = GetMember(Leader);
             await leaderMember.RemoveFlagAsync(GroupMemberInfoFlags.GroupAdminFlags, fromPromotion: true);
 
+            AdvanceRevision();
             Leader = promotee.Identity;
 
             await promotee.SetFlagAsync(GroupMemberInfoFlags.GroupAdminFlags, fromPromotion: true);
@@ -690,7 +709,11 @@ namespace NexusForever.Server.GroupServer.Group
                 return GroupActionResult.FlagsFailed;
 
             bool setToRaid = !IsRaid && groupFlags.HasFlag(GroupFlags.Raid);
-            Flags = groupFlags;
+            if (Flags != groupFlags)
+            {
+                AdvanceRevision();
+                Flags = groupFlags;
+            }
 
             await _messagePublisher.PublishAsync(new GroupFlagsUpdatedMessage
             {
@@ -725,10 +748,17 @@ namespace NexusForever.Server.GroupServer.Group
             if (member.Identity != Leader)
                 return GroupActionResult.ChangeSettingsFailed;
 
-            LootRule          = normalRule;
-            LootRuleThreshold = thresholdRule;
-            LootThreshold     = thresholdQuality;
-            LootRuleHarvest   = harvestRule;
+            if (LootRule != normalRule
+                || LootRuleThreshold != thresholdRule
+                || LootThreshold != thresholdQuality
+                || LootRuleHarvest != harvestRule)
+            {
+                AdvanceRevision();
+                LootRule          = normalRule;
+                LootRuleThreshold = thresholdRule;
+                LootThreshold     = thresholdQuality;
+                LootRuleHarvest   = harvestRule;
+            }
 
             await _messagePublisher.PublishAsync(new GroupLootRulesUpdatedMessage
             {
@@ -759,9 +789,10 @@ namespace NexusForever.Server.GroupServer.Group
 
             foreach (GroupMember member in _members.Values)
             {
-                // deliberatley not using RemoveFlagAsync here to avoid sending 2 messages
-                member.Flags &= ~(GroupMemberInfoFlags.HasSetReady | GroupMemberInfoFlags.Ready);
-                await member.SetFlagAsync(GroupMemberInfoFlags.Pending);
+                GroupMemberInfoFlags flags = member.Flags
+                    & ~(GroupMemberInfoFlags.HasSetReady | GroupMemberInfoFlags.Ready);
+                flags |= GroupMemberInfoFlags.Pending;
+                await member.SetFlagsAsync(flags);
             }
 
             await _messagePublisher.PublishAsync(new GroupReadyCheckStartedMessage

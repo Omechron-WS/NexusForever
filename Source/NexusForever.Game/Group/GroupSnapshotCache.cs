@@ -11,14 +11,14 @@ namespace NexusForever.Game.Group
     /// Stores validated immutable copies of authoritative group-server messages.
     /// </summary>
     /// <remarks>
-    /// Up to 65,536 distinct disbanded group identifiers are retained as FIFO tombstones by first observation.
-    /// This bounds memory while covering a conservative delayed-delivery window. Once a tombstone is evicted,
-    /// an arbitrarily late message for that identifier can create a snapshot again because group messages contain
-    /// no revision. The cache therefore represents the last validated delivered state and is not sole loot authority.
+    /// Up to 65,536 rejected or disbanded group revision barriers are retained in first-observation order.
+    /// This bounds memory while covering a conservative delayed-delivery window. Once a barrier is evicted, an
+    /// arbitrarily late message for that identifier can create a snapshot again. Revisions prevent delivered state
+    /// from regressing, but do not prove freshness or complete delivery. The cache is therefore not sole loot authority.
     /// </remarks>
     public sealed class GroupSnapshotCache : IGroupSnapshotCache
     {
-        internal const int DefaultDisbandTombstoneCapacity = 65_536;
+        internal const int DefaultRevisionBarrierCapacity = 65_536;
 
         private const GroupFlags SupportedGroupFlags = GroupFlags.OpenWorld
             | GroupFlags.Raid
@@ -43,23 +43,30 @@ namespace NexusForever.Game.Group
             | GroupMemberInfoFlags.HasSetReady;
 
         private readonly ConcurrentDictionary<ulong, GroupSnapshot> snapshots = [];
-        private readonly HashSet<ulong> disbandTombstones = [];
-        private readonly Queue<ulong> disbandTombstoneOrder = [];
+        private readonly Dictionary<ulong, RevisionBarrier> revisionBarriers = [];
+        private readonly LinkedList<ulong> revisionBarrierOrder = [];
         private readonly object mutationSyncRoot = new();
-        private readonly int disbandTombstoneCapacity;
+        private readonly int revisionBarrierCapacity;
+
+        private sealed class RevisionBarrier
+        {
+            public required ulong Revision { get; set; }
+            public required bool Terminal { get; set; }
+            public required LinkedListNode<ulong> OrderNode { get; init; }
+        }
 
         /// <summary>
-        /// Create a group snapshot cache with the production tombstone capacity.
+        /// Create a group snapshot cache with the production revision-barrier capacity.
         /// </summary>
         public GroupSnapshotCache()
-            : this(DefaultDisbandTombstoneCapacity)
+            : this(DefaultRevisionBarrierCapacity)
         {
         }
 
-        internal GroupSnapshotCache(int disbandTombstoneCapacity)
+        internal GroupSnapshotCache(int revisionBarrierCapacity)
         {
-            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(disbandTombstoneCapacity);
-            this.disbandTombstoneCapacity = disbandTombstoneCapacity;
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(revisionBarrierCapacity);
+            this.revisionBarrierCapacity = revisionBarrierCapacity;
         }
 
         /// <inheritdoc />
@@ -75,15 +82,18 @@ namespace NexusForever.Game.Group
         }
 
         /// <summary>
-        /// Validate and atomically replace the snapshot for an authoritative group payload.
-        /// Invalid payloads leave the previous valid snapshot unchanged.
+        /// Validate and atomically apply an authoritative group payload by revision.
+        /// A malformed payload at or above the current revision evicts stale authorisation and records a barrier.
         /// </summary>
         /// <param name="group">Mutable internal group payload to copy.</param>
         /// <returns>True when a validated snapshot was stored; otherwise false.</returns>
         public bool TryUpsert(InternalGroup group)
         {
             if (!TryCreateSnapshot(group, null, out GroupSnapshot snapshot))
+            {
+                RejectMalformed(group);
                 return false;
+            }
 
             return TryStoreSnapshot(snapshot);
         }
@@ -101,7 +111,9 @@ namespace NexusForever.Game.Group
             if (!IsValidIdentity(removedIdentity)
                 || !TryCreateSnapshot(group, removedIdentity, out GroupSnapshot snapshot))
             {
-                Evict(groupId);
+                if (group != null && groupId != 0ul && group.Revision != 0ul)
+                    Reject(groupId, group.Revision);
+
                 return false;
             }
 
@@ -109,44 +121,74 @@ namespace NexusForever.Game.Group
         }
 
         /// <summary>
-        /// Evict live state for a group without clearing a disband tombstone.
+        /// Reject an invalid authoritative payload without allowing stale invalid data to evict newer state.
         /// </summary>
         /// <param name="groupId">Authoritative group identifier.</param>
-        public void Evict(ulong groupId)
+        /// <param name="revision">Revision carried by the invalid payload.</param>
+        /// <returns>True when the invalid payload established or advanced a rejection barrier.</returns>
+        public bool Reject(ulong groupId, ulong revision)
         {
-            if (groupId == 0ul)
-                return;
-
-            lock (mutationSyncRoot)
-                snapshots.TryRemove(groupId, out _);
-        }
-
-        /// <summary>
-        /// Atomically evict and add a bounded tombstone for a disbanded group.
-        /// </summary>
-        /// <remarks>
-        /// Duplicate delivery does not consume additional capacity. When capacity is exceeded, the oldest
-        /// tombstone is evicted deterministically and can no longer reject arbitrarily delayed stale messages.
-        /// </remarks>
-        /// <param name="groupId">Authoritative group identifier.</param>
-        /// <returns>True when the identifier was valid; otherwise false.</returns>
-        public bool MarkDisbanded(ulong groupId)
-        {
-            if (groupId == 0ul)
+            if (groupId == 0ul || revision == 0ul)
                 return false;
 
             lock (mutationSyncRoot)
             {
-                snapshots.TryRemove(groupId, out _);
-                if (!disbandTombstones.Add(groupId))
-                    return true;
-
-                disbandTombstoneOrder.Enqueue(groupId);
-                if (disbandTombstoneOrder.Count > disbandTombstoneCapacity)
+                if (revisionBarriers.TryGetValue(groupId, out RevisionBarrier barrier))
                 {
-                    ulong expiredGroupId = disbandTombstoneOrder.Dequeue();
-                    disbandTombstones.Remove(expiredGroupId);
+                    if (barrier.Terminal || revision <= barrier.Revision)
+                        return false;
+
+                    barrier.Revision = revision;
+                    return true;
                 }
+
+                if (snapshots.TryGetValue(groupId, out GroupSnapshot snapshot)
+                    && revision < snapshot.Revision)
+                    return false;
+
+                snapshots.TryRemove(groupId, out _);
+                SetRevisionBarrier(groupId, revision, terminal: false);
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Atomically evict and add a bounded terminal revision barrier for a disbanded group.
+        /// </summary>
+        /// <remarks>
+        /// Duplicate delivery does not consume additional capacity. Group identifiers must not be reused. When
+        /// capacity is exceeded, the oldest barrier is evicted and can no longer reject arbitrarily delayed messages.
+        /// </remarks>
+        /// <param name="groupId">Authoritative group identifier.</param>
+        /// <param name="revision">Terminal group revision.</param>
+        /// <returns>True when the terminal revision was applied or was an identical duplicate; otherwise false.</returns>
+        public bool MarkDisbanded(ulong groupId, ulong revision)
+        {
+            if (groupId == 0ul || revision == 0ul)
+                return false;
+
+            lock (mutationSyncRoot)
+            {
+                if (revisionBarriers.TryGetValue(groupId, out RevisionBarrier barrier))
+                {
+                    if (revision < barrier.Revision)
+                        return false;
+
+                    if (barrier.Terminal && revision == barrier.Revision)
+                        return true;
+
+                    barrier.Revision = revision;
+                    barrier.Terminal = true;
+                    snapshots.TryRemove(groupId, out _);
+                    return true;
+                }
+
+                if (snapshots.TryGetValue(groupId, out GroupSnapshot snapshot)
+                    && revision < snapshot.Revision)
+                    return false;
+
+                snapshots.TryRemove(groupId, out _);
+                SetRevisionBarrier(groupId, revision, terminal: true);
             }
 
             return true;
@@ -156,12 +198,99 @@ namespace NexusForever.Game.Group
         {
             lock (mutationSyncRoot)
             {
-                if (disbandTombstones.Contains(snapshot.Id))
-                    return false;
+                if (revisionBarriers.TryGetValue(snapshot.Id, out RevisionBarrier barrier))
+                {
+                    if (barrier.Terminal || snapshot.Revision <= barrier.Revision)
+                        return false;
+
+                    RemoveRevisionBarrier(snapshot.Id);
+                }
+
+                if (snapshots.TryGetValue(snapshot.Id, out GroupSnapshot current))
+                {
+                    if (snapshot.Revision < current.Revision)
+                        return false;
+
+                    if (snapshot.Revision == current.Revision)
+                    {
+                        if (HasEquivalentAuthority(current, snapshot))
+                            return true;
+
+                        snapshots.TryRemove(snapshot.Id, out _);
+                        SetRevisionBarrier(snapshot.Id, snapshot.Revision, terminal: false);
+                        return false;
+                    }
+                }
 
                 snapshots[snapshot.Id] = snapshot;
                 return true;
             }
+        }
+
+        private void RejectMalformed(InternalGroup group)
+        {
+            if (group != null && group.Id != 0ul && group.Revision != 0ul)
+                Reject(group.Id, group.Revision);
+        }
+
+        private void SetRevisionBarrier(ulong groupId, ulong revision, bool terminal)
+        {
+            if (revisionBarriers.TryGetValue(groupId, out RevisionBarrier existing))
+            {
+                existing.Revision = revision;
+                existing.Terminal = terminal;
+                return;
+            }
+
+            LinkedListNode<ulong> orderNode = revisionBarrierOrder.AddLast(groupId);
+            revisionBarriers.Add(groupId, new RevisionBarrier
+            {
+                Revision  = revision,
+                Terminal  = terminal,
+                OrderNode = orderNode,
+            });
+
+            if (revisionBarriers.Count <= revisionBarrierCapacity)
+                return;
+
+            ulong expiredGroupId = revisionBarrierOrder.First.Value;
+            RemoveRevisionBarrier(expiredGroupId);
+        }
+
+        private void RemoveRevisionBarrier(ulong groupId)
+        {
+            if (!revisionBarriers.Remove(groupId, out RevisionBarrier barrier))
+                return;
+
+            revisionBarrierOrder.Remove(barrier.OrderNode);
+        }
+
+        private static bool HasEquivalentAuthority(GroupSnapshot first, GroupSnapshot second)
+        {
+            if (first.Id != second.Id
+                || first.Revision != second.Revision
+                || first.Flags != second.Flags
+                || first.NormalRule != second.NormalRule
+                || first.ThresholdRule != second.ThresholdRule
+                || first.ThresholdQuality != second.ThresholdQuality
+                || first.HarvestRule != second.HarvestRule
+                || first.LeaderCharacterId != second.LeaderCharacterId
+                || first.LeaderRealmId != second.LeaderRealmId
+                || first.Members.Length != second.Members.Length)
+                return false;
+
+            for (int i = 0; i < first.Members.Length; i++)
+            {
+                GroupMemberSnapshot firstMember = first.Members[i];
+                GroupMemberSnapshot secondMember = second.Members[i];
+                if (firstMember.CharacterId != secondMember.CharacterId
+                    || firstMember.RealmId != secondMember.RealmId
+                    || firstMember.GroupIndex != secondMember.GroupIndex
+                    || firstMember.Flags != secondMember.Flags)
+                    return false;
+            }
+
+            return true;
         }
 
         private static bool TryCreateSnapshot(
@@ -173,6 +302,7 @@ namespace NexusForever.Game.Group
 
             if (group == null
                 || group.Id == 0ul
+                || group.Revision == 0ul
                 || group.Leader == null
                 || !IsValidIdentity(group.Leader)
                 || group.Members == null
@@ -190,7 +320,7 @@ namespace NexusForever.Game.Group
 
             var identities = new HashSet<(ulong CharacterId, ushort RealmId)>();
             var indexes = new HashSet<uint>();
-            var members = ImmutableArray.CreateBuilder<GroupMemberSnapshot>(group.Members.Count);
+            var members = new List<GroupMemberSnapshot>(group.Members.Count);
             bool removedMemberFound = false;
 
             foreach (Network.Internal.Message.Group.Shared.GroupMember member in group.Members)
@@ -233,6 +363,7 @@ namespace NexusForever.Game.Group
             snapshot = new GroupSnapshot
             {
                 Id                = group.Id,
+                Revision          = group.Revision,
                 Flags             = group.Flags,
                 NormalRule        = group.NormalRule,
                 ThresholdRule     = group.ThresholdRule,
@@ -240,7 +371,9 @@ namespace NexusForever.Game.Group
                 HarvestRule       = group.HarvestRule,
                 LeaderCharacterId = group.Leader.Id,
                 LeaderRealmId     = group.Leader.RealmId,
-                Members           = members.ToImmutable(),
+                Members           = members
+                    .OrderBy(member => member.GroupIndex)
+                    .ToImmutableArray(),
             };
 
             return true;

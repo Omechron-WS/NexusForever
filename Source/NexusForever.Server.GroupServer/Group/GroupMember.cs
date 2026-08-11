@@ -136,14 +136,7 @@ namespace NexusForever.Server.GroupServer.Group
         /// <param name="flags">Flags to set.</param>
         public async Task SetFlagAsync(GroupMemberInfoFlags flags, bool fromPromotion = false)
         {
-            Flags |= flags;
-
-            await _messagePublisher.PublishAsync(new GroupMemberFlagsUpdatedMessage
-            {
-                Group         = await Group.ToInternalGroup(),
-                Member        = await this.ToInternalGroupMember(),
-                FromPromotion = fromPromotion
-            });
+            await SetFlagsAsync(Flags | flags, fromPromotion);
         }
 
         /// <summary>
@@ -152,7 +145,21 @@ namespace NexusForever.Server.GroupServer.Group
         /// <param name="flags">Flags to unset.</param>
         public async Task RemoveFlagAsync(GroupMemberInfoFlags flags, bool fromPromotion = false)
         {
-            Flags &= ~flags;
+            await SetFlagsAsync(Flags & ~flags, fromPromotion);
+        }
+
+        /// <summary>
+        /// Replace group member flags and publish the resulting authoritative group state.
+        /// </summary>
+        /// <param name="flags">Complete replacement flags.</param>
+        /// <param name="fromPromotion">Whether the update is part of a leader promotion.</param>
+        internal async Task SetFlagsAsync(GroupMemberInfoFlags flags, bool fromPromotion = false)
+        {
+            if (Flags != flags)
+            {
+                Group.AdvanceRevision();
+                Flags = flags;
+            }
 
             await _messagePublisher.PublishAsync(new GroupMemberFlagsUpdatedMessage
             {
