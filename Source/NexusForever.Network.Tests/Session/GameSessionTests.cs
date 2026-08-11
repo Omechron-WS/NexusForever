@@ -84,7 +84,7 @@ namespace NexusForever.Network.Tests.Session
             using ConnectedSocketPair sockets = await ConnectedSocketPair.CreateAsync();
             session.OnAccept(sockets.Server);
 
-            session.EnqueueMessageEncrypted(new TestMessage(0x7E));
+            Assert.True(session.TryEnqueueMessageEncrypted(new TestMessage(0x7E)));
 
             byte[] inner = [.. BitConverter.GetBytes((ushort)GameMessageOpcode.ServerLogout), 0x7E];
             ulong key = PacketCrypt.GetKeyFromAuthBuildAndMessage();
@@ -123,6 +123,32 @@ namespace NexusForever.Network.Tests.Session
         }
 
         [Fact]
+        public async Task TryEnqueueMessageEncrypted_SaturatedQueueReturnsFalse()
+        {
+            var adapter = new BlockingSocketSendAdapter();
+            TestGameSession session = CreateSendingSession(adapter, new NetworkConfig
+            {
+                MaximumPendingSendBytes  = 64,
+                MaximumPendingSendFrames = 1
+            });
+            using ConnectedSocketPair sockets = await ConnectedSocketPair.CreateAsync();
+            session.OnAccept(sockets.Server);
+
+            Assert.True(session.TryEnqueueMessageEncrypted(new TestMessage(0xAA)));
+            BlockingSendRequest request = await adapter.NextRequestAsync();
+            Assert.False(session.TryEnqueueMessageEncrypted(new TestMessage(0xBB)));
+
+            Assert.False(session.CanProcessOutgoingPackets);
+            Assert.Equal(DisconnectState.Pending, session.ConnectionState);
+            Assert.False(request.CancellationToken.IsCancellationRequested);
+
+            session.Update(0d);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => session.OutboundSendCompletion);
+            Assert.True(request.CancellationToken.IsCancellationRequested);
+            Assert.True(session.CanDispose());
+        }
+
+        [Fact]
         public void EnqueueMessages_OutputDisabled_DoesNotSerialiseMessages()
         {
             TestGameSession session = CreateSendingSession(new RecordingSocketSendAdapter(), new NetworkConfig());
@@ -135,6 +161,72 @@ namespace NexusForever.Network.Tests.Session
 
             Assert.Equal(0, plainMessage.WriteCount);
             Assert.Equal(0, encryptedMessage.WriteCount);
+        }
+
+        [Fact]
+        public void TryEnqueueMessageEncrypted_OutputDisabledReturnsFalseWithoutSerialising()
+        {
+            TestGameSession session = CreateSendingSession(new RecordingSocketSendAdapter(), new NetworkConfig());
+            var message = new CountingMessage();
+            session.CanProcessOutgoingPackets = false;
+
+            bool queued = session.TryEnqueueMessageEncrypted(message);
+
+            Assert.False(queued);
+            Assert.Equal(0, message.WriteCount);
+        }
+
+        [Fact]
+        public async Task TryEnqueueMessageEncrypted_DisconnectingReturnsFalseWithoutSerialising()
+        {
+            TestGameSession session = CreateSendingSession(new RecordingSocketSendAdapter(), new NetworkConfig());
+            using ConnectedSocketPair sockets = await ConnectedSocketPair.CreateAsync();
+            session.OnAccept(sockets.Server);
+            var message = new CountingMessage();
+            session.ForceDisconnect();
+
+            bool queued = session.TryEnqueueMessageEncrypted(message);
+
+            Assert.False(queued);
+            Assert.Equal(0, message.WriteCount);
+
+            await DisconnectAsync(session);
+        }
+
+        [Fact]
+        public async Task TryEnqueueMessageEncrypted_SerialisationFailureReturnsFalse()
+        {
+            TestGameSession session = CreateSendingSession(new RecordingSocketSendAdapter(), new NetworkConfig());
+            using ConnectedSocketPair sockets = await ConnectedSocketPair.CreateAsync();
+            session.OnAccept(sockets.Server);
+            var message = new ThrowingMessage();
+
+            Assert.False(session.TryEnqueueMessageEncrypted(message));
+            Assert.Equal(1, message.WriteCount);
+            Assert.True(session.CanProcessOutgoingPackets);
+
+            await DisconnectAsync(session);
+        }
+
+        [Fact]
+        public void TryEnqueueMessageEncrypted_UnknownOpcodeReturnsFalseWithoutSerialising()
+        {
+            TestGameSession session = CreateSendingSession(new RecordingSocketSendAdapter(), new NetworkConfig());
+            var message = new UnknownMessage();
+
+            Assert.False(session.TryEnqueueMessageEncrypted(message));
+            Assert.Equal(0, message.WriteCount);
+            Assert.True(session.CanProcessOutgoingPackets);
+        }
+
+        [Fact]
+        public void TryEnqueueMessageEncrypted_MissingEncryptionReturnsFalseAndDisconnects()
+        {
+            TestGameSession session = CreateSendingSession(new RecordingSocketSendAdapter(), new NetworkConfig());
+
+            Assert.False(session.TryEnqueueMessageEncrypted(new TestMessage(0xAA)));
+            Assert.False(session.CanProcessOutgoingPackets);
+            Assert.Equal(DisconnectState.Pending, session.ConnectionState);
         }
 
         private static ConcurrentQueue<ClientGamePacket> GetIncomingPackets(GameSession session)
@@ -153,6 +245,7 @@ namespace NexusForever.Network.Tests.Session
                 {
                     TestMessage          => GameMessageOpcode.ServerLogout,
                     CountingMessage      => GameMessageOpcode.ServerLogout,
+                    ThrowingMessage      => GameMessageOpcode.ServerLogout,
                     ServerRealmEncrypted => GameMessageOpcode.ServerRealmEncrypted,
                     _                    => null
                 });
@@ -224,6 +317,27 @@ namespace NexusForever.Network.Tests.Session
         }
 
         private sealed class CountingMessage : IWritable
+        {
+            public int WriteCount { get; private set; }
+
+            public void Write(GamePacketWriter writer)
+            {
+                WriteCount++;
+            }
+        }
+
+        private sealed class ThrowingMessage : IWritable
+        {
+            public int WriteCount { get; private set; }
+
+            public void Write(GamePacketWriter writer)
+            {
+                WriteCount++;
+                throw new InvalidOperationException();
+            }
+        }
+
+        private sealed class UnknownMessage : IWritable
         {
             public int WriteCount { get; private set; }
 

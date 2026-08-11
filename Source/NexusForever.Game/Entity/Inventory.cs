@@ -433,13 +433,56 @@ namespace NexusForever.Game.Entity
                     out Dictionary<uint, (IItemInfo Info, uint Amount)> additionAmounts))
                 return false;
 
+            ApplyItemExchange(removalAmounts, additionAmounts, reason);
+            return true;
+        }
+
+        /// <summary>
+        /// Admit an inventory exchange before applying it, so associated state can commit whenever mutation may occur.
+        /// </summary>
+        /// <remarks>
+        /// A <see langword="false"/> result guarantees no inventory mutation. Once admission succeeds, this method
+        /// returns <see langword="true"/> even when an unexpected application or notification error is contained,
+        /// because retrying the exchange could duplicate an already-applied mutation.
+        /// </remarks>
+        /// <param name="removals">Item identifiers and quantities to remove when present.</param>
+        /// <param name="additions">Item templates and quantities that must all fit.</param>
+        /// <param name="reason">Reason reported for every item update.</param>
+        /// <returns><see langword="false"/> only when admission is rejected before mutation; otherwise <see langword="true"/>.</returns>
+        public bool TryAdmitItemExchange(
+            IEnumerable<KeyValuePair<uint, uint>> removals,
+            IEnumerable<KeyValuePair<IItemInfo, uint>> additions,
+            ItemUpdateReason reason = ItemUpdateReason.NoReason)
+        {
+            ArgumentNullException.ThrowIfNull(removals);
+            ArgumentNullException.ThrowIfNull(additions);
+
+            if (!TryPrepareItemExchange(removals, additions, out Dictionary<uint, uint> removalAmounts,
+                    out Dictionary<uint, (IItemInfo Info, uint Amount)> additionAmounts))
+                return false;
+
+            try
+            {
+                ApplyItemExchange(removalAmounts, additionAmounts, reason);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, "An admitted inventory exchange failed during application.");
+            }
+
+            return true;
+        }
+
+        private void ApplyItemExchange(
+            IReadOnlyDictionary<uint, uint> removalAmounts,
+            IReadOnlyDictionary<uint, (IItemInfo Info, uint Amount)> additionAmounts,
+            ItemUpdateReason reason)
+        {
             foreach ((uint itemId, uint amount) in removalAmounts.OrderBy(pair => pair.Key))
                 ItemDelete(itemId, amount, reason);
 
             foreach ((_, (IItemInfo info, uint amount)) in additionAmounts.OrderBy(pair => pair.Key))
                 ItemCreate(InventoryLocation.Inventory, info, amount, reason);
-
-            return true;
         }
 
         private bool TryPrepareItemExchange(

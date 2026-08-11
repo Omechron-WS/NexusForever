@@ -25,6 +25,12 @@ namespace NexusForever.Network.Session
         /// </summary>
         void EnqueueMessageEncrypted(IWritable message);
 
+        /// <summary>
+        /// Attempt to enqueue <see cref="IWritable"/> to be sent encrypted to the client.
+        /// </summary>
+        /// <returns><see langword="true"/> only when the complete encrypted frame was admitted to the send queue.</returns>
+        bool TryEnqueueMessageEncrypted(IWritable message);
+
         void EnqueueMessageEncrypted(uint opcode, string hex);
 
         void HandlePacket(ClientGamePacket packet);

@@ -88,6 +88,16 @@ namespace NexusForever.Game.Abstract.Entity
         void QuestShare(ushort questId);
 
         /// <summary>
+        /// Returns whether the owner currently has the supplied quest in a shareable state.
+        /// </summary>
+        bool CanShareQuest(ushort questId);
+
+        /// <summary>
+        /// Offer a shared quest to the owner after validating the supplied sharer identity and group.
+        /// </summary>
+        bool OfferQuestShare(ushort questId, uint sharerGuid, ulong sharerCharacterId, ulong groupAssociation);
+
+        /// <summary>
         /// Accept or deny a shared quest from another <see cref="IPlayer"/>.
         /// </summary>
         void QuestShareResult(ushort questId, bool result);

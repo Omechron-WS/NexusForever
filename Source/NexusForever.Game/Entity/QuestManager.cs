@@ -3,6 +3,7 @@ using NexusForever.Database.Character;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game.Abstract;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Abstract.Prerequisite;
 using NexusForever.Game.Abstract.Quest;
 using NexusForever.Game.Persistence;
 using NexusForever.Game.Prerequisite;
@@ -15,6 +16,7 @@ using NexusForever.Game.Static.Quest;
 using NexusForever.Game.Static.Reputation;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
+using NexusForever.Network.Session;
 using NexusForever.Network.World.Message.Model;
 using NexusForever.Network.World.Message.Static;
 using NexusForever.Shared;
@@ -25,6 +27,7 @@ namespace NexusForever.Game.Entity
     public class QuestManager : IQuestManager
     {
         private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+        private const double QuestShareDuration = 10d;
 
         [Flags]
         private enum GetQuestFlags
@@ -40,6 +43,14 @@ namespace NexusForever.Game.Entity
         private IQuestRewardManager questRewardManager;
         private readonly IDisableManager disableManager;
         private readonly Func<DateTime> utcNow;
+        private readonly IItemManager itemManager;
+        private readonly IPrerequisiteManager prerequisiteManager;
+        private readonly IGameTableManager gameTableManager;
+        private readonly Func<IQuestInfo, IQuest> questFactory;
+
+        private double elapsedTime;
+        private PendingQuestShare pendingQuestShare;
+        private int disposed;
 
         private readonly Dictionary<ushort, IQuest> completedQuests = new();
         private readonly Dictionary<ushort, IQuest> inactiveQuests = new();
@@ -60,13 +71,21 @@ namespace NexusForever.Game.Entity
             IGlobalQuestManager globalQuestManager,
             IQuestRewardManager questRewardManager,
             IDisableManager disableManager,
-            Func<DateTime> utcNow = null)
+            Func<DateTime> utcNow = null,
+            IItemManager itemManager = null,
+            IPrerequisiteManager prerequisiteManager = null,
+            IGameTableManager gameTableManager = null,
+            Func<IQuestInfo, IQuest> questFactory = null)
         {
-            player = owner;
-            this.globalQuestManager = globalQuestManager;
-            this.questRewardManager = questRewardManager;
-            this.disableManager = disableManager;
-            this.utcNow = utcNow ?? (() => DateTime.UtcNow);
+            player                   = owner;
+            this.globalQuestManager  = globalQuestManager;
+            this.questRewardManager  = questRewardManager;
+            this.disableManager      = disableManager;
+            this.utcNow              = utcNow ?? (() => DateTime.UtcNow);
+            this.itemManager         = itemManager;
+            this.prerequisiteManager = prerequisiteManager;
+            this.gameTableManager    = gameTableManager;
+            this.questFactory        = questFactory;
 
             foreach (CharacterQuestModel questModel in model.Quest)
             {
@@ -98,6 +117,9 @@ namespace NexusForever.Game.Entity
 
         public void Dispose()
         {
+            Interlocked.Exchange(ref disposed, 1);
+            Interlocked.Exchange(ref pendingQuestShare, null);
+
             foreach (IQuest quest in completedQuests.Values
                 .Concat(inactiveQuests.Values)
                 .Concat(activeQuests.Values))
@@ -144,6 +166,16 @@ namespace NexusForever.Game.Entity
 
         public void Update(double lastTick)
         {
+            if (double.IsFinite(lastTick) && lastTick > 0d)
+            {
+                double updatedElapsedTime = elapsedTime + lastTick;
+                elapsedTime = double.IsFinite(updatedElapsedTime) ? updatedElapsedTime : double.MaxValue;
+
+                PendingQuestShare pending = Volatile.Read(ref pendingQuestShare);
+                if (pending != null && elapsedTime >= pending.ExpiresAt)
+                    Interlocked.CompareExchange(ref pendingQuestShare, null, pending);
+            }
+
             var botchedQuests = new List<IQuest>();
             foreach (IQuest quest in activeQuests.Values)
             {
@@ -374,12 +406,13 @@ namespace NexusForever.Game.Entity
                     return false;
             }
 
-            if (info.Entry.PrerequisiteId != 0u && !PrerequisiteManager.Instance.Meets(player, info.Entry.PrerequisiteId))
+            if (info.Entry.PrerequisiteId != 0u
+                && !GetPrerequisiteManager().Meets(player, info.Entry.PrerequisiteId))
                 return false;
 
             if (!info.IsContract())
             {
-                GameFormulaEntry entry = GameTableManager.Instance.GameFormula.GetEntry(655);
+                GameFormulaEntry entry = GetGameTableManager().GameFormula?.GetEntry(655);
                 // client also hard codes 40 if entry doesn't exist
                 if (!HasActiveQuestCapacity(entry?.Dataint0 ?? 40u))
                     return false;
@@ -397,37 +430,179 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void QuestAdd(IQuestInfo info)
         {
-            // make sure player has room for all pushed items
-            if (player.Inventory.GetInventorySlotsRemaining(InventoryLocation.Inventory)
-                < info.Entry.PushedItemIds.Count(i => i != 0u))
+            ArgumentNullException.ThrowIfNull(info);
+            PrepareAndActivateQuest(info, false);
+        }
+
+        private void PrepareAndActivateQuest(IQuestInfo info, bool shared)
+        {
+            IQuest quest;
+            bool created;
+            ushort questId;
+            try
             {
-                player.SendGenericError(GenericError.ItemInventoryFull);
+                questId = (ushort)info.Entry.Id;
+                quest = GetQuest(questId);
+                created = quest == null;
+                quest ??= CreateQuest(info);
+            }
+            catch (Exception exception)
+            {
+                string qualifier = shared ? "shared " : string.Empty;
+                log.Error(exception, $"Failed to prepare {qualifier}quest {info.Entry?.Id ?? 0u} for activation.");
                 return;
             }
 
-            for (int i = 0; i < info.Entry.PushedItemIds.Length; i++)
+            try
             {
-                uint itemId = info.Entry.PushedItemIds[i];
-                if (itemId != 0u)
-                    player.Inventory.ItemCreate(InventoryLocation.Inventory, itemId, info.Entry.PushedItemCounts[i]);
+                QuestState initialState;
+                try
+                {
+                    initialState = quest.Any() ? QuestState.Accepted : QuestState.Achieved;
+                }
+                catch (Exception exception)
+                {
+                    string qualifier = shared ? "shared " : string.Empty;
+                    log.Error(exception, $"Failed to inspect {qualifier}quest {info.Entry.Id} before activation.");
+                    return;
+                }
+
+                if (!TryGrantPushedItems(info))
+                    return;
+
+                ActivateQuest(info, quest, initialState);
             }
+            finally
+            {
+                if (created
+                    && (!activeQuests.TryGetValue(questId, out IQuest activeQuest)
+                        || !ReferenceEquals(activeQuest, quest)))
+                    DisposeUntrackedQuest(quest, questId);
+            }
+        }
 
-            // TODO: virtual items
+        private void DisposeUntrackedQuest(IQuest quest, ushort questId)
+        {
+            try
+            {
+                quest.Dispose();
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to dispose untracked quest {questId}.");
+            }
+        }
 
-            IQuest quest = GetQuest((ushort)info.Entry.Id);
-            if (quest == null)
-                quest = new Quest.Quest(player, info, GetGlobalQuestManager(), null, null);
-            else
+        private void ActivateQuest(IQuestInfo info, IQuest quest, QuestState initialState)
+        {
+            ushort questId = (ushort)info.Entry.Id;
+
+            if (GetQuest(questId) != null)
                 QuestRemove(quest);
 
             quest.Flags |= QuestStateFlags.Tracked;
-            QuestState initialState = quest.Any() ? QuestState.Accepted : QuestState.Achieved;
-            quest.State = initialState;
-            activeQuests.Add((ushort)info.Entry.Id, quest);
-
             quest.InitialiseTimer();
+            activeQuests.Add(questId, quest);
+
+            try
+            {
+                // Commit dictionary membership before the client notification. A failed notification must not leave
+                // admitted pushed items without their quest; the next quest-log synchronisation repairs client state.
+                quest.State = initialState;
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to notify player {player.CharacterId} about accepted quest {questId}.");
+            }
 
             log.Trace($"Accepted new quest {info.Entry.Id}.");
+        }
+
+        private bool TryGrantPushedItems(IQuestInfo info)
+        {
+            if (!TryBuildPushedItemAdditions(info, out IReadOnlyCollection<KeyValuePair<IItemInfo, uint>> additions))
+            {
+                log.Error($"Quest {info.Entry?.Id ?? 0u} has invalid pushed item metadata.");
+                return false;
+            }
+
+            if (additions.Count == 0)
+                return true;
+
+            try
+            {
+                if (player.Inventory?.TryAdmitItemExchange(
+                    [],
+                    additions,
+                    ItemUpdateReason.Quest) == true)
+                    return true;
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to grant pushed items for quest {info.Entry.Id}.");
+                return false;
+            }
+
+            try
+            {
+                player.SendGenericError(GenericError.ItemInventoryFull);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to report insufficient inventory space for quest {info.Entry.Id}.");
+            }
+
+            return false;
+        }
+
+        private bool TryBuildPushedItemAdditions(
+            IQuestInfo info,
+            out IReadOnlyCollection<KeyValuePair<IItemInfo, uint>> additions)
+        {
+            additions = Array.Empty<KeyValuePair<IItemInfo, uint>>();
+            uint[] itemIds = info?.Entry?.PushedItemIds;
+            uint[] itemCounts = info?.Entry?.PushedItemCounts;
+            if (itemIds == null || itemCounts == null || itemIds.Length != itemCounts.Length)
+                return false;
+
+            var itemAmounts = new Dictionary<uint, uint>();
+            for (int i = 0; i < itemIds.Length; i++)
+            {
+                uint itemId = itemIds[i];
+                uint itemCount = itemCounts[i];
+                if ((itemId == 0u) != (itemCount == 0u))
+                    return false;
+                if (itemId == 0u)
+                    continue;
+
+                itemAmounts.TryGetValue(itemId, out uint current);
+                ulong updated = (ulong)current + itemCount;
+                if (updated > uint.MaxValue)
+                    return false;
+
+                itemAmounts[itemId] = (uint)updated;
+            }
+
+            var resolved = new List<KeyValuePair<IItemInfo, uint>>(itemAmounts.Count);
+            try
+            {
+                foreach ((uint itemId, uint amount) in itemAmounts.OrderBy(pair => pair.Key))
+                {
+                    IItemInfo itemInfo = GetItemManager().GetItemInfo(itemId);
+                    if (itemInfo == null)
+                        return false;
+
+                    resolved.Add(new KeyValuePair<IItemInfo, uint>(itemInfo, amount));
+                }
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to resolve pushed items for quest {info.Entry.Id}.");
+                return false;
+            }
+
+            additions = resolved;
+            return true;
         }
 
         internal bool HasActiveQuestCapacity(uint maximum)
@@ -670,6 +845,27 @@ namespace NexusForever.Game.Entity
             return disableManager ?? DisableManager.Instance;
         }
 
+        private IItemManager GetItemManager()
+        {
+            return itemManager ?? ItemManager.Instance;
+        }
+
+        private IQuest CreateQuest(IQuestInfo info)
+        {
+            return questFactory?.Invoke(info)
+                ?? new Quest.Quest(player, info, GetGlobalQuestManager(), null, null);
+        }
+
+        private IPrerequisiteManager GetPrerequisiteManager()
+        {
+            return prerequisiteManager ?? PrerequisiteManager.Instance;
+        }
+
+        private IGameTableManager GetGameTableManager()
+        {
+            return gameTableManager ?? GameTableManager.Instance;
+        }
+
         private DateTime GetUtcNow()
         {
             return QuestResetCalculator.AsUtc(utcNow());
@@ -758,27 +954,160 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void QuestShare(ushort questId)
         {
-            IQuestInfo info = GlobalQuestManager.Instance.GetQuestInfo(questId);
+            IQuestInfo info = GetGlobalQuestManager().GetQuestInfo(questId);
             if (info == null)
                 throw new ArgumentException($"Invalid quest {questId}!");
 
-            IQuest quest = GetQuest(questId);
-            if (quest == null)
-                throw new QuestException($"Player {player.CharacterId} tried to share quest {questId} which they don't have!");
-
-            if (!quest.CanShare())
+            if (!CanShareQuest(questId))
                 throw new QuestException($"Player {player.CharacterId} tried to share quest {questId} which can't be shared!");
 
-            if (player.TargetGuid == null)
+            if (player.TargetGuid is not uint targetGuid || targetGuid == 0u || targetGuid == player.Guid)
                 throw new QuestException($"Player {player.CharacterId} tried to share quest {questId} without a target!");
 
-            IPlayer recipient = player.GetVisible<IPlayer>(player.TargetGuid.Value);
-            if (recipient == null)
+            IPlayer recipient;
+            try
+            {
+                recipient = player.GetVisible<IPlayer>(targetGuid);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to resolve the recipient for quest share {questId}.");
+                return;
+            }
+
+            if (!IsValidSharePair(player, recipient))
                 throw new QuestException($"Player {player.CharacterId} tried to share quest {questId} to an invalid player!");
 
-            // TODO
+            try
+            {
+                IQuestManager recipientQuestManager = recipient.QuestManager;
+                if (recipientQuestManager == null
+                    || !recipientQuestManager.OfferQuestShare(
+                        questId,
+                        player.Guid,
+                        player.CharacterId,
+                        player.GroupAssociation))
+                    return;
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to offer quest share {questId} to player {recipient.CharacterId}.");
+                return;
+            }
 
             log.Trace($"Shared quest {questId} with player {recipient.Name}.");
+        }
+
+        /// <summary>
+        /// Returns whether the owner currently has the supplied quest in a shareable state.
+        /// </summary>
+        public bool CanShareQuest(ushort questId)
+        {
+            if (Volatile.Read(ref disposed) != 0
+                || questId == 0u
+                || questId > CommunicatorMessage.MaximumId)
+                return false;
+
+            try
+            {
+                IQuestInfo info = GetGlobalQuestManager().GetQuestInfo(questId);
+                if (info?.Entry == null
+                    || info.Entry.Id != questId
+                    || info.Entry.QuestShareEnum == 0u
+                    || GetDisableManager().IsDisabled(DisableType.Quest, questId))
+                    return false;
+
+                IQuest quest = GetQuest(questId);
+                return quest != null
+                    && !quest.PendingDelete
+                    && quest.CanShare();
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to validate quest share {questId} for player {player.CharacterId}.");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Offer a shared quest to the owner after validating the supplied sharer identity and group.
+        /// </summary>
+        public bool OfferQuestShare(
+            ushort questId,
+            uint sharerGuid,
+            ulong sharerCharacterId,
+            ulong groupAssociation)
+        {
+            if (Volatile.Read(ref disposed) != 0
+                || questId == 0u
+                || questId > CommunicatorMessage.MaximumId
+                || sharerGuid == 0u
+                || sharerCharacterId == 0ul
+                || sharerCharacterId == player.CharacterId
+                || groupAssociation == 0ul
+                || player.Guid == 0u
+                || player.CharacterId == 0ul
+                || !player.InWorld
+                || player.Map == null
+                || player.GroupAssociation != groupAssociation)
+                return false;
+
+            if (!TryResolveSharer(
+                sharerGuid,
+                sharerCharacterId,
+                groupAssociation,
+                out IPlayer sharer))
+                return false;
+
+            try
+            {
+                if (sharer.QuestManager?.CanShareQuest(questId) != true)
+                    return false;
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to validate sharer {sharerCharacterId} for quest {questId}.");
+                return false;
+            }
+
+            double expiresAt = elapsedTime + QuestShareDuration;
+            if (!double.IsFinite(expiresAt))
+                expiresAt = double.MaxValue;
+
+            var pending = new PendingQuestShare(
+                questId,
+                sharerGuid,
+                sharerCharacterId,
+                groupAssociation,
+                expiresAt);
+
+            try
+            {
+                IGameSession session = player.Session;
+                if (session == null)
+                    return false;
+
+                if (!session.TryEnqueueMessageEncrypted(new ServerQuestShared
+                {
+                    SharerUnitId = sharerGuid,
+                    QuestId     = questId
+                }))
+                    return false;
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to send quest share {questId} to player {player.CharacterId}.");
+                return false;
+            }
+
+            Interlocked.Exchange(ref pendingQuestShare, pending);
+            if (Volatile.Read(ref disposed) != 0)
+            {
+                Interlocked.CompareExchange(ref pendingQuestShare, null, pending);
+                return false;
+            }
+
+            return true;
         }
 
         /// <summary>
@@ -786,7 +1115,172 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void QuestShareResult(ushort questId, bool result)
         {
-            // TODO
+            PendingQuestShare pending = Interlocked.Exchange(ref pendingQuestShare, null);
+            if (pending == null
+                || Volatile.Read(ref disposed) != 0
+                || !result
+                || questId == 0u
+                || questId != pending.QuestId
+                || elapsedTime >= pending.ExpiresAt)
+                return;
+
+            if (player.Guid == 0u
+                || player.CharacterId == 0ul
+                || !player.InWorld
+                || player.Map == null
+                || player.GroupAssociation == 0ul
+                || player.GroupAssociation != pending.GroupAssociation)
+                return;
+
+            if (!TryResolveSharer(
+                pending.SharerGuid,
+                pending.SharerCharacterId,
+                pending.GroupAssociation,
+                out IPlayer sharer))
+                return;
+
+            try
+            {
+                if (sharer.QuestManager?.CanShareQuest(questId) != true)
+                    return;
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to revalidate sharer {pending.SharerCharacterId} for quest {questId}.");
+                return;
+            }
+
+            IQuestInfo info;
+            try
+            {
+                info = GetGlobalQuestManager().GetQuestInfo(questId);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to resolve shared quest {questId}.");
+                return;
+            }
+
+            if (!CanAcceptSharedQuest(info, questId))
+                return;
+
+            PrepareAndActivateQuest(info, true);
+        }
+
+        private bool CanAcceptSharedQuest(IQuestInfo info, ushort questId)
+        {
+            try
+            {
+                Quest2Entry entry = info?.Entry;
+                if (entry == null
+                    || entry.Id != questId
+                    || entry.QuestShareEnum == 0u
+                    || info.IsContract()
+                    || entry.PrerequisiteItem != 0u
+                    || entry.QuestIdExclusionPreq0 != 0u
+                    || entry.QuestIdExclusionPreq1 != 0u
+                    || entry.QuestIdExclusionPreq2 != 0u
+                    || HasUnsupportedVirtualPushedItems(entry)
+                    || GetDisableManager().IsDisabled(DisableType.Quest, questId))
+                    return false;
+
+                IQuest quest = GetQuest(questId);
+                if (quest != null)
+                {
+                    if (quest.PendingDelete || quest.State != QuestState.Completed)
+                        return false;
+
+                    QuestRepeatPeriod repeatPeriod = (QuestRepeatPeriod)entry.QuestRepeatPeriodEnum;
+                    if (repeatPeriod == QuestRepeatPeriod.None
+                        || !QuestResetCalculator.IsSupported(repeatPeriod)
+                        || quest.Reset == null
+                        || GetUtcNow() < QuestResetCalculator.AsUtc(quest.Reset.Value))
+                        return false;
+                }
+
+                return MeetsPrerequisites(info);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to validate shared quest {questId} for player {player.CharacterId}.");
+                return false;
+            }
+        }
+
+        private bool TryResolveSharer(
+            uint sharerGuid,
+            ulong sharerCharacterId,
+            ulong groupAssociation,
+            out IPlayer sharer)
+        {
+            sharer = null;
+            if (sharerGuid == 0u
+                || sharerCharacterId == 0ul
+                || sharerCharacterId == player.CharacterId
+                || groupAssociation == 0ul
+                || player.Map == null)
+                return false;
+
+            try
+            {
+                sharer = player.GetVisible<IPlayer>(sharerGuid);
+                return sharer != null
+                    && sharer.Guid == sharerGuid
+                    && sharer.CharacterId == sharerCharacterId
+                    && sharer.Guid != player.Guid
+                    && sharer.CharacterId != player.CharacterId
+                    && sharer.InWorld
+                    && ReferenceEquals(sharer.Map, player.Map)
+                    && sharer.GroupAssociation == groupAssociation
+                    && IsVisiblePlayer(sharer, player);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to resolve quest sharer {sharerCharacterId}.");
+                sharer = null;
+                return false;
+            }
+        }
+
+        private static bool IsValidSharePair(IPlayer sharer, IPlayer recipient)
+        {
+            if (sharer == null
+                || recipient == null
+                || sharer.Guid == 0u
+                || recipient.Guid == 0u
+                || sharer.CharacterId == 0ul
+                || recipient.CharacterId == 0ul
+                || sharer.Guid == recipient.Guid
+                || sharer.CharacterId == recipient.CharacterId
+                || !sharer.InWorld
+                || !recipient.InWorld
+                || sharer.Map == null
+                || !ReferenceEquals(sharer.Map, recipient.Map)
+                || sharer.GroupAssociation == 0ul
+                || sharer.GroupAssociation != recipient.GroupAssociation)
+                return false;
+
+            return IsVisiblePlayer(recipient, sharer);
+        }
+
+        private static bool IsVisiblePlayer(IPlayer observer, IPlayer expected)
+        {
+            IPlayer visible = observer.GetVisible<IPlayer>(expected.Guid);
+            return visible != null
+                && visible.Guid == expected.Guid
+                && visible.CharacterId == expected.CharacterId;
+        }
+
+        private static bool HasUnsupportedVirtualPushedItems(Quest2Entry entry)
+        {
+            return entry.VirtualItemIdPushed00 != 0u
+                || entry.VirtualItemIdPushed01 != 0u
+                || entry.VirtualItemIdPushed02 != 0u
+                || entry.VirtualItemIdPushed03 != 0u
+                || entry.VirtualItemPushedCount00 != 0u
+                || entry.VirtualItemPushedCount01 != 0u
+                || entry.VirtualItemPushedCount02 != 0u
+                || entry.VirtualItemPushedCount03 != 0u;
         }
 
         /// <summary>

@@ -141,6 +141,41 @@ namespace NexusForever.Game.Tests.Persistence
         }
 
         [Fact]
+        public void TryAdmitItemExchange_PreflightRejectionReturnsFalseWithoutMutation()
+        {
+            Inventory inventory = CreateInventory(1u, out Mock<IGameSession> session);
+            inventory.ItemCreate(InventoryLocation.Inventory, nonStackableItemInfo, 1u);
+            session.Invocations.Clear();
+
+            bool admitted = inventory.TryAdmitItemExchange(
+                [],
+                [new KeyValuePair<IItemInfo, uint>(stackableItemInfo, 1u)],
+                ItemUpdateReason.Quest);
+
+            Assert.False(admitted);
+            Assert.Equal(NonStackableItemId, Assert.Single(GetItems(inventory)).Id);
+            session.Verify(gameSession => gameSession.EnqueueMessageEncrypted(It.IsAny<IWritable>()), Times.Never);
+        }
+
+        [Fact]
+        public void TryAdmitItemExchange_PostMutationNotificationFailureReturnsTrueWithoutRetryingMutation()
+        {
+            Inventory inventory = CreateInventory(1u, out Mock<IGameSession> session);
+            session
+                .Setup(gameSession => gameSession.EnqueueMessageEncrypted(It.IsAny<ServerItemAdd>()))
+                .Throws<InvalidOperationException>();
+
+            bool admitted = inventory.TryAdmitItemExchange(
+                [],
+                [new KeyValuePair<IItemInfo, uint>(nonStackableItemInfo, 1u)],
+                ItemUpdateReason.Quest);
+
+            Assert.True(admitted);
+            Assert.Equal(NonStackableItemId, Assert.Single(GetItems(inventory)).Id);
+            session.Verify(gameSession => gameSession.EnqueueMessageEncrypted(It.IsAny<ServerItemAdd>()), Times.Once);
+        }
+
+        [Fact]
         public void TryItemExchange_FullBagReclamationMakesRewardFitWithQuestReason()
         {
             Inventory inventory = CreateInventory(1u, out Mock<IGameSession> session, new ItemModel

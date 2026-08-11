@@ -125,6 +125,23 @@ namespace NexusForever.Game.Abstract.Entity
             ItemUpdateReason reason = ItemUpdateReason.NoReason);
 
         /// <summary>
+        /// Admit an inventory exchange before applying it, so associated state can commit whenever mutation may occur.
+        /// </summary>
+        /// <remarks>
+        /// A <see langword="false"/> result guarantees no inventory mutation. Once admission succeeds, this method
+        /// returns <see langword="true"/> even when an unexpected application or notification error is contained,
+        /// because retrying the exchange could duplicate an already-applied mutation.
+        /// </remarks>
+        /// <param name="removals">Item identifiers and quantities to remove when present.</param>
+        /// <param name="additions">Item templates and quantities that must all fit.</param>
+        /// <param name="reason">Reason reported for every item update.</param>
+        /// <returns><see langword="false"/> only when admission is rejected before mutation; otherwise <see langword="true"/>.</returns>
+        bool TryAdmitItemExchange(
+            IEnumerable<KeyValuePair<uint, uint>> removals,
+            IEnumerable<KeyValuePair<IItemInfo, uint>> additions,
+            ItemUpdateReason reason = ItemUpdateReason.NoReason);
+
+        /// <summary>
         /// Returns if <see cref="IItem"/> can be moved to supplied <see cref="ItemLocation"/>.
         /// </summary>
         GenericError? CanMoveItem(IItem item, ItemLocation location);

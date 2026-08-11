@@ -72,38 +72,66 @@ namespace NexusForever.Network.Session
         /// </summary>
         public void EnqueueMessageEncrypted(IWritable message)
         {
+            TryEnqueueMessageEncrypted(message);
+        }
+
+        /// <summary>
+        /// Attempt to enqueue <see cref="IWritable"/> to be sent encrypted to the client.
+        /// </summary>
+        /// <returns><see langword="true"/> only when the complete encrypted frame was admitted to the send queue.</returns>
+        public bool TryEnqueueMessageEncrypted(IWritable message)
+        {
             if (!CanProcessOutgoingPackets || IsDisconnecting)
-                return;
+                return false;
 
-            GameMessageOpcode? opcode = messageManager.GetOpcode(message);
-            if (opcode == null)
-            {
-                log.Warn("Failed to send message with no attribute!");
-                return;
-            }
-
+            GameMessageOpcode? opcode;
             byte[] data;
-            using (var stream = new MemoryStream())
-            using (var writer = new GamePacketWriter(stream))
+            try
             {
+                opcode = messageManager.GetOpcode(message);
+                if (opcode == null)
+                {
+                    log.Warn("Failed to send message with no attribute!");
+                    return false;
+                }
+
+                using var stream = new MemoryStream();
+                using var writer = new GamePacketWriter(stream);
                 writer.Write(opcode.Value, 16);
                 message.Write(writer);
                 writer.FlushBits();
                 data = stream.ToArray();
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, "Failed to serialise an encrypted message.");
+                return false;
             }
 
             bool queued;
             lock (outgoingGate)
             {
                 if (!CanProcessOutgoingPackets || IsDisconnecting)
-                    return;
+                    return false;
 
-                byte[] encrypted = encryption.Encrypt(data, data.Length);
-                queued = TryEnqueueMessage(BuildEncryptedMessage(encrypted), out _);
+                try
+                {
+                    byte[] encrypted = encryption.Encrypt(data, data.Length);
+                    queued = TryEnqueueMessage(BuildEncryptedMessage(encrypted), out _);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, "Failed to encrypt or enqueue a message.");
+                    CanProcessOutgoingPackets = false;
+                    ForceDisconnect();
+                    return false;
+                }
             }
 
             if (queued)
                 log.Trace($"Sent packet {opcode}(0x{opcode:X}).");
+
+            return queued;
         }
 
         public void EnqueueMessageEncrypted(uint opcode, string hex)
