@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Globalization;
 using NexusForever.WorldServer.Command.Context;
 
 namespace NexusForever.WorldServer.Command.Convert
@@ -8,7 +9,7 @@ namespace NexusForever.WorldServer.Command.Convert
     {
         public object Convert(ICommandContext context, ParameterQueue queue)
         {
-            return TimeSpan.Parse(queue.Dequeue());
+            return TimeSpan.Parse(queue.Dequeue(), CultureInfo.InvariantCulture);
         }
     }
 }

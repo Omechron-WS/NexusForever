@@ -8,7 +8,10 @@ namespace NexusForever.WorldServer.Command.Convert
     {
         public object Convert(ICommandContext context, ParameterQueue queue)
         {
-            return new Vector3(float.Parse(queue.Dequeue()), float.Parse(queue.Dequeue()), float.Parse(queue.Dequeue()));
+            return new Vector3(
+                FloatParameterConverter.ParseFinite(queue.Dequeue()),
+                FloatParameterConverter.ParseFinite(queue.Dequeue()),
+                FloatParameterConverter.ParseFinite(queue.Dequeue()));
         }
     }
 }

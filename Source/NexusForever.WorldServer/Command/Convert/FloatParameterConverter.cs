@@ -1,4 +1,6 @@
-﻿using NexusForever.WorldServer.Command.Context;
+﻿using System;
+using System.Globalization;
+using NexusForever.WorldServer.Command.Context;
 
 namespace NexusForever.WorldServer.Command.Convert
 {
@@ -7,7 +9,16 @@ namespace NexusForever.WorldServer.Command.Convert
     {
         public object Convert(ICommandContext context, ParameterQueue queue)
         {
-            return float.Parse(queue.Dequeue());
+            return ParseFinite(queue.Dequeue());
+        }
+
+        internal static float ParseFinite(string value)
+        {
+            float result = float.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture);
+            if (!float.IsFinite(result))
+                throw new FormatException("Non-finite floating-point values are not supported.");
+
+            return result;
         }
     }
 }

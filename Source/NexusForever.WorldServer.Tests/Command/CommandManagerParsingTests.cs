@@ -126,6 +126,37 @@ namespace NexusForever.WorldServer.Tests.Command
             Assert.Empty(harness.Context.Errors);
         }
 
+        [Theory]
+        [InlineData("NaN")]
+        [InlineData("Infinity")]
+        [InlineData("-Infinity")]
+        [InlineData("1e50")]
+        public void HandleCommand_NonFiniteFloatDoesNotInvokeHandler(string value)
+        {
+            using TestHarness harness = TestHarness.CreateFloat();
+
+            harness.Handle($"test {value}");
+
+            Assert.Equal(0, harness.Target.InvocationCount);
+            Assert.Null(harness.Target.FloatValue);
+            Assert.Equal([CommandFailureMessage], harness.Context.Errors);
+        }
+
+        [Theory]
+        [InlineData("NaN 2 3")]
+        [InlineData("1 Infinity 3")]
+        [InlineData("1 2 1e50")]
+        public void HandleCommand_NonFiniteVectorDoesNotInvokeHandler(string value)
+        {
+            using TestHarness harness = TestHarness.CreateVector();
+
+            harness.Handle($"test {value}");
+
+            Assert.Equal(0, harness.Target.InvocationCount);
+            Assert.Null(harness.Target.VectorValue);
+            Assert.Equal([CommandFailureMessage], harness.Context.Errors);
+        }
+
         [Fact]
         public void HandleCommand_OptionalStringDistinguishesOmissionFromExplicitEmpty()
         {
@@ -199,6 +230,13 @@ namespace NexusForever.WorldServer.Tests.Command
                     new CommandHandler.CommandParameter(typeof(int), new IntParameterConverter(), false));
             }
 
+            public static TestHarness CreateFloat()
+            {
+                return new TestHarness(
+                    nameof(InvocationCategory.HandleFloat),
+                    new CommandHandler.CommandParameter(typeof(float), new FloatParameterConverter(), false));
+            }
+
             public static TestHarness CreateVector()
             {
                 return new TestHarness(
@@ -268,6 +306,7 @@ namespace NexusForever.WorldServer.Tests.Command
             public int InvocationCount { get; private set; }
             public string StringValue { get; private set; }
             public int? IntValue { get; private set; }
+            public float? FloatValue { get; private set; }
             public Vector3? VectorValue { get; private set; }
 
             public void HandleNoParameters(ICommandContext context)
@@ -285,6 +324,12 @@ namespace NexusForever.WorldServer.Tests.Command
             {
                 InvocationCount++;
                 IntValue = value;
+            }
+
+            public void HandleFloat(ICommandContext context, float value)
+            {
+                InvocationCount++;
+                FloatValue = value;
             }
 
             public void HandleVector(ICommandContext context, Vector3 value)
