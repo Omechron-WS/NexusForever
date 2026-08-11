@@ -184,6 +184,104 @@ namespace NexusForever.Game.Tests.Prerequisite
         }
 
         [Fact]
+        public void IsPlayerRows_EvaluateRuntimeIdentityForCompletePredicates()
+        {
+            PrerequisiteEntry isPlayer = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsPlayer, PrerequisiteComparison.Equal, 0u, 0u));
+            PrerequisiteEntry isNotPlayer = CreateEntry(
+                2u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsPlayer, PrerequisiteComparison.NotEqual, 0u, 0u));
+            using var context = new ManagerContext(isPlayer, isNotPlayer);
+            var player = new Mock<IPlayer>(MockBehavior.Strict);
+            var nonPlayer = new Mock<IUnitEntity>(MockBehavior.Strict);
+
+            Assert.True(context.Manager.CanEvaluateForUnit(isPlayer.Id));
+            Assert.True(context.Manager.TryMeets(
+                player.Object,
+                isPlayer.Id,
+                out bool playerMeets));
+            Assert.True(playerMeets);
+            Assert.True(context.Manager.TryMeets(
+                nonPlayer.Object,
+                isPlayer.Id,
+                out bool nonPlayerMeets));
+            Assert.False(nonPlayerMeets);
+
+            Assert.True(context.Manager.CanEvaluateForUnit(isNotPlayer.Id));
+            Assert.True(context.Manager.TryMeets(
+                player.Object,
+                isNotPlayer.Id,
+                out playerMeets));
+            Assert.False(playerMeets);
+            Assert.True(context.Manager.TryMeets(
+                nonPlayer.Object,
+                isNotPlayer.Id,
+                out nonPlayerMeets));
+            Assert.True(nonPlayerMeets);
+            player.VerifyNoOtherCalls();
+            nonPlayer.VerifyNoOtherCalls();
+        }
+
+        [Fact]
+        public void IsPlayerInvalidMixedAndMalformedRowsRemainGated()
+        {
+            PrerequisiteEntry invalidComparison = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsPlayer, PrerequisiteComparison.GreaterThan, 0u, 0u));
+            PrerequisiteEntry invalidValue = CreateEntry(
+                2u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsPlayer, PrerequisiteComparison.Equal, 1u, 0u));
+            PrerequisiteEntry invalidObject = CreateEntry(
+                3u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsPlayer, PrerequisiteComparison.Equal, 0u, 1u));
+            PrerequisiteEntry mixedUnsupported = CreateEntry(
+                4u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsPlayer, PrerequisiteComparison.Equal, 0u, 0u),
+                (PrerequisiteType.Race, PrerequisiteComparison.Equal, 1u, 0u));
+            PrerequisiteEntry malformedInactive = CreateEntry(
+                5u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsPlayer, PrerequisiteComparison.Equal, 0u, 0u));
+            malformedInactive.ObjectId[1] = 1u;
+            PrerequisiteEntry invalidMode = CreateEntry(
+                6u,
+                (EvaluationMode)99,
+                (PrerequisiteType.IsPlayer, PrerequisiteComparison.Equal, 0u, 0u));
+            using var context = new ManagerContext(
+                invalidComparison,
+                invalidValue,
+                invalidObject,
+                mixedUnsupported,
+                malformedInactive,
+                invalidMode);
+            var unit = new Mock<IPlayer>(MockBehavior.Strict);
+
+            foreach (uint prerequisiteId in new[] { 1u, 2u, 3u, 4u, 5u, 6u })
+            {
+                Assert.False(context.Manager.CanEvaluateForUnit(prerequisiteId));
+                Assert.False(context.Manager.TryMeets(
+                    unit.Object,
+                    prerequisiteId,
+                    out bool meets));
+                Assert.False(meets);
+            }
+
+            Assert.False(context.Manager.TryMeets(
+                null,
+                invalidComparison.Id,
+                out bool nullMeets));
+            Assert.False(nullMeets);
+            unit.VerifyNoOtherCalls();
+        }
+
+        [Fact]
         public void TableBackedFactionOutsideLocalEnum_RemainsUnitSafe()
         {
             const uint factionId = 170u;
@@ -464,6 +562,7 @@ namespace NexusForever.Game.Tests.Prerequisite
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckBaseFaction>(PrerequisiteType.BaseFaction)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckInCombat>(PrerequisiteType.InCombat)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDeadState>(PrerequisiteType.DeadState)
+                    .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckIsPlayer>(PrerequisiteType.IsPlayer)
                     .BuildServiceProvider();
 
                 Manager = new PrerequisiteManager(
