@@ -1093,7 +1093,13 @@ namespace NexusForever.Game.Entity
         protected virtual void RewardKiller(IPlayer player)
         {
             player.QuestManager.ObjectiveUpdate(QuestObjectiveType.KillCreature, CreatureId, 1u);
-            player.QuestManager.ObjectiveUpdate(QuestObjectiveType.KillCreature2, CreatureId, 1u);
+
+            uint creatureDifficultyId = CreatureEntry?.Creature2DifficultyId ?? 0u;
+            Creature2DifficultyEntry difficultyEntry = creatureDifficultyId == 0u
+                ? null
+                : GameTableManager.Instance.Creature2Difficulty?.GetEntry(creatureDifficultyId);
+            if (difficultyEntry != null)
+                player.QuestManager.ObjectiveUpdate(QuestObjectiveType.KillCreature2, difficultyEntry.Id, 1u);
 
             foreach (uint targetGroupId in AssetManager.Instance.GetTargetGroupsForCreatureId(CreatureId))
             {

@@ -251,11 +251,14 @@ namespace NexusForever.Game.Quest
         }
 
         /// <summary>
-        /// Return if the supplied identifier is a direct or expanded objective target.
+        /// Return if the supplied value matches this objective's direct, expanded, or ordered target.
         /// </summary>
-        public bool IsTarget(uint id)
+        public bool IsTarget(uint value)
         {
-            return ObjectiveInfo.Entry.Data == id || targetIds.Contains(id);
+            if (ObjectiveInfo.Type == QuestObjectiveType.KillCreature2)
+                return ObjectiveInfo.Entry.Data != 0u && value >= ObjectiveInfo.Entry.Data;
+
+            return ObjectiveInfo.Entry.Data == value || targetIds.Contains(value);
         }
 
         /// <summary>

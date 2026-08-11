@@ -8,6 +8,8 @@ using NexusForever.Game.Quest;
 using NexusForever.Game.Static.Quest;
 using NexusForever.Game.Static.RBAC;
 using NexusForever.Game.Static.Chat;
+using NexusForever.GameTable;
+using NexusForever.GameTable.Model;
 using NexusForever.WorldServer.Command.Context;
 using NexusForever.WorldServer.Command.Convert;
 using NexusForever.WorldServer.Command.Static;
@@ -108,7 +110,17 @@ namespace NexusForever.WorldServer.Command.Handler
 
             var target = context.GetTargetOrInvoker<IPlayer>();
             target.QuestManager.ObjectiveUpdate(QuestObjectiveType.KillCreature, creatureId, quantity.Value);
-            target.QuestManager.ObjectiveUpdate(QuestObjectiveType.KillCreature2, creatureId, quantity.Value);
+
+            Creature2Entry creatureEntry = GameTableManager.Instance.Creature2?.GetEntry(creatureId);
+            uint creatureDifficultyId = creatureEntry?.Creature2DifficultyId ?? 0u;
+            Creature2DifficultyEntry difficultyEntry = creatureDifficultyId == 0u
+                ? null
+                : GameTableManager.Instance.Creature2Difficulty?.GetEntry(creatureDifficultyId);
+            if (difficultyEntry != null)
+                target.QuestManager.ObjectiveUpdate(
+                    QuestObjectiveType.KillCreature2,
+                    difficultyEntry.Id,
+                    quantity.Value);
 
             foreach (uint targetGroupId in AssetManager.Instance.GetTargetGroupsForCreatureId(creatureId) ?? Enumerable.Empty<uint>())
             {
