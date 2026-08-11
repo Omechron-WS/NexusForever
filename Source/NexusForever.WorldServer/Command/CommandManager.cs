@@ -283,7 +283,8 @@ namespace NexusForever.WorldServer.Command
 
         private CommandResult HandleCommandInternal(ICommandContext context, string commandText)
         {
-            string[] parameters = commandText.Split(' ');
+            if (!CommandTokenizer.TryTokenize(commandText, out string[] parameters))
+                return CommandResult.InvalidParameters;
 
             var queue = new ParameterQueue(parameters);
             if (queue.Count == 0)

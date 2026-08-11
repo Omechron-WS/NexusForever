@@ -56,7 +56,7 @@ namespace NexusForever.WorldServer.Tests.Command
 
             CommandResult result = handler.Invoke(
                 new TestCommandContext(),
-                new ParameterQueue(["\"hello", "wide", "world\""]));
+                new ParameterQueue(["\"hello wide world\""]));
 
             Assert.Equal(CommandResult.Ok, result);
             Assert.Equal(1, target.InvocationCount);
@@ -74,7 +74,7 @@ namespace NexusForever.WorldServer.Tests.Command
 
             CommandResult result = handler.Invoke(
                 new TestCommandContext(),
-                new ParameterQueue(["\"hello", "wide", "world\"", "unexpected"]));
+                new ParameterQueue(["\"hello wide world\"", "unexpected"]));
 
             Assert.Equal(CommandResult.InvalidParameters, result);
             Assert.Equal(0, target.InvocationCount);

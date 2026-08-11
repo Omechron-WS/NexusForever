@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System;
+using System.Text;
 using NexusForever.WorldServer.Command.Context;
 
 namespace NexusForever.WorldServer.Command.Convert
@@ -12,25 +13,22 @@ namespace NexusForever.WorldServer.Command.Convert
             if (!parameter.StartsWith('"'))
                 return parameter;
 
-            // concat parameters between quotes
-            // "this will be passed as a single parameter"
-            var sb = new StringBuilder();
-            parameter = parameter[1..];
+            if (parameter.Length < 2 || !parameter.EndsWith('"'))
+                throw new FormatException("Quoted string parameter is not terminated.");
 
-            while (true)
+            var sb = new StringBuilder();
+            ReadOnlySpan<char> value = parameter.AsSpan(1, parameter.Length - 2);
+            for (int i = 0; i < value.Length; i++)
             {
-                if (parameter.EndsWith('"'))
+                if (value[i] == '\\'
+                    && i + 1 < value.Length
+                    && value[i + 1] is '"' or '\\')
                 {
-                    sb.Append(parameter[..^1]);
-                    break;
+                    sb.Append(value[++i]);
+                    continue;
                 }
 
-                sb.Append(parameter);
-                if (queue.Count == 0)
-                    break;
-
-                sb.Append(' ');
-                parameter = queue.Dequeue();
+                sb.Append(value[i]);
             }
 
             return sb.ToString();
