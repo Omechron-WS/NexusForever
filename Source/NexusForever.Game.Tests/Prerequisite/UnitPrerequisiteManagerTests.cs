@@ -282,6 +282,120 @@ namespace NexusForever.Game.Tests.Prerequisite
         }
 
         [Fact]
+        public void HealthRequirementBuildRows_EvaluateCurrentAbsoluteHealthDynamically()
+        {
+            PrerequisiteEntry greaterThanOrEqualOne = CreateEntry(
+                7958u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThanOrEqual, 1u, 0u));
+            PrerequisiteEntry equalOne = CreateEntry(
+                10754u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.Equal, 1u, 0u));
+            PrerequisiteEntry duplicateGreaterThanOrEqualOne = CreateEntry(
+                10790u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThanOrEqual, 1u, 0u));
+            PrerequisiteEntry lessThanOne = CreateEntry(
+                18707u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.LessThan, 1u, 0u));
+            PrerequisiteEntry equalZero = CreateEntry(
+                30772u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.Equal, 0u, 0u));
+            PrerequisiteEntry[] entries =
+            [
+                greaterThanOrEqualOne,
+                equalOne,
+                duplicateGreaterThanOrEqualOne,
+                lessThanOne,
+                equalZero
+            ];
+            using var context = new ManagerContext(entries);
+            uint health = 1u;
+            Mock<IUnitEntity> unit = CreateUnit(health: () => health);
+
+            bool[] expectedAtOne = [true, true, true, false, false];
+            for (int i = 0; i < entries.Length; i++)
+            {
+                Assert.True(context.Manager.CanEvaluateForUnit(entries[i].Id));
+                Assert.True(context.Manager.TryMeets(unit.Object, entries[i].Id, out bool meets));
+                Assert.Equal(expectedAtOne[i], meets);
+            }
+
+            health = 0u;
+
+            bool[] expectedAtZero = [false, false, false, true, true];
+            for (int i = 0; i < entries.Length; i++)
+            {
+                Assert.True(context.Manager.TryMeets(unit.Object, entries[i].Id, out bool meets));
+                Assert.Equal(expectedAtZero[i], meets);
+            }
+
+            unit.VerifyGet(entity => entity.Health, Times.Exactly(entries.Length * 2));
+        }
+
+        [Fact]
+        public void HealthRequirementMixedAndMalformedBuildRowsRemainWhollyGated()
+        {
+            PrerequisiteEntry absoluteAndPercentage = CreateEntry(
+                22677u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThan, 5_000u, 0u),
+                (PrerequisiteType.Health, PrerequisiteComparison.GreaterThan, 25u, 0u));
+            PrerequisiteEntry absoluteOrPercentage = CreateEntry(
+                22678u,
+                EvaluationMode.EvaluateOR,
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.LessThanOrEqual, 5_000u, 0u),
+                (PrerequisiteType.Health, PrerequisiteComparison.LessThanOrEqual, 25u, 0u));
+            PrerequisiteEntry unknownAndAbsolute = CreateEntry(
+                33064u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Unknown47, PrerequisiteComparison.NotEqual, 21_526u, 0u),
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThanOrEqual, 100u, 0u));
+            PrerequisiteEntry invalidObject = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.Equal, 1u, 1u));
+            PrerequisiteEntry invalidComparison = CreateEntry(
+                2u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.HealthRequirement, (PrerequisiteComparison)999, 1u, 0u));
+            PrerequisiteEntry malformedInactive = CreateEntry(
+                3u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.Equal, 1u, 0u));
+            malformedInactive.Value[1] = 1u;
+            PrerequisiteEntry[] entries =
+            [
+                absoluteAndPercentage,
+                absoluteOrPercentage,
+                unknownAndAbsolute,
+                invalidObject,
+                invalidComparison,
+                malformedInactive
+            ];
+            using var context = new ManagerContext(entries);
+            int healthReads = 0;
+            Mock<IUnitEntity> unit = CreateUnit(health: () =>
+            {
+                healthReads++;
+                return 10_000u;
+            });
+
+            foreach (PrerequisiteEntry entry in entries)
+            {
+                Assert.False(context.Manager.CanEvaluateForUnit(entry.Id));
+                Assert.False(context.Manager.TryMeets(unit.Object, entry.Id, out bool meets));
+                Assert.False(meets);
+            }
+
+            Assert.Equal(0, healthReads);
+            unit.VerifyGet(entity => entity.Health, Times.Never);
+        }
+
+        [Fact]
         public void TableBackedFactionOutsideLocalEnum_RemainsUnitSafe()
         {
             const uint factionId = 170u;
@@ -377,6 +491,28 @@ namespace NexusForever.Game.Tests.Prerequisite
         }
 
         [Fact]
+        public void HealthRequirementReadException_IsContainedAsEvaluationFailure()
+        {
+            PrerequisiteEntry entry = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.HealthRequirement, PrerequisiteComparison.GreaterThanOrEqual, 1u, 0u));
+            using var context = new ManagerContext(entry);
+            var unit = new Mock<IUnitEntity>();
+            unit.SetupGet(entity => entity.Health)
+                .Throws(new InvalidOperationException("Test unit health read failure."));
+
+            Exception exception = Record.Exception(() =>
+            {
+                Assert.True(context.Manager.CanEvaluateForUnit(entry.Id));
+                Assert.False(context.Manager.TryMeets(unit.Object, entry.Id, out bool meets));
+                Assert.False(meets);
+            });
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
         public void MissingMalformedOrInvalidRows_FailClosed()
         {
             PrerequisiteEntry invalidMode = CreateEntry(
@@ -444,13 +580,15 @@ namespace NexusForever.Game.Tests.Prerequisite
             Faction faction = Faction.Dominion,
             float? resource1 = null,
             Func<bool> alive = null,
-            Func<bool> inCombat = null)
+            Func<bool> inCombat = null,
+            Func<uint> health = null)
         {
             var unit = new Mock<IUnitEntity>();
             unit.SetupGet(entity => entity.Level).Returns(level);
             unit.SetupGet(entity => entity.Faction1).Returns(faction);
             unit.SetupGet(entity => entity.IsAlive).Returns(() => alive?.Invoke() ?? true);
             unit.SetupGet(entity => entity.InCombat).Returns(() => inCombat?.Invoke() ?? false);
+            unit.SetupGet(entity => entity.Health).Returns(() => health?.Invoke() ?? 1u);
             unit.Setup(entity => entity.TryGetVitalValue(
                     It.IsAny<Vital>(),
                     out It.Ref<float>.IsAny))
@@ -563,6 +701,7 @@ namespace NexusForever.Game.Tests.Prerequisite
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckInCombat>(PrerequisiteType.InCombat)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDeadState>(PrerequisiteType.DeadState)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckIsPlayer>(PrerequisiteType.IsPlayer)
+                    .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealthRequirement>(PrerequisiteType.HealthRequirement)
                     .BuildServiceProvider();
 
                 Manager = new PrerequisiteManager(
