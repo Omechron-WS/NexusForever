@@ -24,6 +24,7 @@ namespace NexusForever.Game.Spell
     public partial class Spell : ISpell
     {
         private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+        private static readonly ConcurrentDictionary<(uint Spell4Id, uint PrerequisiteId), byte> reportedUnsupportedTargetCastPrerequisites = new();
         private static readonly ConcurrentDictionary<(uint Spell4Id, uint PrerequisiteId, bool Target), byte> reportedUnsupportedPersistencePrerequisites = new();
 
         public ISpellParameters Parameters { get; }
@@ -287,14 +288,79 @@ namespace NexusForever.Game.Spell
                     if (!PrerequisiteManager.Instance.Meets(player, Parameters.SpellInfo.CasterCastPrerequisite.Id))
                         return CastResult.PrereqCasterCast;
                 }
-
-                // not sure if this should be for explicit and/or implicit targets
-                if (Parameters.SpellInfo.TargetCastPrerequisites != null)
-                {
-                }
             }
 
+            CastResult targetCastResult = CheckTargetCastPrerequisite();
+            if (targetCastResult != CastResult.Ok)
+                return targetCastResult;
+
             return CheckPersistencePrerequisites(captureTarget: true);
+        }
+
+        private CastResult CheckTargetCastPrerequisite()
+        {
+            uint prerequisiteId = Parameters.SpellInfo.Entry.PrerequisiteIdTargetCast;
+            if (prerequisiteId == 0u)
+                return CastResult.Ok;
+
+            bool canEvaluate;
+            try
+            {
+                canEvaluate = PrerequisiteManager.Instance.CanEvaluateForUnit(prerequisiteId);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} failed to classify target cast prerequisite {prerequisiteId}.");
+                return CastResult.PrereqTargetCast;
+            }
+
+            if (!canEvaluate)
+            {
+                LogUnsupportedTargetCastPrerequisite(prerequisiteId);
+                return CastResult.Ok;
+            }
+
+            IUnitEntity target;
+            try
+            {
+                target = Parameters.PrimaryTargetId is 0u || Parameters.PrimaryTargetId == Caster.Guid
+                    ? Caster
+                    : Caster.GetVisible<IWorldEntity>(Parameters.PrimaryTargetId) as IUnitEntity;
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} failed to resolve the target for target cast prerequisite {prerequisiteId}.");
+                return CastResult.PrereqTargetCast;
+            }
+
+            if (target == null)
+            {
+                log.Warn($"Spell {Parameters.SpellInfo.Entry.Id} could not resolve the target for target cast prerequisite {prerequisiteId} and failed closed.");
+                return CastResult.PrereqTargetCast;
+            }
+
+            try
+            {
+                if (PrerequisiteManager.Instance.TryMeets(target, prerequisiteId, out bool meets))
+                    return meets ? CastResult.Ok : CastResult.PrereqTargetCast;
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} failed to evaluate target cast prerequisite {prerequisiteId}.");
+                return CastResult.PrereqTargetCast;
+            }
+
+            log.Warn($"Spell {Parameters.SpellInfo.Entry.Id} could not evaluate target cast prerequisite {prerequisiteId} and failed closed.");
+            return CastResult.PrereqTargetCast;
+        }
+
+        private void LogUnsupportedTargetCastPrerequisite(uint prerequisiteId)
+        {
+            var identity = (
+                Spell4Id: Parameters.SpellInfo.Entry.Id,
+                PrerequisiteId: prerequisiteId);
+            if (reportedUnsupportedTargetCastPrerequisites.TryAdd(identity, 0))
+                log.Warn($"Spell {identity.Spell4Id} declares unsupported target cast prerequisite {prerequisiteId}; preserving legacy cast behaviour.");
         }
 
         private CastResult CheckPersistencePrerequisites(bool captureTarget)

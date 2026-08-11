@@ -73,25 +73,318 @@ namespace NexusForever.Game.Tests.Spell
         }
 
         [Fact]
-        public void TargetCast_InCombatRowRemainsUnevaluated()
+        public void TargetCast_LevelUsesExactVisibleTarget()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Level, PrerequisiteComparison.GreaterThan, 50u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterLevel = 50u
+            };
+            Mock<IUnitEntity> target = context.CreateTarget(42u, level: () => 51u);
+            context.Caster.Setup(unit => unit.GetVisible<IWorldEntity>(42u))
+                .Returns(target.Object);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u),
+                targetCastPrerequisite: prerequisite,
+                primaryTargetId: 42u,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            spell.Update(0d);
+
+            Assert.False(spell.IsFinishing);
+            Assert.Single(context.Invocations);
+            Assert.Single(context.Packets.OfType<ServerSpellGo>());
+            Assert.Equal(0, context.CasterLevelReads);
+            target.VerifyGet(unit => unit.Level, Times.Once);
+        }
+
+        [Fact]
+        public void TargetCast_UnmetVisibleTargetFailsBeforeStart()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterInCombat = true
+            };
+            Mock<IUnitEntity> target = context.CreateTarget(42u, inCombat: () => false);
+            context.Caster.Setup(unit => unit.GetVisible<IWorldEntity>(42u))
+                .Returns(target.Object);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u, cost: 10u),
+                targetCastPrerequisite: prerequisite,
+                primaryTargetId: 42u,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+
+            AssertTargetCastFailure(context, spell);
+            context.Caster.VerifyGet(unit => unit.InCombat, Times.Never);
+            target.VerifyGet(unit => unit.InCombat, Times.Once);
+        }
+
+        [Theory]
+        [InlineData(0u)]
+        [InlineData(7u)]
+        public void TargetCast_ZeroOrExactCasterGuidUsesCaster(uint primaryTargetId)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Level, PrerequisiteComparison.GreaterThan, 50u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterLevel = 51u
+            };
+            context.Caster.Setup(unit => unit.GetVisible<IWorldEntity>(7u))
+                .Returns((IWorldEntity)null);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u),
+                targetCastPrerequisite: prerequisite,
+                primaryTargetId: primaryTargetId,
+                targets: [(SpellEffectTargetFlags.Target, context.Caster.Object)]);
+
+            spell.Cast();
+            spell.Update(0d);
+
+            Assert.False(spell.IsFinishing);
+            Assert.Single(context.Invocations);
+            Assert.Equal(1, context.CasterLevelReads);
+        }
+
+        [Fact]
+        public void TargetCast_NonPlayerCasterUsesUnitEvaluation()
         {
             PrerequisiteEntry prerequisite = CreateEntry(
                 1u,
                 EvaluationMode.EvaluateAND,
                 (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
             using var context = new SpellPrerequisiteContext(prerequisite);
-            Mock<IUnitEntity> target = context.CreateTarget(10u, inCombat: () => false);
+            Mock<IUnitEntity> npc = context.CreateTarget(42u, inCombat: () => true);
             TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
                 CreateEffect(1u),
                 targetCastPrerequisite: prerequisite,
-                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+                caster: npc.Object,
+                targets: [(SpellEffectTargetFlags.Target, npc.Object)]);
 
             spell.Cast();
             spell.Update(0d);
 
+            Assert.False(spell.IsFinishing);
             Assert.Single(context.Invocations);
-            Assert.Single(context.Packets.OfType<ServerSpellGo>());
-            target.VerifyGet(unit => unit.InCombat, Times.Never);
+            Assert.Empty(context.SessionPackets);
+            npc.VerifyGet(unit => unit.InCombat, Times.Once);
+        }
+
+        [Theory]
+        [InlineData(TargetCastUnsupportedShape.Missing)]
+        [InlineData(TargetCastUnsupportedShape.Mixed)]
+        [InlineData(TargetCastUnsupportedShape.Malformed)]
+        public void TargetCast_UnsupportedWholeRowPreservesLegacyWithoutStateReads(
+            TargetCastUnsupportedShape shape)
+        {
+            PrerequisiteEntry prerequisite = shape switch
+            {
+                TargetCastUnsupportedShape.Missing => CreateEntry(
+                    1u,
+                    EvaluationMode.EvaluateAND,
+                    (PrerequisiteType.Race, PrerequisiteComparison.Equal, 1u, 0u)),
+                TargetCastUnsupportedShape.Mixed => CreateEntry(
+                    2u,
+                    EvaluationMode.EvaluateAND,
+                    (PrerequisiteType.Level, PrerequisiteComparison.GreaterThan, 50u, 0u),
+                    (PrerequisiteType.Race, PrerequisiteComparison.Equal, 1u, 0u)),
+                TargetCastUnsupportedShape.Malformed => CreateEntry(
+                    3u,
+                    EvaluationMode.EvaluateAND,
+                    (PrerequisiteType.Level, PrerequisiteComparison.GreaterThan, 50u, 0u),
+                    (PrerequisiteType.None, PrerequisiteComparison.Equal, 1u, 0u)),
+                _ => throw new ArgumentOutOfRangeException(nameof(shape))
+            };
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterLevel = 1u
+            };
+            uint prerequisiteId = shape == TargetCastUnsupportedShape.Missing
+                ? 99u
+                : prerequisite.Id;
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u),
+                targetCastPrerequisite: shape == TargetCastUnsupportedShape.Missing
+                    ? null
+                    : prerequisite,
+                targetCastPrerequisiteId: prerequisiteId,
+                targets: [(SpellEffectTargetFlags.Target, context.Caster.Object)]);
+
+            spell.Cast();
+            spell.Update(0d);
+
+            Assert.False(spell.IsFinishing);
+            Assert.Single(context.Invocations);
+            Assert.Equal(0, context.CasterLevelReads);
+            context.Caster.VerifyGet(unit => unit.InCombat, Times.Never);
+        }
+
+        [Theory]
+        [InlineData(TargetCastResolutionFailure.Missing)]
+        [InlineData(TargetCastResolutionFailure.NonUnit)]
+        [InlineData(TargetCastResolutionFailure.LookupThrows)]
+        public void TargetCast_SupportedTargetResolutionFailureFailsClosed(
+            TargetCastResolutionFailure failure)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Level, PrerequisiteComparison.GreaterThan, 50u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            IWorldEntity nonUnit = Mock.Of<IWorldEntity>();
+            context.Caster.Setup(unit => unit.GetVisible<IWorldEntity>(42u))
+                .Returns(() => failure switch
+                {
+                    TargetCastResolutionFailure.Missing => null,
+                    TargetCastResolutionFailure.NonUnit => nonUnit,
+                    TargetCastResolutionFailure.LookupThrows => throw new InvalidOperationException(
+                        "Test target cast lookup failure."),
+                    _ => throw new ArgumentOutOfRangeException(nameof(failure))
+                });
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u, cost: 10u),
+                targetCastPrerequisite: prerequisite,
+                primaryTargetId: 42u);
+
+            Exception exception = Record.Exception(spell.Cast);
+
+            Assert.Null(exception);
+            AssertTargetCastFailure(context, spell);
+            context.Caster.Verify(
+                unit => unit.GetVisible<IWorldEntity>(42u),
+                Times.Once);
+        }
+
+        [Fact]
+        public void TargetCast_SupportedEvaluationFailureFailsClosed()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Level, PrerequisiteComparison.GreaterThan, 50u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            Mock<IUnitEntity> target = context.CreateTarget(
+                42u,
+                level: () => throw new InvalidOperationException(
+                    "Test target cast prerequisite read failure."));
+            context.Caster.Setup(unit => unit.GetVisible<IWorldEntity>(42u))
+                .Returns(target.Object);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u, cost: 10u),
+                targetCastPrerequisite: prerequisite,
+                primaryTargetId: 42u);
+
+            Exception exception = Record.Exception(spell.Cast);
+
+            Assert.Null(exception);
+            AssertTargetCastFailure(context, spell);
+            target.VerifyGet(unit => unit.Level, Times.Once);
+        }
+
+        [Fact]
+        public void TargetCast_IsEvaluatedOnlyAtCastTime()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            bool targetInCombat = true;
+            Mock<IUnitEntity> target = context.CreateTarget(
+                42u,
+                inCombat: () => targetInCombat);
+            context.Caster.Setup(unit => unit.GetVisible<IWorldEntity>(42u))
+                .Returns(target.Object);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u, delayTime: 100u),
+                targetCastPrerequisite: prerequisite,
+                primaryTargetId: 42u,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            spell.Update(0d);
+            targetInCombat = false;
+            spell.Update(0.1d);
+
+            Assert.False(spell.IsFinishing);
+            Assert.Single(context.Invocations);
+            target.VerifyGet(unit => unit.InCombat, Times.Once);
+        }
+
+        [Fact]
+        public void TargetCast_FailurePrecedesPersistenceEvaluation()
+        {
+            PrerequisiteEntry targetPrerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
+            PrerequisiteEntry persistencePrerequisite = CreateEntry(
+                2u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Level, PrerequisiteComparison.GreaterThan, 50u, 0u));
+            using var context = new SpellPrerequisiteContext(
+                targetPrerequisite,
+                persistencePrerequisite);
+            Mock<IUnitEntity> target = context.CreateTarget(42u, inCombat: () => false);
+            context.Caster.Setup(unit => unit.GetVisible<IWorldEntity>(42u))
+                .Returns(target.Object);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u),
+                targetCastPrerequisite: targetPrerequisite,
+                primaryTargetId: 42u);
+            spell.Parameters.SpellInfo.Entry.PrerequisiteIdCasterPersistence = persistencePrerequisite.Id;
+
+            spell.Cast();
+
+            AssertTargetCastFailure(context, spell);
+            Assert.Equal(0, context.CasterLevelReads);
+        }
+
+        [Fact]
+        public void TargetCast_IsNotOverriddenByCasterRunner()
+        {
+            PrerequisiteEntry casterPrerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
+            PrerequisiteEntry runnerPrerequisite = CreateEntry(
+                2u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Level, PrerequisiteComparison.GreaterThan, 1u, 0u));
+            PrerequisiteEntry targetPrerequisite = CreateEntry(
+                3u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
+            using var context = new SpellPrerequisiteContext(
+                casterPrerequisite,
+                runnerPrerequisite,
+                targetPrerequisite);
+            Mock<IUnitEntity> target = context.CreateTarget(42u, inCombat: () => false);
+            context.Caster.Setup(unit => unit.GetVisible<IWorldEntity>(42u))
+                .Returns(target.Object);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u),
+                casterCastPrerequisite: casterPrerequisite,
+                targetCastPrerequisite: targetPrerequisite,
+                primaryTargetId: 42u);
+            spell.Parameters.SpellInfo.PrerequisiteRunners.Add(runnerPrerequisite);
+
+            spell.Cast();
+
+            AssertTargetCastFailure(context, spell);
+            target.VerifyGet(unit => unit.InCombat, Times.Once);
         }
 
         [Theory]
@@ -824,6 +1117,35 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Empty(context.Packets.OfType<ServerSpellGo>());
         }
 
+        private static void AssertTargetCastFailure(
+            SpellPrerequisiteContext context,
+            TestApplyPrerequisiteSpell spell)
+        {
+            Assert.True(spell.IsFinishing);
+            ServerSpellCastResult result = Assert.Single(
+                context.SessionPackets.OfType<ServerSpellCastResult>());
+            Assert.Equal(CastResult.PrereqTargetCast, result.CastResult);
+            Assert.Equal(0x0119, (int)result.CastResult);
+            Assert.Empty(context.CostMutations);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<ServerSpellStart>());
+            Assert.Empty(context.Packets.OfType<ServerSpellGo>());
+        }
+
+        public enum TargetCastUnsupportedShape
+        {
+            Missing,
+            Mixed,
+            Malformed
+        }
+
+        public enum TargetCastResolutionFailure
+        {
+            Missing,
+            NonUnit,
+            LookupThrows
+        }
+
         public enum PersistenceTargetDrift
         {
             Predicate,
@@ -1132,15 +1454,26 @@ namespace NexusForever.Game.Tests.Spell
                 Spell4EffectsEntry effect,
                 PrerequisiteEntry casterCastPrerequisite = null,
                 PrerequisiteEntry targetCastPrerequisite = null,
+                uint primaryTargetId = 0u,
+                uint? targetCastPrerequisiteId = null,
+                IUnitEntity caster = null,
                 params (SpellEffectTargetFlags Flags, IUnitEntity Entity)[] targets)
             {
+                SpellParameters parameters = CreateParameters(
+                    CastMethod.Normal,
+                    effect,
+                    casterCastPrerequisite,
+                    targetCastPrerequisite);
+                parameters.PrimaryTargetId = primaryTargetId;
+                if (targetCastPrerequisiteId.HasValue)
+                {
+                    parameters.SpellInfo.Entry.PrerequisiteIdTargetCast =
+                        targetCastPrerequisiteId.Value;
+                }
+
                 return new TestApplyPrerequisiteSpell(
-                    Caster.Object,
-                    CreateParameters(
-                        CastMethod.Normal,
-                        effect,
-                        casterCastPrerequisite,
-                        targetCastPrerequisite),
+                    caster ?? Caster.Object,
+                    parameters,
                     () => targets);
             }
 
@@ -1194,8 +1527,10 @@ namespace NexusForever.Game.Tests.Spell
                 var spellInfo = new Mock<ISpellInfo>();
                 spellInfo.SetupGet(info => info.Entry).Returns(new Spell4Entry
                 {
-                    Id            = 123u,
-                    SpellDuration = castMethod == CastMethod.Aura ? 1_000u : 0u
+                    Id                       = 123u,
+                    SpellDuration            = castMethod == CastMethod.Aura ? 1_000u : 0u,
+                    PrerequisiteIdCasterCast = casterCastPrerequisite?.Id ?? 0u,
+                    PrerequisiteIdTargetCast = targetCastPrerequisite?.Id ?? 0u
                 });
                 spellInfo.SetupGet(info => info.BaseInfo).Returns(baseInfo.Object);
                 spellInfo.SetupGet(info => info.Effects).Returns([effect]);
