@@ -560,21 +560,19 @@ namespace NexusForever.Game.Spell
         public static void HandleEffectPropertyModifier(ISpell spell, IUnitEntity target, ISpellTargetEffectInfo info)
         {
             // TODO: I suppose these could be cached somewhere instead of generating them every single effect?
-            SpellPropertyModifier modifier = 
-                new SpellPropertyModifier((Property)info.Entry.DataBits00, 
+            SpellPropertyModifier modifier =
+                new SpellPropertyModifier(
+                    new SpellEffectIdentity(
+                        spell.CastingId,
+                        spell.Parameters.SpellInfo.Entry.Id,
+                        info.Entry.Id),
+                    (Property)info.Entry.DataBits00,
                     info.Entry.DataBits01, 
                     BitConverter.UInt32BitsToSingle(info.Entry.DataBits02), 
                     BitConverter.UInt32BitsToSingle(info.Entry.DataBits03), 
                     BitConverter.UInt32BitsToSingle(info.Entry.DataBits04));
-            target.AddSpellModifierProperty(modifier, spell.Parameters.SpellInfo.Entry.Id);
-
-            // TODO: Handle removing spell modifiers
-
-            //if (info.Entry.DurationTime > 0d)
-            //    events.EnqueueEvent(new SpellEvent(info.Entry.DurationTime / 1000d, () =>
-            //    {
-            //        player.RemoveSpellProperty((Property)info.Entry.DataBits00, parameters.SpellInfo.Entry.Id);
-            //    }));
+            if (!spell.ApplyPropertyModifier(target, modifier))
+                info.DropEffect = true;
         }
     }
 }

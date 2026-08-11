@@ -32,6 +32,12 @@ namespace NexusForever.Game.Abstract.Spell
         void Finish();
 
         /// <summary>
+        /// Apply and track a property modifier owned by this spell.
+        /// </summary>
+        /// <returns><see langword="true"/> when the target accepted the modifier; otherwise, <see langword="false"/>.</returns>
+        bool ApplyPropertyModifier(IUnitEntity target, ISpellPropertyModifier modifier);
+
+        /// <summary>
         /// Track a proc applied by this spell so it can be removed with the spell's effects.
         /// </summary>
         void TrackProc(IUnitEntity target, IProcInfo proc);

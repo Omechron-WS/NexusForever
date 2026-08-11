@@ -227,7 +227,7 @@ namespace NexusForever.Game.Entity
         private readonly List<ISpell> pendingSpells = new();
         private readonly Dictionary<ProcType, List<IProcInfo>> procs = new();
 
-        private Dictionary<Property, Dictionary</*spell4Id*/uint, ISpellPropertyModifier>> spellProperties = new();
+        private readonly Dictionary<Property, Dictionary</*spell4Id*/uint, List<ISpellPropertyModifier>>> spellProperties = new();
 
         #region Dependency Injection
 
@@ -245,6 +245,7 @@ namespace NexusForever.Game.Entity
         {
             ThreatManager.ClearThreatList();
             ClearProcs();
+            ClearSpellModifierProperties();
 
             foreach (ISpell spell in pendingSpells.ToArray())
             {
@@ -305,48 +306,142 @@ namespace NexusForever.Game.Entity
         }
 
         /// <summary>
-        /// Add a <see cref="Property"/> modifier given a Spell4Id and <see cref="ISpellPropertyModifier"/> instance.
+        /// Add or refresh an owned <see cref="Property"/> modifier.
         /// </summary>
-        public void AddSpellModifierProperty(ISpellPropertyModifier spellModifier, uint spell4Id)
+        public bool AddSpellModifierProperty(ISpellPropertyModifier spellModifier)
         {
-            if (spellProperties.TryGetValue(spellModifier.Property, out Dictionary<uint, ISpellPropertyModifier> spellDict))
+            ArgumentNullException.ThrowIfNull(spellModifier);
+
+            if (!IsAlive)
+                return false;
+
+            if (!spellProperties.TryGetValue(
+                spellModifier.Property,
+                out Dictionary<uint, List<ISpellPropertyModifier>> spellGroups))
             {
-                if (spellDict.ContainsKey(spell4Id))
-                    spellDict[spell4Id] = spellModifier;
-                else
-                    spellDict.Add(spell4Id, spellModifier);
+                spellGroups = [];
+                spellProperties.Add(spellModifier.Property, spellGroups);
             }
-            else
+
+            uint spell4Id = spellModifier.Identity.Spell4Id;
+            if (!spellGroups.TryGetValue(spell4Id, out List<ISpellPropertyModifier> owners))
             {
-                spellProperties.Add(spellModifier.Property, new Dictionary<uint, ISpellPropertyModifier>
+                owners = [];
+                spellGroups.Add(spell4Id, owners);
+            }
+
+            int previousIndex = owners.FindIndex(owner => owner.Identity == spellModifier.Identity);
+            ISpellPropertyModifier previousModifier = null;
+            if (previousIndex >= 0)
+            {
+                previousModifier = owners[previousIndex];
+                owners.RemoveAt(previousIndex);
+            }
+
+            owners.Add(spellModifier);
+
+            try
+            {
+                CalculateProperty(spellModifier.Property);
+                return true;
+            }
+            catch
+            {
+                int appliedIndex = owners.FindLastIndex(owner => ReferenceEquals(owner, spellModifier));
+                if (appliedIndex >= 0)
+                    owners.RemoveAt(appliedIndex);
+
+                if (previousModifier != null)
+                    owners.Insert(previousIndex, previousModifier);
+
+                RemoveEmptySpellPropertyGroups(spellModifier.Property, spell4Id, owners, spellGroups);
+
+                try
                 {
-                    { spell4Id, spellModifier }
-                });
+                    CalculateProperty(spellModifier.Property);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to restore property {spellModifier.Property} after modifier {spellModifier.Identity} was rejected.");
+                }
+
+                throw;
             }
-
-            CalculateProperty(spellModifier.Property);
         }
 
         /// <summary>
-        /// Remove a <see cref="Property"/> modifier by a Spell that is currently affecting this <see cref="IUnitEntity"/>.
+        /// Remove one exact owned <see cref="Property"/> modifier.
         /// </summary>
-        public void RemoveSpellProperty(Property property, uint spell4Id)
+        public bool RemoveSpellModifierProperty(Property property, SpellEffectIdentity identity)
         {
-            if (spellProperties.TryGetValue(property, out Dictionary<uint, ISpellPropertyModifier> spellDict))
-                spellDict.Remove(spell4Id);
+            if (!spellProperties.TryGetValue(
+                property,
+                out Dictionary<uint, List<ISpellPropertyModifier>> spellGroups)
+                || !spellGroups.TryGetValue(identity.Spell4Id, out List<ISpellPropertyModifier> owners))
+                return false;
 
-            CalculateProperty(property);
+            int index = owners.FindIndex(owner => owner.Identity == identity);
+            if (index < 0)
+                return false;
+
+            ISpellPropertyModifier removedModifier = owners[index];
+            owners.RemoveAt(index);
+
+            try
+            {
+                CalculateProperty(property);
+                RemoveEmptySpellPropertyGroups(property, identity.Spell4Id, owners, spellGroups);
+                return true;
+            }
+            catch
+            {
+                owners.Insert(index, removedModifier);
+
+                try
+                {
+                    CalculateProperty(property);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to restore property {property} after modifier {identity} removal failed.");
+                }
+
+                throw;
+            }
         }
 
         /// <summary>
-        /// Remove all <see cref="Property"/> modifiers by a Spell that is currently affecting this <see cref="IUnitEntity"/>
+        /// Remove all spell-owned <see cref="Property"/> modifiers affecting this <see cref="IUnitEntity"/>.
         /// </summary>
-        public void RemoveSpellProperties(uint spell4Id)
+        public void ClearSpellModifierProperties()
         {
-            List<Property> propertiesWithSpell = spellProperties.Where(i => i.Value.ContainsKey(spell4Id)).Select(p => p.Key).ToList();
+            Property[] affectedProperties = spellProperties.Keys.ToArray();
+            spellProperties.Clear();
 
-            foreach (Property property in propertiesWithSpell)
-                RemoveSpellProperty(property, spell4Id);
+            foreach (Property property in affectedProperties)
+            {
+                try
+                {
+                    CalculateProperty(property);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to recalculate property {property} after clearing spell modifiers.");
+                }
+            }
+        }
+
+        private void RemoveEmptySpellPropertyGroups(
+            Property property,
+            uint spell4Id,
+            List<ISpellPropertyModifier> owners,
+            Dictionary<uint, List<ISpellPropertyModifier>> spellGroups)
+        {
+            if (owners.Count == 0)
+                spellGroups.Remove(spell4Id);
+
+            if (spellGroups.Count == 0)
+                spellProperties.Remove(property);
         }
 
         /// <summary>
@@ -354,7 +449,16 @@ namespace NexusForever.Game.Entity
         /// </summary>
         private IEnumerable<ISpellPropertyModifier> GetSpellPropertyModifiers(Property property)
         {
-            return spellProperties.ContainsKey(property) ? spellProperties[property].Values : Enumerable.Empty<ISpellPropertyModifier>();
+            if (!spellProperties.TryGetValue(
+                property,
+                out Dictionary<uint, List<ISpellPropertyModifier>> spellGroups))
+                return Enumerable.Empty<ISpellPropertyModifier>();
+
+            // Stack-group semantics are not implemented yet. Preserve the existing one-modifier-per-Spell4
+            // calculation while retaining older live owners for independent cleanup.
+            return spellGroups.Values
+                .Where(owners => owners.Count != 0)
+                .Select(owners => owners[^1]);
         }
 
         protected override void CalculatePropertyValue(IPropertyValue propertyValue)
@@ -769,14 +873,17 @@ namespace NexusForever.Game.Entity
             if (proc == null || !procs.TryGetValue(proc.Type, out List<IProcInfo> procList))
                 return false;
 
-            bool removed = procList.Remove(proc);
+            int index = procList.FindIndex(candidate => ReferenceEquals(candidate, proc));
+            if (index < 0)
+                return false;
+
+            IProcInfo removedProc = procList[index];
+            procList.RemoveAt(index);
             if (procList.Count == 0)
                 procs.Remove(proc.Type);
 
-            if (removed)
-                proc.Cancel();
-
-            return removed;
+            removedProc.Cancel();
+            return true;
         }
 
         private void ClearProcs()
@@ -906,6 +1013,7 @@ namespace NexusForever.Game.Entity
                     }, "stop a pending spell during death");
                 }
 
+                ExecuteDeathOperation(ClearSpellModifierProperties, "clear spell property modifiers during death");
                 ExecuteDeathOperation(ClearProcs, "clear procs during death");
                 ExecuteDeathOperation(GenerateRewards, "generate death rewards");
             }

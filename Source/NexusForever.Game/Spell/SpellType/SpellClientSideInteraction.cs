@@ -248,6 +248,7 @@ namespace NexusForever.Game.Spell.SpellType
                 CastingId      = CastingId,
                 CasterId       = Parameters.PrimaryTargetId != 0u ? Parameters.PrimaryTargetId : Caster.Guid
             });
+            MarkSpellStartPublished();
         }
 
         private double GetResultTimeoutSeconds()

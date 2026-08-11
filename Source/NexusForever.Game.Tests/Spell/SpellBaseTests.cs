@@ -1,10 +1,14 @@
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
+using NexusForever.Game.Abstract.Combat;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Map;
 using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Abstract.Spell.Event;
+using NexusForever.Game.Entity;
 using NexusForever.Game.Spell;
+using NexusForever.Game.Static.Combat;
+using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Spell;
 using NexusForever.Game.Tests.Combat;
 using NexusForever.GameTable.Model;
@@ -13,6 +17,7 @@ using NexusForever.Network.World.Entity;
 using NexusForever.Network.World.Combat;
 using NexusForever.Network.World.Message.Model;
 using NexusForever.Network.World.Message.Model.Shared;
+using NexusForever.Network.World.Message.Static;
 using NexusForever.Network.Session;
 using NexusForever.Script;
 using NexusForever.Script.Template.Collection;
@@ -40,6 +45,283 @@ namespace NexusForever.Game.Tests.Spell
             var type = typeof(ISpell);
             var method = type.GetMethod("Finish");
             Assert.NotNull(method);
+        }
+
+        [Theory]
+        [InlineData(StartedSpellCompletion.Natural)]
+        [InlineData(StartedSpellCompletion.Cancel)]
+        [InlineData(StartedSpellCompletion.ExecutionFailure)]
+        [InlineData(StartedSpellCompletion.ForcedFinish)]
+        public void StartedOutcome_CleansPropertiesThenPublishesOneFinishFromLateUpdate(
+            StartedSpellCompletion completion)
+        {
+            using var context = new SpellTimelineTestContext();
+            var operations = new List<string>();
+            context.Caster.Setup(entity => entity.EnqueueToVisible(It.IsAny<IWritable>(), true))
+                .Callback<IWritable, bool>((packet, _) =>
+                {
+                    context.Packets.Add(packet);
+                    if (packet is ServerSpellFinish)
+                        operations.Add("finish");
+                });
+            var target = new Mock<IUnitEntity>();
+            target.SetupGet(entity => entity.IsAlive).Returns(true);
+            target.Setup(entity => entity.AddSpellModifierProperty(It.IsAny<ISpellPropertyModifier>()))
+                .Returns(true);
+            target.Setup(entity => entity.RemoveSpellModifierProperty(
+                    Property.Strength,
+                    It.IsAny<SpellEffectIdentity>()))
+                .Callback(() => operations.Add("cleanup"))
+                .Returns(true);
+            var spell = new TestTimelineSpell(
+                context.Caster.Object,
+                SpellTimelineTestContext.CreateParameters(
+                    CastMethod.Normal,
+                    new Spell4Entry { Id = 123u },
+                    []));
+            spell.Cast();
+            var modifier = new SpellPropertyModifier(
+                new SpellEffectIdentity(spell.CastingId, 123u, 1u),
+                Property.Strength,
+                1u,
+                0f,
+                5f,
+                0f);
+            Assert.True(spell.ApplyPropertyModifier(target.Object, modifier));
+
+            switch (completion)
+            {
+                case StartedSpellCompletion.Natural:
+                    spell.Update(0d);
+                    break;
+                case StartedSpellCompletion.Cancel:
+                    spell.CancelCast(CastResult.SpellCancelled);
+                    break;
+                case StartedSpellCompletion.ExecutionFailure:
+                    spell.FailExecutionForTest(CastResult.SpellBad);
+                    break;
+                case StartedSpellCompletion.ForcedFinish:
+                    spell.Finish();
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(completion));
+            }
+
+            Assert.Empty(context.Packets.OfType<ServerSpellFinish>());
+
+            spell.LateUpdate(0d);
+            spell.LateUpdate(0d);
+            spell.Dispose();
+
+            Assert.Equal(["cleanup", "finish"], operations);
+            ServerSpellFinish finish = Assert.Single(context.Packets.OfType<ServerSpellFinish>());
+            Assert.Equal(spell.CastingId, finish.ServerUniqueId);
+            target.Verify(entity => entity.RemoveSpellModifierProperty(
+                Property.Strength,
+                modifier.Identity), Times.Once);
+        }
+
+        [Fact]
+        public void PreStartFailure_DoesNotPublishFinish()
+        {
+            using var context = new SpellTimelineTestContext();
+            var spell = new TestTimelineSpell(
+                context.Caster.Object,
+                SpellTimelineTestContext.CreateParameters(
+                    CastMethod.Normal,
+                    new Spell4Entry { Id = 123u },
+                    []));
+
+            spell.FailCastForTest(CastResult.SpellBad);
+            spell.LateUpdate(0d);
+            spell.Dispose();
+
+            Assert.True(spell.IsFinished);
+            Assert.Empty(context.Packets.OfType<ServerSpellFinish>());
+        }
+
+        [Fact]
+        public void Dispose_CleansPropertyWithoutPublishingFinish()
+        {
+            using var context = new SpellTimelineTestContext();
+            var target = new Mock<IUnitEntity>();
+            target.SetupGet(entity => entity.IsAlive).Returns(true);
+            target.Setup(entity => entity.AddSpellModifierProperty(It.IsAny<ISpellPropertyModifier>()))
+                .Returns(true);
+            target.Setup(entity => entity.RemoveSpellModifierProperty(
+                    Property.Strength,
+                    It.IsAny<SpellEffectIdentity>()))
+                .Returns(true);
+            var spell = new TestTimelineSpell(
+                context.Caster.Object,
+                SpellTimelineTestContext.CreateParameters(
+                    CastMethod.Normal,
+                    new Spell4Entry { Id = 123u },
+                    []));
+            spell.Cast();
+            var modifier = new SpellPropertyModifier(
+                new SpellEffectIdentity(spell.CastingId, 123u, 1u),
+                Property.Strength,
+                1u,
+                0f,
+                5f,
+                0f);
+            spell.ApplyPropertyModifier(target.Object, modifier);
+
+            spell.Dispose();
+
+            target.Verify(entity => entity.RemoveSpellModifierProperty(
+                Property.Strength,
+                modifier.Identity), Times.Once);
+            Assert.Empty(context.Packets.OfType<ServerSpellFinish>());
+        }
+
+        [Fact]
+        public void FinishPublicationFailure_IsAttemptedOnlyOnce()
+        {
+            using var context = new SpellTimelineTestContext();
+            var spell = new TestTimelineSpell(
+                context.Caster.Object,
+                SpellTimelineTestContext.CreateParameters(
+                    CastMethod.Normal,
+                    new Spell4Entry { Id = 123u },
+                    []));
+            spell.Cast();
+            int finishAttempts = 0;
+            context.Caster.Setup(entity => entity.EnqueueToVisible(It.IsAny<IWritable>(), true))
+                .Callback<IWritable, bool>((packet, _) =>
+                {
+                    if (packet is ServerSpellFinish)
+                    {
+                        finishAttempts++;
+                        throw new InvalidOperationException("Test finish publication failure.");
+                    }
+                });
+
+            spell.Finish();
+            spell.LateUpdate(0d);
+            spell.LateUpdate(0d);
+            spell.Dispose();
+
+            Assert.Equal(1, finishAttempts);
+        }
+
+        [Fact]
+        public void CleanupFailure_IsContainedAndRetriedBeforeFinishPublication()
+        {
+            using var context = new SpellTimelineTestContext();
+            var target = new Mock<IUnitEntity>();
+            target.SetupGet(entity => entity.Guid).Returns(10u);
+            var proc = new Mock<IProcInfo>();
+            proc.SetupGet(value => value.Owner).Returns(target.Object);
+            proc.SetupGet(value => value.EffectId).Returns(1u);
+            int removalAttempts = 0;
+            target.Setup(entity => entity.RemoveProc(proc.Object)).Callback(() =>
+            {
+                removalAttempts++;
+                if (removalAttempts < 3)
+                    throw new InvalidOperationException("Test proc cleanup failure.");
+            });
+            var spell = new TestTimelineSpell(
+                context.Caster.Object,
+                SpellTimelineTestContext.CreateParameters(
+                    CastMethod.Normal,
+                    new Spell4Entry { Id = 123u },
+                    []));
+            spell.Cast();
+            spell.TrackProc(target.Object, proc.Object);
+
+            Exception finishException = Record.Exception(spell.Finish);
+            spell.LateUpdate(0d);
+
+            Assert.Null(finishException);
+            Assert.True(spell.IsFinishing);
+            Assert.Empty(context.Packets.OfType<ServerSpellFinish>());
+
+            spell.LateUpdate(0d);
+            spell.LateUpdate(0d);
+
+            Assert.True(spell.IsFinished);
+            Assert.Equal(3, removalAttempts);
+            Assert.Single(context.Packets.OfType<ServerSpellFinish>());
+        }
+
+        [Fact]
+        public void TrackProc_CustomEqualityTracksEachExactReferenceForCleanup()
+        {
+            using var context = new SpellTimelineTestContext();
+            var target = new Mock<IUnitEntity>();
+            var removedProcs = new List<IProcInfo>();
+            target.Setup(entity => entity.RemoveProc(It.IsAny<IProcInfo>()))
+                .Callback<IProcInfo>(removedProcs.Add)
+                .Returns(true);
+            var first = new EqualityCollidingProcInfo(target.Object, 1u);
+            var second = new EqualityCollidingProcInfo(target.Object, 2u);
+            var spell = new TestTimelineSpell(
+                context.Caster.Object,
+                SpellTimelineTestContext.CreateParameters(
+                    CastMethod.Normal,
+                    new Spell4Entry { Id = 123u },
+                    []));
+            spell.TrackProc(target.Object, first);
+            spell.TrackProc(target.Object, second);
+
+            spell.Finish();
+
+            Assert.Collection(
+                removedProcs,
+                proc => Assert.Same(first, proc),
+                proc => Assert.Same(second, proc));
+        }
+
+        [Fact]
+        public void EffectExpiry_RemovesOnlyMatchingStaticEffectIdentity()
+        {
+            using var context = new SpellTimelineTestContext();
+            var target = new Mock<IUnitEntity>();
+            target.SetupGet(entity => entity.IsAlive).Returns(true);
+            target.Setup(entity => entity.AddSpellModifierProperty(It.IsAny<ISpellPropertyModifier>()))
+                .Returns(true);
+            target.Setup(entity => entity.RemoveSpellModifierProperty(
+                    It.IsAny<Property>(),
+                    It.IsAny<SpellEffectIdentity>()))
+                .Returns(true);
+            var spell = new TestTimelineSpell(
+                context.Caster.Object,
+                SpellTimelineTestContext.CreateParameters(
+                    CastMethod.Normal,
+                    new Spell4Entry { Id = 123u },
+                    []));
+            var first = new SpellPropertyModifier(
+                new SpellEffectIdentity(spell.CastingId, 123u, 1u),
+                Property.Strength,
+                1u,
+                0f,
+                5f,
+                0f);
+            var second = new SpellPropertyModifier(
+                new SpellEffectIdentity(spell.CastingId, 123u, 2u),
+                Property.Dexterity,
+                1u,
+                0f,
+                7f,
+                0f);
+            spell.ApplyPropertyModifier(target.Object, first);
+            spell.ApplyPropertyModifier(target.Object, second);
+
+            spell.ExpireEffectForTest(new Spell4EffectsEntry { Id = 1u });
+
+            target.Verify(entity => entity.RemoveSpellModifierProperty(
+                Property.Strength,
+                first.Identity), Times.Once);
+            target.Verify(entity => entity.RemoveSpellModifierProperty(
+                Property.Dexterity,
+                second.Identity), Times.Never);
+
+            spell.Finish();
+            target.Verify(entity => entity.RemoveSpellModifierProperty(
+                Property.Dexterity,
+                second.Identity), Times.Once);
         }
 
         [Fact]
@@ -463,6 +745,46 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Empty(Assert.Single(context.Packets.OfType<ServerSpellGo>()).TargetInfoData);
             Assert.True(spell.IsFinished);
         }
+
+        private sealed class EqualityCollidingProcInfo : IProcInfo
+        {
+            public IUnitEntity Owner { get; }
+            public uint EffectId { get; }
+            public uint ApplicatorSpell4Id => 0u;
+            public ProcType Type => ProcType.OnHit;
+            public uint TriggerSpell4Id => 0u;
+            public float Chance => 1f;
+            public bool CanTrigger => true;
+
+            public EqualityCollidingProcInfo(IUnitEntity owner, uint effectId)
+            {
+                Owner = owner;
+                EffectId = effectId;
+            }
+
+            public bool Trigger(IUnitEntity primaryTarget = null)
+            {
+                return true;
+            }
+
+            public void Cancel()
+            {
+            }
+
+            public void Update(double lastTick)
+            {
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is EqualityCollidingProcInfo;
+            }
+
+            public override int GetHashCode()
+            {
+                return 0;
+            }
+        }
     }
 
     internal sealed class SpellTimelineTestContext : IDisposable
@@ -508,6 +830,7 @@ namespace NexusForever.Game.Tests.Spell
             LegacyServiceProvider.Provider = serviceProvider;
 
             Caster.SetupGet(entity => entity.Guid).Returns(7u);
+            Caster.SetupGet(entity => entity.IsAlive).Returns(true);
             Caster.SetupGet(entity => entity.InWorld).Returns(true);
             Caster.SetupGet(entity => entity.Map).Returns(Map.Object);
             Caster.Setup(entity => entity.EnqueueToVisible(It.IsAny<IWritable>(), It.IsAny<bool>()))
@@ -574,9 +897,32 @@ namespace NexusForever.Game.Tests.Spell
             Execute(consumeVitalCost);
         }
 
+        public void FailCastForTest(CastResult result)
+        {
+            FailCast(result);
+        }
+
+        public void FailExecutionForTest(CastResult result)
+        {
+            FailExecution(result);
+        }
+
+        public void ExpireEffectForTest(Spell4EffectsEntry effect)
+        {
+            OnEffectExpired(effect);
+        }
+
         public void SetStatus(SpellStatus value)
         {
             status = value;
         }
+    }
+
+    public enum StartedSpellCompletion
+    {
+        Natural,
+        Cancel,
+        ExecutionFailure,
+        ForcedFinish
     }
 }

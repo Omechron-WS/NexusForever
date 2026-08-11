@@ -1,17 +1,27 @@
 ﻿using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Static.Entity;
 
 namespace NexusForever.Game.Entity
 {
     public class SpellPropertyModifier : ISpellPropertyModifier
     {
+        public SpellEffectIdentity Identity { get; }
         public Property Property { get; }
         public uint Priority { get; }
         public List<IPropertyModifier> Alterations { get; } = new();
         public uint StackCount { get; } // TODO: Should we have StackCount on this? I presume we just want to have spell effects stack up individually, not tracked in each SpellPropertyModifier
 
-        public SpellPropertyModifier(Property property, uint priority, float value2, float value3, float value4, uint stackCount = 1)
+        public SpellPropertyModifier(
+            SpellEffectIdentity identity,
+            Property property,
+            uint priority,
+            float value2,
+            float value3,
+            float value4,
+            uint stackCount = 1)
         {
+            Identity   = identity;
             Property   = property;
             Priority   = priority;
             StackCount = stackCount;

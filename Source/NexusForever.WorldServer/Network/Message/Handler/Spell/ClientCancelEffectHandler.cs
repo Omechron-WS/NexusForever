@@ -16,7 +16,6 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Spell
             if (spell == null)
                 return;
 
-            // Finish first so a packet publication failure cannot leave an open-ended effect active.
             try
             {
                 spell.Finish();
@@ -24,18 +23,6 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Spell
             catch (Exception exception)
             {
                 log.Error(exception, $"Failed to finish client-cancelled spell {spell.CastingId}.");
-            }
-
-            try
-            {
-                session.Player.EnqueueToVisible(new ServerSpellFinish
-                {
-                    ServerUniqueId = spell.CastingId
-                }, true);
-            }
-            catch (Exception exception)
-            {
-                log.Error(exception, $"Failed to acknowledge client-cancelled spell {spell.CastingId}.");
             }
         }
     }

@@ -6,6 +6,7 @@ using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Entity.Movement;
 using NexusForever.Game.Abstract.Loot;
 using NexusForever.Game.Abstract.Map;
+using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Entity;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Spell;
@@ -59,6 +60,37 @@ namespace NexusForever.Game.Tests.Entity
             Assert.Equal(EntityDeathState.JustDied, entity.StateDuringReward);
             Assert.Equal(EntityDeathState.Corpse, entity.CurrentDeathState);
             map.Verify(world => world.ScheduleRespawn(entity), Times.Once);
+        }
+
+        [Fact]
+        public void OnDeath_FinishesPendingSpellBeforeItsCentralLateUpdate()
+        {
+            var map = new Mock<IBaseMap>();
+            map.Setup(world => world.ScheduleRespawn(It.IsAny<IWorldEntity>())).Returns(true);
+            TestUnitEntity entity = CreateEntity(map.Object, 42u);
+            var operations = new List<string>();
+            bool lateUpdated = false;
+            var spell = new Mock<ISpell>();
+            spell.SetupGet(value => value.IsCasting).Returns(false);
+            spell.SetupGet(value => value.IsFinished).Returns(() => lateUpdated);
+            spell.Setup(value => value.Finish()).Callback(() => operations.Add("finish"));
+            spell.Setup(value => value.LateUpdate(It.IsAny<double>())).Callback(() =>
+            {
+                operations.Add("late-update");
+                lateUpdated = true;
+            });
+            spell.Setup(value => value.Dispose()).Callback(() => operations.Add("dispose"));
+            entity.AddPendingSpell(spell.Object);
+
+            entity.ModifyHealth(100u, DamageType.Physical, null);
+
+            Assert.Equal(["finish"], operations);
+
+            entity.Update(0d);
+
+            Assert.Equal(["finish", "late-update", "dispose"], operations);
+            spell.Verify(value => value.Finish(), Times.Once);
+            spell.Verify(value => value.LateUpdate(0d), Times.Once);
         }
 
         [Fact]
@@ -377,6 +409,14 @@ namespace NexusForever.Game.Tests.Entity
             {
                 AddVisible(player);
                 ThreatManager.UpdateThreat(player, 1);
+            }
+
+            public void AddPendingSpell(ISpell spell)
+            {
+                FieldInfo pendingSpellsField = typeof(UnitEntity).GetField(
+                    "pendingSpells",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                ((List<ISpell>)pendingSpellsField.GetValue(this)).Add(spell);
             }
 
             public int GetParticipantRewardCount(ulong characterId)

@@ -1,8 +1,10 @@
 using NexusForever.Game.Abstract.Combat;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Spell;
+using NexusForever.Game.Entity;
 using NexusForever.Game.Spell;
 using NexusForever.Game.Spell.SpellType;
+using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Spell;
 using NexusForever.Game.Tests.Combat;
 using NexusForever.GameTable.Model;
@@ -116,6 +118,14 @@ namespace NexusForever.Game.Tests.Spell
             using var context = new SpellTimelineTestContext();
             var firstTarget = new Mock<IUnitEntity>();
             firstTarget.SetupGet(entity => entity.Guid).Returns(10u);
+            firstTarget.SetupGet(entity => entity.IsAlive).Returns(true);
+            firstTarget.Setup(entity => entity.AddSpellModifierProperty(
+                    It.IsAny<ISpellPropertyModifier>()))
+                .Returns(true);
+            firstTarget.Setup(entity => entity.RemoveSpellModifierProperty(
+                    It.IsAny<Property>(),
+                    It.IsAny<SpellEffectIdentity>()))
+                .Returns(true);
             var replacementTarget = new Mock<IUnitEntity>();
             replacementTarget.SetupGet(entity => entity.Guid).Returns(10u);
             IUnitEntity visibleTarget = firstTarget.Object;
@@ -137,6 +147,14 @@ namespace NexusForever.Game.Tests.Spell
             var firstProc = new Mock<IProcInfo>();
             firstProc.SetupGet(value => value.Owner).Returns(firstTarget.Object);
             spell.TrackProc(firstTarget.Object, firstProc.Object);
+            var modifier = new SpellPropertyModifier(
+                new SpellEffectIdentity(spell.CastingId, 123u, effect.Id),
+                Property.Strength,
+                1u,
+                0f,
+                5f,
+                0f);
+            Assert.True(spell.ApplyPropertyModifier(firstTarget.Object, modifier));
 
             spell.Cast();
             spell.Update(0d);
@@ -149,6 +167,9 @@ namespace NexusForever.Game.Tests.Spell
                 invocation => Assert.Same(firstTarget.Object, invocation.Target),
                 invocation => Assert.Same(replacementTarget.Object, invocation.Target));
             firstTarget.Verify(target => target.RemoveProc(firstProc.Object), Times.Once);
+            firstTarget.Verify(target => target.RemoveSpellModifierProperty(
+                Property.Strength,
+                modifier.Identity), Times.Once);
         }
 
         [Theory]

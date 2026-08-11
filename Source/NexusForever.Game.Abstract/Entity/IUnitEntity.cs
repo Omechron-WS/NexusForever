@@ -67,19 +67,21 @@ namespace NexusForever.Game.Abstract.Entity
         bool TryModifyVital(Vital vital, float delta, IUnitEntity source = null);
 
         /// <summary>
-        /// Add a <see cref="Property"/> modifier given a Spell4Id and <see cref="ISpellPropertyModifier"/> instance.
+        /// Add or refresh an owned <see cref="Property"/> modifier.
         /// </summary>
-        void AddSpellModifierProperty(ISpellPropertyModifier modifier, uint spell4Id);
+        /// <returns><see langword="true"/> when the modifier was applied; otherwise, <see langword="false"/>.</returns>
+        bool AddSpellModifierProperty(ISpellPropertyModifier modifier);
 
         /// <summary>
-        /// Remove a <see cref="Property"/> modifier by a Spell that is currently affecting this <see cref="IUnitEntity"/>.
+        /// Remove one exact owned <see cref="Property"/> modifier.
         /// </summary>
-        void RemoveSpellProperty(Property property, uint spell4Id);
+        /// <returns><see langword="true"/> when the modifier was present; otherwise, <see langword="false"/>.</returns>
+        bool RemoveSpellModifierProperty(Property property, SpellEffectIdentity identity);
 
         /// <summary>
-        /// Remove all <see cref="Property"/> modifiers by a Spell that is currently affecting this <see cref="IUnitEntity"/>
+        /// Remove all spell-owned <see cref="Property"/> modifiers affecting this <see cref="IUnitEntity"/>.
         /// </summary>
-        void RemoveSpellProperties(uint spell4Id);
+        void ClearSpellModifierProperties();
 
         /// <summary>
         /// Cast a <see cref="ISpell"/> with the supplied spell id and <see cref="ISpellParameters"/>.

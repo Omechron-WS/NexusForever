@@ -993,6 +993,11 @@ namespace NexusForever.Game.Tests.Spell
                 IsFinished = true;
             }
 
+            public bool ApplyPropertyModifier(IUnitEntity target, ISpellPropertyModifier modifier)
+            {
+                return false;
+            }
+
             public virtual void Dispose()
             {
             }

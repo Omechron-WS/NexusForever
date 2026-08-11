@@ -83,6 +83,30 @@ namespace NexusForever.Game.Tests.CSI
             interaction.Verify(value => value.CompleteSuccess(), Times.Once);
         }
 
+        [Fact]
+        public void ProxyCast_DedicatedStartPublishesOneFinishFromLateUpdate()
+        {
+            Mock<IClientSideInteraction> interaction = CreateInteraction(entry: null);
+            Mock<IPlayer> player = CreatePlayer(out _);
+            var spell = new TestClientSideInteractionSpell(
+                player.Object,
+                CreateParameters(CastMethod.Normal, interaction.Object));
+            spell.Cast();
+
+            spell.Finish();
+
+            player.Verify(value => value.EnqueueToVisible(
+                It.IsAny<ServerSpellFinish>(), true), Times.Never);
+
+            spell.LateUpdate(0d);
+            spell.LateUpdate(0d);
+            spell.Dispose();
+
+            player.Verify(value => value.EnqueueToVisible(
+                It.Is<ServerSpellFinish>(message => message.ServerUniqueId == spell.CastingId),
+                true), Times.Once);
+        }
+
         [Theory]
         [InlineData(0u, 0u, 65d)]
         [InlineData(1_000u, 2_500u, 8.5d)]

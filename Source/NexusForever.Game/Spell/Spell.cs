@@ -4,6 +4,7 @@ using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Abstract.Spell.Event;
 using NexusForever.Game.Prerequisite;
 using NexusForever.Game.Spell.Event;
+using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Spell;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
@@ -36,6 +37,7 @@ namespace NexusForever.Game.Spell
 
         protected readonly List<ISpellTargetInfo> targets = new();
         protected readonly List<ITelegraph> telegraphs = new();
+        private readonly Dictionary<IUnitEntity, Dictionary<SpellEffectIdentity, Property>> trackedPropertyModifiers = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<IUnitEntity, List<IProcInfo>> trackedProcs = new(ReferenceEqualityComparer.Instance);
 
         protected readonly ISpellEventManager events = new SpellEventManager();
@@ -46,6 +48,8 @@ namespace NexusForever.Game.Spell
 
         private IScriptCollection scriptCollection;
         private bool executionCommitted;
+        private bool startPublished;
+        private bool finishPublicationAttempted;
         private ulong nextEffectActivationId;
 
         protected byte currentPhase = 255;
@@ -87,9 +91,12 @@ namespace NexusForever.Game.Spell
         {
             if (CanFinish())
             {
-                RemoveAllEffects();
+                if (!RemoveAllEffects())
+                    return;
+
                 status = SpellStatus.Finished;
                 log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} has finished.");
+                SendSpellFinish();
             }
         }
 
@@ -353,6 +360,54 @@ namespace NexusForever.Game.Spell
         }
 
         /// <summary>
+        /// Apply and track a property modifier owned by this spell.
+        /// </summary>
+        public bool ApplyPropertyModifier(IUnitEntity target, ISpellPropertyModifier modifier)
+        {
+            ArgumentNullException.ThrowIfNull(target);
+            ArgumentNullException.ThrowIfNull(modifier);
+
+            SpellEffectIdentity identity = modifier.Identity;
+            if (identity.CastingId != CastingId
+                || identity.Spell4Id != Parameters.SpellInfo.Entry.Id)
+                throw new ArgumentException("The property modifier is not owned by this spell.", nameof(modifier));
+
+            if (!target.IsAlive || !target.AddSpellModifierProperty(modifier))
+                return false;
+
+            try
+            {
+                if (!trackedPropertyModifiers.TryGetValue(
+                    target,
+                    out Dictionary<SpellEffectIdentity, Property> modifiers))
+                {
+                    modifiers = [];
+                    trackedPropertyModifiers.Add(target, modifiers);
+                }
+
+                if (modifiers.TryGetValue(identity, out Property property)
+                    && property != modifier.Property)
+                    throw new InvalidOperationException("A spell effect identity cannot own modifiers for multiple properties.");
+
+                modifiers[identity] = modifier.Property;
+                return true;
+            }
+            catch
+            {
+                try
+                {
+                    target.RemoveSpellModifierProperty(modifier.Property, identity);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to roll back property modifier {identity} on target {target.Guid}.");
+                }
+
+                throw;
+            }
+        }
+
+        /// <summary>
         /// Track a proc applied by this spell so it can be removed with the spell's effects.
         /// </summary>
         public void TrackProc(IUnitEntity target, IProcInfo proc)
@@ -369,7 +424,7 @@ namespace NexusForever.Game.Spell
                 trackedProcs.Add(target, procs);
             }
 
-            if (!procs.Contains(proc))
+            if (!procs.Any(candidate => ReferenceEquals(candidate, proc)))
                 procs.Add(proc);
         }
 
@@ -381,16 +436,65 @@ namespace NexusForever.Game.Spell
             if (target?.Entity == null)
                 return;
 
+            RemoveTrackedPropertyModifiers(target.Entity);
             RemoveTrackedProcs(target.Entity);
+        }
+
+        private void RemoveTrackedPropertyModifiers(IUnitEntity target)
+        {
+            if (!trackedPropertyModifiers.TryGetValue(
+                target,
+                out Dictionary<SpellEffectIdentity, Property> modifiers))
+                return;
+
+            foreach ((SpellEffectIdentity identity, Property property) in modifiers.ToArray())
+                RemoveTrackedPropertyModifier(target, modifiers, identity, property);
+
+            if (modifiers.Count == 0)
+                trackedPropertyModifiers.Remove(target);
+        }
+
+        private void RemoveTrackedPropertyModifiers(uint spell4EffectId)
+        {
+            foreach ((IUnitEntity target, Dictionary<SpellEffectIdentity, Property> modifiers) in trackedPropertyModifiers.ToArray())
+            {
+                foreach ((SpellEffectIdentity identity, Property property) in modifiers
+                    .Where(modifier => modifier.Key.Spell4EffectId == spell4EffectId)
+                    .ToArray())
+                    RemoveTrackedPropertyModifier(target, modifiers, identity, property);
+
+                if (modifiers.Count == 0)
+                    trackedPropertyModifiers.Remove(target);
+            }
+        }
+
+        private void RemoveTrackedPropertyModifier(
+            IUnitEntity target,
+            Dictionary<SpellEffectIdentity, Property> modifiers,
+            SpellEffectIdentity identity,
+            Property property)
+        {
+            try
+            {
+                target.RemoveSpellModifierProperty(property, identity);
+                modifiers.Remove(identity);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to remove property modifier {identity} from target {target.Guid}.");
+            }
         }
 
         private void RemoveTrackedProcs(IUnitEntity target)
         {
-            if (!trackedProcs.Remove(target, out List<IProcInfo> procs))
+            if (!trackedProcs.TryGetValue(target, out List<IProcInfo> procs))
                 return;
 
-            foreach (IProcInfo proc in procs)
-                target.RemoveProc(proc);
+            foreach (IProcInfo proc in procs.ToArray())
+                RemoveTrackedProc(target, procs, proc);
+
+            if (procs.Count == 0)
+                trackedProcs.Remove(target);
         }
 
         private void RemoveTrackedProcs(uint effectId)
@@ -398,23 +502,41 @@ namespace NexusForever.Game.Spell
             foreach ((IUnitEntity target, List<IProcInfo> procs) in trackedProcs.ToArray())
             {
                 foreach (IProcInfo proc in procs.Where(proc => proc.EffectId == effectId).ToArray())
-                {
-                    target.RemoveProc(proc);
-                    procs.Remove(proc);
-                }
+                    RemoveTrackedProc(target, procs, proc);
 
                 if (procs.Count == 0)
                     trackedProcs.Remove(target);
             }
         }
 
-        private void RemoveAllEffects()
+        private void RemoveTrackedProc(IUnitEntity target, List<IProcInfo> procs, IProcInfo proc)
+        {
+            try
+            {
+                target.RemoveProc(proc);
+
+                int index = procs.FindIndex(candidate => ReferenceEquals(candidate, proc));
+                if (index >= 0)
+                    procs.RemoveAt(index);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to remove proc effect {proc.EffectId} from target {target.Guid}.");
+            }
+        }
+
+        private bool RemoveAllEffects()
         {
             effectTimeline.Cancel();
             effectActivationSnapshots.Clear();
 
+            foreach (IUnitEntity target in trackedPropertyModifiers.Keys.ToArray())
+                RemoveTrackedPropertyModifiers(target);
+
             foreach (IUnitEntity target in trackedProcs.Keys.ToArray())
                 RemoveTrackedProcs(target);
+
+            return trackedPropertyModifiers.Count == 0 && trackedProcs.Count == 0;
         }
 
         protected virtual void Execute(bool consumeVitalCost = true)
@@ -760,6 +882,7 @@ namespace NexusForever.Game.Spell
         /// </summary>
         protected virtual void OnEffectExpired(Spell4EffectsEntry effect)
         {
+            RemoveTrackedPropertyModifiers(effect.Id);
             RemoveTrackedProcs(effect.Id);
         }
 
@@ -1278,17 +1401,37 @@ namespace NexusForever.Game.Spell
             }
 
             Caster.EnqueueToVisible(spellStart, true);
+            MarkSpellStartPublished();
+        }
+
+        /// <summary>
+        /// Record that this spell's start packet was published by a specialised spell type.
+        /// </summary>
+        protected void MarkSpellStartPublished()
+        {
+            startPublished = true;
         }
 
         protected void SendSpellFinish()
         {
-            if (status != SpellStatus.Finished)
+            if (status != SpellStatus.Finished
+                || !startPublished
+                || finishPublicationAttempted)
                 return;
 
-            Caster.EnqueueToVisible(new ServerSpellFinish
+            finishPublicationAttempted = true;
+
+            try
             {
-                ServerUniqueId = CastingId,
-            }, true);
+                Caster.EnqueueToVisible(new ServerSpellFinish
+                {
+                    ServerUniqueId = CastingId,
+                }, true);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to publish finish for spell {Parameters.SpellInfo.Entry.Id} cast {CastingId}.");
+            }
         }
 
         private void TrySendSpellGoEffect(
