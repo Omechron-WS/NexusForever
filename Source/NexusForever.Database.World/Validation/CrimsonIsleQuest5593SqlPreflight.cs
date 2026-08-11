@@ -22,6 +22,14 @@ namespace NexusForever.Database.World.Validation
         private const uint MineCreatureId = 24_251u;
         private const uint ScrabCreatureId = 24_054u;
 
+        private static readonly ushort[] RequiredReplacementAreas =
+        [
+            622, 623, 629, 1_217, 1_218, 1_219, 1_225, 1_226, 1_227, 1_236,
+            1_237, 1_244, 1_284, 1_320, 1_325, 1_360, 1_361, 1_611, 1_885, 4_674
+        ];
+
+        private static readonly HashSet<ushort> RequiredReplacementAreaSet = new(RequiredReplacementAreas);
+
         private static readonly Regex SetWorldPattern = new(
             @"^\s*SET\s+@WORLD\s*=\s*(?<world>[0-9]+)\s*;\s*$",
             RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
@@ -31,23 +39,27 @@ namespace NexusForever.Database.World.Validation
             RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
         private static readonly Regex SetGuidPattern = new(
-            @"^\s*SET\s+@GUID\s*=\s*\(\s*SELECT\s+IFNULL\s*\(\s*MAX\s*\(\s*`?id`?\s*\)\s*,\s*0\s*\)\s+FROM\s+`?entity`?\s*\)\s*;\s*$",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+            @"^\s*(?i:SET)\s+(?i:@GUID)\s*=\s*\(\s*(?i:SELECT)\s+(?i:IFNULL)\s*\(\s*(?i:MAX)\s*\(\s*`id`\s*\)\s*,\s*0\s*\)\s+(?i:FROM)\s+`entity`\s*\)\s*;\s*$",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
         private static readonly Regex SetGuidPrefixPattern = new(
             @"^\s*SET\s+@GUID\b",
             RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
-        private static readonly Regex InsertPattern = new(
-            @"^\s*INSERT\s+INTO\s+`?(?<table>[A-Za-z_][A-Za-z0-9_]*)`?\s*\((?<columns>[^)]*)\)\s+VALUES\s*$",
+        private static readonly Regex DeletePattern = new(
+            @"^\s*(?i:DELETE)\s+(?i:FROM)\s+`entity`\s+(?i:WHERE)\s+`world`\s*=\s*(?i:@WORLD)\s+(?i:AND)\s+`area`\s+(?i:IN)\s*\((?<areas>[0-9]+(?:\s*,\s*[0-9]+)*)\)\s*;\s*$",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+        private static readonly Regex DeletePrefixPattern = new(
+            @"^\s*DELETE\b",
             RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+        private static readonly Regex InsertPattern = new(
+            @"^\s*(?i:INSERT\s+INTO)\s+`(?<table>entity|entity_stats|entity_spline|entity_event)`\s*\((?<columns>[^)]*)\)\s+(?i:VALUES)\s*$",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
         private static readonly Regex InsertTablePattern = new(
             @"^\s*INSERT\s+INTO\s+(?:`?[A-Za-z_][A-Za-z0-9_]*`?\s*\.\s*)?`?(?<table>[A-Za-z_][A-Za-z0-9_]*)`?",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-
-        private static readonly Regex TargetTableReferencePattern = new(
-            @"\b(entity|entity_stats|entity_spline|entity_event)\b",
             RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
         private static readonly Regex TuplePattern = new(
@@ -56,9 +68,13 @@ namespace NexusForever.Database.World.Validation
 
         private static readonly Regex RelativeIdPattern = new(
             @"^@GUID\s*\+\s*(?<offset>[0-9]+)$",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-        private static readonly HashSet<string> TargetTables = new(StringComparer.OrdinalIgnoreCase)
+        private static readonly Regex ColumnPattern = new(
+            @"^`(?<column>[A-Za-z][A-Za-z0-9]*)`$",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+        private static readonly HashSet<string> TargetTables = new(StringComparer.Ordinal)
         {
             "entity",
             "entity_stats",
@@ -93,6 +109,12 @@ namespace NexusForever.Database.World.Validation
             private int generation = -1;
             private uint? currentWorld;
             private TargetInsert currentInsert;
+            private HashSet<ushort> deletedAreas;
+            private int deleteStatementCount;
+            private bool contentStarted;
+            private int entityInsertCountForGeneration;
+            private bool entityInsertCompletedForGeneration;
+            private readonly HashSet<string> insertedTablesForGeneration = new(StringComparer.Ordinal);
 
             public void Parse(string sql)
             {
@@ -102,8 +124,10 @@ namespace NexusForever.Database.World.Validation
                 while ((line = reader.ReadLine()) != null)
                 {
                     lineNumber++;
-                    string statement = RemoveLineComment(line).Trim();
+                    string statement = line.Trim();
                     if (statement.Length == 0)
+                        continue;
+                    if (IsLineComment(statement))
                         continue;
 
                     if (currentInsert != null)
@@ -153,9 +177,33 @@ namespace NexusForever.Database.World.Validation
                         continue;
                     }
 
+                    Match deleteMatch = DeletePattern.Match(statement);
+                    if (deleteMatch.Success)
+                    {
+                        ParseDelete(deleteMatch.Groups["areas"].Value, lineNumber);
+                        continue;
+                    }
+
+                    if (DeletePrefixPattern.IsMatch(statement))
+                    {
+                        diagnostics.Add($"Line {lineNumber}: malformed or unsupported DELETE statement.");
+                        continue;
+                    }
+
                     if (SetGuidPattern.IsMatch(statement))
                     {
+                        ValidateGenerationCompletion(lineNumber);
+                        if (deleteStatementCount != 1)
+                        {
+                            diagnostics.Add(
+                                $"Line {lineNumber}: @GUID generation must follow the one valid scoped DELETE.");
+                        }
+
+                        contentStarted = true;
                         generation++;
+                        entityInsertCountForGeneration = 0;
+                        entityInsertCompletedForGeneration = false;
+                        insertedTablesForGeneration.Clear();
                         continue;
                     }
 
@@ -169,13 +217,19 @@ namespace NexusForever.Database.World.Validation
                     Match insertMatch = InsertPattern.Match(statement);
                     if (insertMatch.Success)
                     {
+                        contentStarted = true;
                         string table = insertMatch.Groups["table"].Value;
                         if (TargetTables.Contains(table))
                         {
+                            ValidateInsertOrder(table, lineNumber);
                             currentInsert = CreateTargetInsert(
                                 table,
                                 insertMatch.Groups["columns"].Value,
                                 lineNumber);
+                        }
+                        else
+                        {
+                            diagnostics.Add($"Line {lineNumber}: INSERT into unsupported table `{table}`.");
                         }
 
                         continue;
@@ -184,15 +238,12 @@ namespace NexusForever.Database.World.Validation
                     Match insertTableMatch = InsertTablePattern.Match(statement);
                     if (insertTableMatch.Success && TargetTables.Contains(insertTableMatch.Groups["table"].Value))
                     {
+                        contentStarted = true;
                         diagnostics.Add($"Line {lineNumber}: malformed `{insertTableMatch.Groups["table"].Value}` INSERT header.");
                         continue;
                     }
 
-                    if (statement.StartsWith("INSERT", StringComparison.OrdinalIgnoreCase)
-                        && TargetTableReferencePattern.IsMatch(statement))
-                    {
-                        diagnostics.Add($"Line {lineNumber}: unsupported target-table INSERT syntax.");
-                    }
+                    diagnostics.Add($"Line {lineNumber}: unsupported SQL statement.");
                 }
 
                 if (currentInsert != null)
@@ -201,7 +252,105 @@ namespace NexusForever.Database.World.Validation
                     currentInsert = null;
                 }
 
+                ValidateGenerationCompletion(lineNumber + 1);
                 ValidateOrphans();
+            }
+
+            private static bool IsLineComment(string line)
+            {
+                return line.StartsWith("--", StringComparison.Ordinal)
+                    && (line.Length == 2 || line[2] is ' ' or '\t');
+            }
+
+            private void ValidateGenerationCompletion(int lineNumber)
+            {
+                if (generation < 0
+                    || (entityInsertCountForGeneration == 1 && entityInsertCompletedForGeneration))
+                {
+                    return;
+                }
+
+                diagnostics.Add(
+                    $"Line {lineNumber}: @GUID generation {generation} must contain exactly one completed entity INSERT; "
+                    + $"found {entityInsertCountForGeneration} header(s), completed={entityInsertCompletedForGeneration}.");
+            }
+
+            private void ValidateInsertOrder(string table, int lineNumber)
+            {
+                if (table == "entity")
+                {
+                    entityInsertCountForGeneration++;
+                    if (generation < 0)
+                    {
+                        diagnostics.Add(
+                            $"Line {lineNumber}: entity INSERT must follow a valid @GUID generation.");
+                    }
+                    else if (entityInsertCountForGeneration > 1)
+                    {
+                        diagnostics.Add(
+                            $"Line {lineNumber}: @GUID generation {generation} contains more than one entity INSERT.");
+                    }
+
+                    insertedTablesForGeneration.Add(table);
+                    return;
+                }
+
+                if (generation < 0 || !entityInsertCompletedForGeneration)
+                {
+                    diagnostics.Add(
+                        $"Line {lineNumber}: `{table}` INSERT must follow the one completed entity INSERT in its @GUID generation.");
+                }
+
+                if (!insertedTablesForGeneration.Add(table))
+                {
+                    diagnostics.Add(
+                        $"Line {lineNumber}: @GUID generation {generation} repeats the `{table}` INSERT.");
+                }
+
+                if (table == "entity_spline"
+                    && (insertedTablesForGeneration.Contains("entity_event")
+                        || insertedTablesForGeneration.Contains("entity_stats")))
+                {
+                    diagnostics.Add(
+                        $"Line {lineNumber}: `entity_spline` INSERT must precede event and stat INSERTs.");
+                }
+                else if (table == "entity_event" && insertedTablesForGeneration.Contains("entity_stats"))
+                {
+                    diagnostics.Add(
+                        $"Line {lineNumber}: `entity_event` INSERT must precede the stat INSERT.");
+                }
+            }
+
+            private void ParseDelete(string areaList, int lineNumber)
+            {
+                deleteStatementCount++;
+                if (currentWorld != RequiredWorldId)
+                {
+                    diagnostics.Add(
+                        $"Line {lineNumber}: the scoped DELETE must follow the exact @WORLD {RequiredWorldId} assignment.");
+                }
+
+                if (contentStarted)
+                {
+                    diagnostics.Add(
+                        $"Line {lineNumber}: the scoped DELETE must precede every @GUID assignment and INSERT.");
+                }
+
+                var parsedAreas = new HashSet<ushort>();
+                foreach (string value in areaList.Split(',', StringSplitOptions.TrimEntries))
+                {
+                    if (!ushort.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out ushort area))
+                    {
+                        diagnostics.Add(
+                            $"Line {lineNumber}: DELETE area `{value}` is outside the supported unsigned 16-bit range.");
+                        continue;
+                    }
+
+                    if (!parsedAreas.Add(area))
+                        diagnostics.Add($"Line {lineNumber}: DELETE area {area} is repeated.");
+                }
+
+                deletedAreas ??= parsedAreas;
             }
 
             public CrimsonIsleQuest5593SqlPreflightResult CreateResult(string sha256)
@@ -221,28 +370,25 @@ namespace NexusForever.Database.World.Validation
                     new ReadOnlyCollection<string>(diagnostics.ToArray()));
             }
 
-            private static string RemoveLineComment(string line)
-            {
-                int commentIndex = line.IndexOf("--", StringComparison.Ordinal);
-                return commentIndex < 0 ? line : line[..commentIndex];
-            }
-
             private TargetInsert CreateTargetInsert(string table, string columnList, int lineNumber)
             {
                 string[] columns = columnList
                     .Split(',', StringSplitOptions.TrimEntries);
-                var columnIndexes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                var columnIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
                 bool isValid = columns.Length > 0;
 
                 for (int index = 0; index < columns.Length; index++)
                 {
-                    string column = columns[index].Trim().Trim('`');
-                    if (column.Length == 0)
+                    Match columnMatch = ColumnPattern.Match(columns[index]);
+                    if (!columnMatch.Success)
                     {
-                        diagnostics.Add($"Line {lineNumber}: `{table}` INSERT contains an empty column name.");
+                        diagnostics.Add(
+                            $"Line {lineNumber}: `{table}` INSERT contains malformed column token `{columns[index]}`.");
                         isValid = false;
                         continue;
                     }
+
+                    string column = columnMatch.Groups["column"].Value;
 
                     if (!columnIndexes.TryAdd(column, index))
                     {
@@ -275,7 +421,7 @@ namespace NexusForever.Database.World.Validation
 
             private static IReadOnlyList<string> GetRequiredColumns(string table)
             {
-                return table.ToLowerInvariant() switch
+                return table switch
                 {
                     "entity" =>
                     [
@@ -291,8 +437,8 @@ namespace NexusForever.Database.World.Validation
 
             private static HashSet<string> GetAllowedColumns(string table)
             {
-                var columns = new HashSet<string>(GetRequiredColumns(table), StringComparer.OrdinalIgnoreCase);
-                if (table.Equals("entity", StringComparison.OrdinalIgnoreCase))
+                var columns = new HashSet<string>(GetRequiredColumns(table), StringComparer.Ordinal);
+                if (table == "entity")
                     columns.Add("ActivePropId");
                 return columns;
             }
@@ -311,7 +457,7 @@ namespace NexusForever.Database.World.Validation
                 if (!insert.IsValid)
                     return;
 
-                switch (insert.Table.ToLowerInvariant())
+                switch (insert.Table)
                 {
                     case "entity":
                         ParseEntity(insert, values, lineNumber);
@@ -363,11 +509,17 @@ namespace NexusForever.Database.World.Validation
                 bool activePropIdIsValid = !insert.Columns.ContainsKey("ActivePropId")
                     || TryParseUInt64(
                         GetValue(insert, values, "ActivePropId"), insert.Table, "ActivePropId", lineNumber, out _);
+                bool areaIsInReplacementScope = !areaIsValid || RequiredReplacementAreaSet.Contains(area);
+                if (areaIsValid && !areaIsInReplacementScope)
+                {
+                    diagnostics.Add(
+                        $"Line {lineNumber}: entity area {area} is outside the exact Crimson Isle replacement scope.");
+                }
 
                 if (!idIsValid || !typeIsValid || !creatureIsValid || !worldIsValid || !areaIsValid
                     || !xIsValid || !yIsValid || !zIsValid || !rxIsValid || !ryIsValid || !rzIsValid
                     || !displayInfoIsValid || !outfitInfoIsValid || !faction1IsValid || !faction2IsValid
-                    || !activePropIdIsValid)
+                    || !activePropIdIsValid || !areaIsInReplacementScope)
                 {
                     return;
                 }
@@ -470,24 +622,24 @@ namespace NexusForever.Database.World.Validation
 
             private bool TryParseWorld(string value, int lineNumber, out uint world)
             {
-                if (value.Equals("@WORLD", StringComparison.OrdinalIgnoreCase))
+                if (value.Equals("@WORLD", StringComparison.Ordinal))
                 {
-                    if (currentWorld.HasValue && currentWorld.Value <= ushort.MaxValue)
+                    if (currentWorld == RequiredWorldId)
                     {
                         world = currentWorld.Value;
                         return true;
                     }
 
                     diagnostics.Add(currentWorld.HasValue
-                        ? $"Line {lineNumber}: @WORLD is outside the supported unsigned 16-bit range."
+                        ? $"Line {lineNumber}: entity rows require @WORLD {RequiredWorldId}."
                         : $"Line {lineNumber}: @WORLD is used before a valid assignment.");
                     world = 0u;
                     return false;
                 }
 
-                bool isValid = TryParseUInt16(value, "entity", "World", lineNumber, out ushort parsed);
-                world = parsed;
-                return isValid;
+                diagnostics.Add($"Line {lineNumber}: `entity` column `World` must use the validated @WORLD variable.");
+                world = 0u;
+                return false;
             }
 
             private bool TryParseByte(
@@ -575,6 +727,13 @@ namespace NexusForever.Database.World.Validation
                         $"Line {currentInsert.LineNumber}: `{currentInsert.Table}` INSERT contains no tuples.");
                 }
 
+                if (currentInsert.Table == "entity"
+                    && currentInsert.IsValid
+                    && currentInsert.RowCount > 0)
+                {
+                    entityInsertCompletedForGeneration = true;
+                }
+
                 currentInsert = null;
             }
 
@@ -621,6 +780,17 @@ namespace NexusForever.Database.World.Validation
                 {
                     diagnostics.Add(
                         $"Expected @WORLD {RequiredWorldId}, but found {worldAssignments[0]}.");
+                }
+
+                if (deleteStatementCount != 1)
+                {
+                    diagnostics.Add(
+                        $"Expected exactly one scoped Crimson Isle DELETE statement, but found {deleteStatementCount}.");
+                }
+                else if (deletedAreas == null || !deletedAreas.SetEquals(RequiredReplacementAreaSet))
+                {
+                    diagnostics.Add(
+                        "The scoped DELETE must contain exactly the 20 known Crimson Isle replacement areas.");
                 }
 
                 List<ParsedEntity> relevantEntities = entities.Values
@@ -701,12 +871,11 @@ namespace NexusForever.Database.World.Validation
 
             private bool HasPositiveFiniteStat(ParsedEntity entity, uint stat)
             {
-                if (stats.TryGetValue(new EntityStatId(entity.Id, stat), out double value)
-                    && double.IsFinite(value)
-                    && value > 0d
-                    && value <= float.MaxValue)
+                if (stats.TryGetValue(new EntityStatId(entity.Id, stat), out double value))
                 {
-                    return true;
+                    float storedValue = (float)value;
+                    if (float.IsFinite(storedValue) && storedValue > 0f)
+                        return true;
                 }
 
                 diagnostics.Add(

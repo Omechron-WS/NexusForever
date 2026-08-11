@@ -67,6 +67,261 @@ namespace NexusForever.Game.Tests.Database
                 diagnostic => diagnostic.Contains("exactly one @WORLD", StringComparison.Ordinal));
         }
 
+        [Fact]
+        public void Validate_MissingRepeatedOrLateScopedDelete_FailsClosed()
+        {
+            string delete = CreateDeleteStatement();
+            string missingSql = CreateValidSql().Replace(delete + "\n", "", StringComparison.Ordinal);
+            string repeatedSql = CreateValidSql().Replace(delete, delete + "\n" + delete, StringComparison.Ordinal);
+            string lateSql = CreateValidSql()
+                .Replace(delete + "\n", "", StringComparison.Ordinal)
+                .Replace(
+                    "SET @GUID = (SELECT IFNULL(MAX(`id`), 0) FROM `entity`);",
+                    "SET @GUID = (SELECT IFNULL(MAX(`id`), 0) FROM `entity`);\n" + delete,
+                    StringComparison.Ordinal);
+
+            CrimsonIsleQuest5593SqlPreflightResult missingResult =
+                CrimsonIsleQuest5593SqlPreflight.Validate(missingSql);
+            CrimsonIsleQuest5593SqlPreflightResult repeatedResult =
+                CrimsonIsleQuest5593SqlPreflight.Validate(repeatedSql);
+            CrimsonIsleQuest5593SqlPreflightResult lateResult =
+                CrimsonIsleQuest5593SqlPreflight.Validate(lateSql);
+
+            Assert.False(missingResult.IsValid);
+            Assert.Contains(missingResult.Diagnostics,
+                diagnostic => diagnostic.Contains("exactly one scoped", StringComparison.Ordinal));
+            Assert.False(repeatedResult.IsValid);
+            Assert.Contains(repeatedResult.Diagnostics,
+                diagnostic => diagnostic.Contains("found 2", StringComparison.Ordinal));
+            Assert.False(lateResult.IsValid);
+            Assert.Contains(lateResult.Diagnostics,
+                diagnostic => diagnostic.Contains("must precede", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("1236", "1235", "exactly the 20 known")]
+        [InlineData("1236", "1236, 1236", "is repeated")]
+        [InlineData("1236", "70000", "unsigned 16-bit")]
+        public void Validate_AlteredScopedDeleteAreaSet_FailsClosed(
+            string oldValue,
+            string newValue,
+            string expectedDiagnostic)
+        {
+            string sql = CreateValidSql().Replace(
+                $", {oldValue}, 1237",
+                $", {newValue}, 1237",
+                StringComparison.Ordinal);
+
+            CrimsonIsleQuest5593SqlPreflightResult result = CrimsonIsleQuest5593SqlPreflight.Validate(sql);
+
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Diagnostics,
+                diagnostic => diagnostic.Contains(expectedDiagnostic, StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Theory]
+        [InlineData("DELETE FROM `entity` WHERE `world` = @WORLD AND `area` = 1236;")]
+        [InlineData("DELETE FROM `entity`;")]
+        public void Validate_MalformedOrUnscopedDelete_FailsClosed(string replacement)
+        {
+            string sql = CreateValidSql().Replace(CreateDeleteStatement(), replacement, StringComparison.Ordinal);
+
+            CrimsonIsleQuest5593SqlPreflightResult result = CrimsonIsleQuest5593SqlPreflight.Validate(sql);
+
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Diagnostics,
+                diagnostic => diagnostic.Contains("unsupported DELETE", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("DROP TABLE `entity`;")]
+        [InlineData("UPDATE `entity` SET `world` = 0;")]
+        [InlineData("START TRANSACTION;")]
+        [InlineData("COMMIT;")]
+        [InlineData("INSERT INTO `other_table` (`Id`) VALUES")]
+        [InlineData("SELECT 1;")]
+        public void Validate_UnsupportedExecutableStatement_FailsClosed(string statement)
+        {
+            string sql = CreateValidSql() + statement + "\n";
+
+            CrimsonIsleQuest5593SqlPreflightResult result = CrimsonIsleQuest5593SqlPreflight.Validate(sql);
+
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Diagnostics,
+                diagnostic => diagnostic.Contains("unsupported", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Validate_TrailingStatementInjection_FailsClosed()
+        {
+            string sql = CreateValidSql().Replace(
+                "SET @WORLD = 870;",
+                "SET @WORLD = 870; DROP TABLE `entity`;",
+                StringComparison.Ordinal);
+
+            CrimsonIsleQuest5593SqlPreflightResult result = CrimsonIsleQuest5593SqlPreflight.Validate(sql);
+
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Diagnostics,
+                diagnostic => diagnostic.Contains("malformed @WORLD", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("--not-a-comment")]
+        [InlineData("--\u00A0DROP TABLE `entity`;")]
+        [InlineData("# comment")]
+        [InlineData("/* comment */")]
+        [InlineData("/*!40101 SET @WORLD = 870 */;")]
+        [InlineData("SELECT 1; SELECT 2;")]
+        public void Validate_UnsupportedCommentOrMultipleStatementSyntax_FailsClosed(string statement)
+        {
+            string sql = CreateValidSql() + statement + "\n";
+
+            CrimsonIsleQuest5593SqlPreflightResult result = CrimsonIsleQuest5593SqlPreflight.Validate(sql);
+
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Diagnostics,
+                diagnostic => diagnostic.Contains("unsupported SQL statement", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void Validate_InlineCommentSyntax_FailsClosed()
+        {
+            string sql = CreateValidSql().Replace(
+                "SET @WORLD = 870;",
+                "SET @WORLD = 870; -- inline comment",
+                StringComparison.Ordinal);
+
+            CrimsonIsleQuest5593SqlPreflightResult result = CrimsonIsleQuest5593SqlPreflight.Validate(sql);
+
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Diagnostics,
+                diagnostic => diagnostic.Contains("malformed @WORLD", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void Validate_CaseInsensitiveKeywordsWithCanonicalIdentifiers_RemainSupported()
+        {
+            string sql = CreateValidSql().Replace(
+                CreateDeleteStatement(),
+                "delete from `entity` where `world` = @world and `area` in "
+                    + "(622, 623, 629, 1217, 1218, 1219, 1225, 1226, 1227, 1236, 1237, 1244, "
+                    + "1284, 1320, 1325, 1360, 1361, 1611, 1885, 4674);",
+                StringComparison.Ordinal);
+
+            CrimsonIsleQuest5593SqlPreflightResult result = CrimsonIsleQuest5593SqlPreflight.Validate(sql);
+
+            Assert.True(result.IsValid, string.Join(Environment.NewLine, result.Diagnostics));
+        }
+
+        [Theory]
+        [InlineData("DELETE FROM `entity`", "DELETE FROM `entity")]
+        [InlineData("MAX(`id`)", "MAX(`id)")]
+        [InlineData("FROM `entity`);", "FROM entity`);")]
+        [InlineData("INSERT INTO `entity`", "INSERT INTO `entity")]
+        [InlineData("INSERT INTO `entity`", "INSERT INTO `ENTITY`")]
+        [InlineData("(`Id`, `Type`", "(``Id``, `Type`")]
+        [InlineData("(`Id`, `Type`", "(`Id, `Type`")]
+        public void Validate_NonCanonicalOrUnbalancedIdentifiers_FailClosed(
+            string oldValue,
+            string newValue)
+        {
+            string sql = CreateValidSql().Replace(oldValue, newValue, StringComparison.Ordinal);
+
+            CrimsonIsleQuest5593SqlPreflightResult result = CrimsonIsleQuest5593SqlPreflight.Validate(sql);
+
+            Assert.False(result.IsValid);
+        }
+
+        [Fact]
+        public void Validate_ConsecutiveGuidGenerations_FailClosed()
+        {
+            const string setGuid = "SET @GUID = (SELECT IFNULL(MAX(`id`), 0) FROM `entity`);";
+            string sql = CreateValidSql().Replace(setGuid, setGuid + "\n" + setGuid, StringComparison.Ordinal);
+
+            CrimsonIsleQuest5593SqlPreflightResult result = CrimsonIsleQuest5593SqlPreflight.Validate(sql);
+
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Diagnostics,
+                diagnostic => diagnostic.Contains("generation 0 must contain exactly one completed entity INSERT", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void Validate_MultipleEntityInsertsInOneGeneration_FailClosed()
+        {
+            string extraInsert = string.Join('\n',
+            [
+                "INSERT INTO `entity` (`Id`, `Type`, `Creature`, `World`, `Area`, `X`, `Y`, `Z`, `RX`, `RY`, `RZ`, `DisplayInfo`, `OutfitInfo`, `Faction1`, `Faction2`) VALUES",
+                "    (@GUID+10, 0, 99999, @WORLD, 1236, 1, 2, 3, 0, 0, 0, 0, 0, 1, 1);",
+                ""
+            ]);
+            string sql = CreateValidSql().Replace(
+                "INSERT INTO `entity_spline`",
+                extraInsert + "INSERT INTO `entity_spline`",
+                StringComparison.Ordinal);
+
+            CrimsonIsleQuest5593SqlPreflightResult result = CrimsonIsleQuest5593SqlPreflight.Validate(sql);
+
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Diagnostics,
+                diagnostic => diagnostic.Contains("more than one entity INSERT", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void Validate_DependentInsertBeforeEntity_FailsClosed()
+        {
+            const string setGuid = "SET @GUID = (SELECT IFNULL(MAX(`id`), 0) FROM `entity`);";
+            string earlyStat = string.Join('\n',
+            [
+                "INSERT INTO `entity_stats` (`Id`, `Stat`, `Value`) VALUES",
+                "    (@GUID+1, 99, 1);"
+            ]);
+            string sql = CreateValidSql().Replace(
+                setGuid,
+                setGuid + "\n" + earlyStat,
+                StringComparison.Ordinal);
+
+            CrimsonIsleQuest5593SqlPreflightResult result = CrimsonIsleQuest5593SqlPreflight.Validate(sql);
+
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Diagnostics,
+                diagnostic => diagnostic.Contains("must follow the one completed entity INSERT", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("@WORLD, 1236", "871, 1236", "must use the validated @WORLD")]
+        [InlineData("@WORLD, 1236", "@WORLD, 1235", "outside the exact Crimson Isle replacement scope")]
+        public void Validate_EntityOutsideReplacementScope_FailsClosed(
+            string oldValue,
+            string newValue,
+            string expectedDiagnostic)
+        {
+            string sql = CreateValidSql().Replace(oldValue, newValue, StringComparison.Ordinal);
+
+            CrimsonIsleQuest5593SqlPreflightResult result = CrimsonIsleQuest5593SqlPreflight.Validate(sql);
+
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Diagnostics,
+                diagnostic => diagnostic.Contains(expectedDiagnostic, StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("99999, @WORLD, 1237", "99999, 871, 1237", "must use the validated @WORLD")]
+        [InlineData("99999, @WORLD, 1237", "99999, @WORLD, 9999", "outside the exact Crimson Isle replacement scope")]
+        public void Validate_UnrelatedEntityOutsideReplacementScope_FailsClosed(
+            string oldValue,
+            string newValue,
+            string expectedDiagnostic)
+        {
+            string sql = CreateSqlWithUnrelatedEntity().Replace(oldValue, newValue, StringComparison.Ordinal);
+
+            CrimsonIsleQuest5593SqlPreflightResult result = CrimsonIsleQuest5593SqlPreflight.Validate(sql);
+
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Diagnostics,
+                diagnostic => diagnostic.Contains(expectedDiagnostic, StringComparison.Ordinal));
+        }
+
         [Theory]
         [InlineData(
             "(@GUID+1, 0, 24187, @WORLD, 1236, 10, 20, 30, 0, 0, 0, 0, 0, 170, 170),",
@@ -194,6 +449,7 @@ namespace NexusForever.Game.Tests.Database
         [Theory]
         [InlineData("    (@GUID+5, 0, 420),\n", "")]
         [InlineData("    (@GUID+5, 0, 420),", "    (@GUID+5, 0, 0),")]
+        [InlineData("    (@GUID+5, 0, 420),", "    (@GUID+5, 0, 1E-100),")]
         [InlineData("    (@GUID+5, 0, 420),", "    (@GUID+5, 0, NaN),")]
         [InlineData("    (@GUID+5, 10, 3),", "    (@GUID+5, 10, 1E400),")]
         public void Validate_MissingNonPositiveOrNonFiniteScrabStat_FailsClosed(
@@ -216,6 +472,7 @@ namespace NexusForever.Game.Tests.Database
             string firstGeneration = string.Join('\n',
             [
                 "SET @WORLD = 870;",
+                CreateDeleteStatement(),
                 "SET @GUID = (SELECT IFNULL(MAX(`id`), 0) FROM `entity`);",
                 "INSERT INTO `entity` (`Id`, `Type`, `Creature`, `World`, `Area`, `X`, `Y`, `Z`, `RX`, `RY`, `RZ`, `DisplayInfo`, `OutfitInfo`, `Faction1`, `Faction2`) VALUES",
                 "    (@GUID+1, 0, 99999, @WORLD, 1237, 1, 2, 3, 0, 0, 0, 0, 0, 1, 1),",
@@ -227,7 +484,8 @@ namespace NexusForever.Game.Tests.Database
                 ""
             ]);
             string secondGeneration = CreateValidSql()
-                .Replace("SET @WORLD = 870;\n", "", StringComparison.Ordinal);
+                .Replace("SET @WORLD = 870;\n", "", StringComparison.Ordinal)
+                .Replace(CreateDeleteStatement() + "\n", "", StringComparison.Ordinal);
 
             CrimsonIsleQuest5593SqlPreflightResult result =
                 CrimsonIsleQuest5593SqlPreflight.Validate(firstGeneration + secondGeneration);
@@ -311,7 +569,7 @@ namespace NexusForever.Game.Tests.Database
             [
                 "-- synthetic Crimson Isle quest 5593 content contract",
                 "SET @WORLD = 870;",
-                "DELETE FROM `entity` WHERE `world` = @WORLD AND `area` = 1236;",
+                CreateDeleteStatement(),
                 "SET @GUID = (SELECT IFNULL(MAX(`id`), 0) FROM `entity`);",
                 "INSERT INTO `entity` (`Id`, `Type`, `Creature`, `World`, `Area`, `X`, `Y`, `Z`, `RX`, `RY`, `RZ`, `DisplayInfo`, `OutfitInfo`, `Faction1`, `Faction2`) VALUES",
                 "    (@GUID+1, 0, 24187, @WORLD, 1236, 10, 20, 30, 0, 0, 0, 0, 0, 170, 170),",
@@ -338,6 +596,25 @@ namespace NexusForever.Game.Tests.Database
                 "    (@GUID+9, 10, 3);",
                 ""
             ]);
+        }
+
+        private static string CreateDeleteStatement()
+        {
+            return "DELETE FROM `entity` WHERE `world` = @WORLD AND `area` IN "
+                + "(622, 623, 629, 1217, 1218, 1219, 1225, 1226, 1227, 1236, 1237, 1244, "
+                + "1284, 1320, 1325, 1360, 1361, 1611, 1885, 4674);";
+        }
+
+        private static string CreateSqlWithUnrelatedEntity()
+        {
+            return CreateValidSql().Replace(
+                "    (@GUID+9, 0, 24054, @WORLD, 1236, 18, 20, 30, 0, 0, 0, 0, 0, 550, 550);",
+                string.Join('\n',
+                [
+                    "    (@GUID+9, 0, 24054, @WORLD, 1236, 18, 20, 30, 0, 0, 0, 0, 0, 550, 550),",
+                    "    (@GUID+10, 0, 99999, @WORLD, 1237, 19, 20, 30, 0, 0, 0, 0, 0, 1, 1);"
+                ]),
+                StringComparison.Ordinal);
         }
 
         private static string CreateEventInsert(params string[] rows)
