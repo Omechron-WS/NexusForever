@@ -1691,7 +1691,7 @@ namespace NexusForever.Game.Entity
 
         protected void OnResurrection(IUnitEntity resurrector)
         {
-            DeathState = null;
+            ClearDeathState();
             RemoveControlUnit();
         }
     }

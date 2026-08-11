@@ -47,6 +47,7 @@ namespace NexusForever.Game.Map
 
         private readonly QueuedCounter entityCounter = new();
         protected readonly Dictionary<uint /*guid*/, IGridEntity> entities = new();
+        private readonly EntityRespawnScheduler respawnScheduler = new();
         private IEntityCache entityCache;
 
         protected IScriptCollection scriptCollection;
@@ -91,6 +92,7 @@ namespace NexusForever.Game.Map
         {
             ProcessGridActions();
             UpdateGrids(lastTick);
+            UpdateRespawns(lastTick);
 
             scriptCollection?.Invoke<IUpdate>(s => s.Update(lastTick));
 
@@ -115,6 +117,10 @@ namespace NexusForever.Game.Map
                             actionAdd.RequeueCount++;
                             if (actionAdd.RequeueCount > (SharedConfiguration.Instance.Get<MapConfig>().GridActionMaxRetry ?? 5u))
                             {
+                                if (actionAdd.Entity is IWorldEntity worldEntity
+                                    && respawnScheduler.Fail(worldEntity))
+                                    worldEntity.Dispose();
+
                                 log.Error($"Failed to add entity to map {Entry.Id} at position X: {actionAdd.Vector.X}, Y: {actionAdd.Vector.Y}, Z: {actionAdd.Vector.Z}!");
                             }
                             else
@@ -142,7 +148,8 @@ namespace NexusForever.Game.Map
                         RelocateEntity(actionRelocate.Entity, actionRelocate.Vector);
                         break;
                     case GridActionRemove actionRemove:
-                        RemoveEntity(actionRemove.Entity);
+                        if (IsRegisteredEntity(actionRemove.Entity))
+                            RemoveEntity(actionRemove.Entity);
                         break;
                 }
             }
@@ -150,6 +157,17 @@ namespace NexusForever.Game.Map
             // new actions are added to the queue after processing so they are processed starting next update
             foreach (IGridAction action in newActions)
                 pendingActions.Enqueue(action);
+        }
+
+        /// <summary>
+        /// Return whether the exact entity reference is currently registered with this map.
+        /// </summary>
+        protected bool IsRegisteredEntity(IGridEntity entity)
+        {
+            return entity != null
+                && ReferenceEquals(entity.Map, this)
+                && entities.TryGetValue(entity.Guid, out IGridEntity registeredEntity)
+                && ReferenceEquals(registeredEntity, entity);
         }
 
         private void UpdateGrids(double lastTick)
@@ -171,6 +189,11 @@ namespace NexusForever.Game.Map
 
                 log.Trace($"Deactivated grid at X:{grid.Coord.X}, Z:{grid.Coord.Z}.");
             }
+        }
+
+        private void UpdateRespawns(double lastTick)
+        {
+            respawnScheduler.Update(lastTick, IsRespawnGridActive, CreateAndEnqueueEntity);
         }
 
         /// <summary>
@@ -250,6 +273,22 @@ namespace NexusForever.Game.Map
             {
                 Entity = entity
             });
+        }
+
+        /// <summary>
+        /// Schedule the database-backed non-player entity to respawn at its cached spawn point.
+        /// </summary>
+        /// <returns><see langword="true"/> when a new respawn reservation was created; otherwise, <see langword="false"/>.</returns>
+        public bool ScheduleRespawn(IWorldEntity entity)
+        {
+            if (entity == null
+                || entity is IPlayer
+                || entity.EntityId == 0u
+                || !ReferenceEquals(entity.Map, this))
+                return false;
+
+            EntityModel model = entityCache?.GetEntity(entity.EntityId);
+            return respawnScheduler.TrySchedule(entity, model);
         }
 
         /// <summary>
@@ -412,17 +451,41 @@ namespace NexusForever.Game.Map
         {
             foreach (EntityModel model in entityCache.GetEntities(gridX, gridZ))
             {
-                IWorldEntity entity = entityFactory.CreateWorldEntity(model.Type);
-                entity.Initialise(model);
-
-                var position = new MapPosition
-                {
-                    Position = new Vector3(model.X, model.Y, model.Z)
-                };
-
-                if (CanEnter(entity, position))
-                    EnqueueAdd(entity, position);
+                if (!respawnScheduler.IsPending(model.Id))
+                    CreateAndEnqueueEntity(model);
             }
+        }
+
+        /// <summary>
+        /// Create and initialise an entity from its cached model, then enqueue it when the spawn point is valid.
+        /// </summary>
+        protected virtual IWorldEntity CreateAndEnqueueEntity(EntityModel model)
+        {
+            IWorldEntity entity = entityFactory.CreateWorldEntity(model.Type);
+            entity.Initialise(model);
+
+            var position = new MapPosition
+            {
+                Position = new Vector3(model.X, model.Y, model.Z)
+            };
+
+            if (!CanEnter(entity, position))
+            {
+                entity.Dispose();
+                return null;
+            }
+
+            EnqueueAdd(entity, position);
+            return entity;
+        }
+
+        private bool IsRespawnGridActive(EntityModel model)
+        {
+            var position = new Vector3(model.X, model.Y, model.Z);
+            IMapGrid grid = GetGrid(position);
+            return grid != null
+                && grid.UnloadStatus == null
+                && activeGrids.Contains(grid.Coord);
         }
 
         private bool CanAddEntity(IGridEntity entity, Vector3 vector)
@@ -453,6 +516,9 @@ namespace NexusForever.Game.Map
             entities.Add(guid, entity);
 
             entity.OnAddToMap(this, guid, vector);
+
+            if (entity is IWorldEntity worldEntity)
+                respawnScheduler.Acknowledge(worldEntity);
 
             PublicEventManager.OnAddToMap(entity);
             scriptCollection?.Invoke<IMapScript>(s => s.OnAddToMap(entity));

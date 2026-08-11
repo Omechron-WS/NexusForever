@@ -2,6 +2,7 @@
 using NexusForever.Game.Abstract.Combat;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Entity.Movement;
+using NexusForever.Game.Abstract.Loot;
 using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Combat;
 using NexusForever.Game.Spell;
@@ -17,12 +18,15 @@ using NexusForever.Network.World.Message.Model;
 using NexusForever.Network.World.Message.Static;
 using NexusForever.Script.Template;
 using NexusForever.Shared.Game;
+using NLog;
 using CombatStateType = NexusForever.Game.Static.Combat.CombatState;
 
 namespace NexusForever.Game.Entity
 {
     public abstract class UnitEntity : WorldEntity, IUnitEntity
     {
+        private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+
         public float HitRadius { get; protected set; } = 1f;
 
         /// <summary>
@@ -33,29 +37,28 @@ namespace NexusForever.Game.Entity
         /// <summary>
         /// Determines whether or not this <see cref="IUnitEntity"/> is alive.
         /// </summary>
-        public bool IsAlive => Health > 0u && deathState == null;
-
-        protected EntityDeathState? DeathState
+        public bool IsAlive
         {
-            get => deathState;
-            set
+            get
             {
-                deathState = value;
-
-                if (deathState is null or EntityDeathState.JustDied)
-                {
-                    EnqueueToVisible(new ServerEntityDeathState
-                    {
-                        UnitId    = Guid,
-                        Dead      = !IsAlive,
-                        Reason    = 0, // client does nothing with this value
-                        RezHealth = IsAlive ? Health : 0u
-                    }, true);
-                }
+                lock (deathStateLock)
+                    return Health > 0u && deathState == null;
             }
         }
 
+        protected EntityDeathState? DeathState
+        {
+            get
+            {
+                lock (deathStateLock)
+                    return deathState;
+            }
+        }
+
+        private readonly object deathStateLock = new();
         private EntityDeathState? deathState;
+        private double corpseTimeoutRemaining;
+        private double lootedCorpseCleanupRemaining;
 
         /// <summary>
         /// Determines whether or not this <see cref="IUnitEntity"/> is in combat.
@@ -209,6 +212,14 @@ namespace NexusForever.Game.Entity
         private const double RegenerationInterval = 0.5d;
         private const int MaximumRegenerationCatchUpTicks = 20;
 
+        /// <summary>
+        /// Maximum time an unlooted corpse remains in the world. This intentionally matches the
+        /// 30-minute loot expiry rather than Omechron's older 10-minute corpse timeout.
+        /// </summary>
+        private const double CorpseTimeout = 1800d;
+
+        private const double LootedCorpseCleanupDelay = 5d;
+
         private double regenerationAccumulator;
         private double healthRegenerationRemainder;
         private double shieldRegenerationRemainder;
@@ -275,6 +286,7 @@ namespace NexusForever.Game.Entity
 
             CombatStateTick();
             UpdateRegeneration(lastTick);
+            UpdateDeathLifecycle(lastTick);
         }
 
         /// <summary>
@@ -439,6 +451,107 @@ namespace NexusForever.Game.Entity
 
             if (wholeAmount == deficit)
                 remainder = 0d;
+        }
+
+        private void UpdateDeathLifecycle(double elapsed)
+        {
+            if (this is IPlayer || !double.IsFinite(elapsed) || elapsed <= 0d)
+                return;
+
+            EntityDeathState? expiredState = null;
+            lock (deathStateLock)
+            {
+                switch (deathState)
+                {
+                    case EntityDeathState.Corpse:
+                        corpseTimeoutRemaining = Math.Max(0d, corpseTimeoutRemaining - elapsed);
+                        if (corpseTimeoutRemaining == 0d)
+                            expiredState = EntityDeathState.Corpse;
+                        break;
+                    case EntityDeathState.CorpseLooted:
+                        lootedCorpseCleanupRemaining = Math.Max(0d, lootedCorpseCleanupRemaining - elapsed);
+                        if (lootedCorpseCleanupRemaining == 0d)
+                            expiredState = EntityDeathState.CorpseLooted;
+                        break;
+                }
+            }
+
+            if (!expiredState.HasValue || Map == null)
+                return;
+
+            try
+            {
+                Map.EnqueueRemove(this);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to enqueue expired corpse {Guid} for removal.");
+                return;
+            }
+
+            TryTransitionDeathState(expiredState, EntityDeathState.Dead);
+        }
+
+        private bool TryTransitionDeathState(EntityDeathState? expectedState, EntityDeathState newState)
+        {
+            lock (deathStateLock)
+            {
+                if (deathState != expectedState)
+                    return false;
+
+                deathState = newState;
+
+                switch (newState)
+                {
+                    case EntityDeathState.Corpse:
+                        corpseTimeoutRemaining = CorpseTimeout;
+                        lootedCorpseCleanupRemaining = 0d;
+                        break;
+                    case EntityDeathState.CorpseLooted:
+                        corpseTimeoutRemaining = 0d;
+                        lootedCorpseCleanupRemaining = LootedCorpseCleanupDelay;
+                        break;
+                    case EntityDeathState.Dead:
+                        corpseTimeoutRemaining = 0d;
+                        lootedCorpseCleanupRemaining = 0d;
+                        break;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Clear the death lifecycle after health has been restored by the resurrection system.
+        /// </summary>
+        protected void ClearDeathState()
+        {
+            lock (deathStateLock)
+            {
+                if (deathState == null)
+                    return;
+
+                deathState = null;
+                corpseTimeoutRemaining = 0d;
+                lootedCorpseCleanupRemaining = 0d;
+            }
+
+            PublishDeathState();
+        }
+
+        /// <summary>
+        /// Publish the current alive or dead state to nearby players.
+        /// </summary>
+        protected virtual void PublishDeathState()
+        {
+            bool isAlive = IsAlive;
+            EnqueueToVisible(new ServerEntityDeathState
+            {
+                UnitId    = Guid,
+                Dead      = !isAlive,
+                Reason    = 0, // client does nothing with this value
+                RezHealth = isAlive ? Health : 0u
+            }, true);
         }
 
         /// <summary>
@@ -673,7 +786,8 @@ namespace NexusForever.Game.Entity
         /// </remarks>
         public virtual void ModifyHealth(uint amount, DamageType type, IUnitEntity source)
         {
-            long newHealth = Health;
+            uint previousHealth = Health;
+            long newHealth = previousHealth;
             if (type == DamageType.Heal)
                 newHealth += amount;
             else
@@ -681,43 +795,105 @@ namespace NexusForever.Game.Entity
 
             Health = (uint)Math.Clamp(newHealth, 0u, MaxHealth);
 
-            if (Health == 0)
+            if (previousHealth > 0u && Health == 0u)
                 OnDeath();
         }
 
         protected virtual void OnDeath()
         {
+            if (!TryTransitionDeathState(null, EntityDeathState.JustDied))
+                return;
+
             regenerationAccumulator = 0d;
             healthRegenerationRemainder = 0d;
             shieldRegenerationRemainder = 0d;
-            DeathState = EntityDeathState.JustDied;
 
-            foreach (ISpell spell in pendingSpells.ToArray())
+            try
             {
-                if (spell.IsCasting)
-                    spell.CancelCast(CastResult.CasterCannotBeDead);
-                else
-                    spell.Finish();
+                ExecuteDeathOperation(PublishDeathState, "publish the death state");
+
+                foreach (ISpell spell in pendingSpells.ToArray())
+                {
+                    ExecuteDeathOperation(() =>
+                    {
+                        if (spell.IsCasting)
+                            spell.CancelCast(CastResult.CasterCannotBeDead);
+                        else
+                            spell.Finish();
+                    }, "stop a pending spell during death");
+                }
+
+                ExecuteDeathOperation(ClearProcs, "clear procs during death");
+                ExecuteDeathOperation(GenerateRewards, "generate death rewards");
             }
+            finally
+            {
+                bool enteredCorpse = TryTransitionDeathState(EntityDeathState.JustDied, EntityDeathState.Corpse);
+                ExecuteDeathOperation(ClearThreatsAfterDeath, "clear the death threat list");
 
-            ClearProcs();
+                if (enteredCorpse && this is not IPlayer)
+                {
+                    if (EntityId != 0u)
+                        ExecuteDeathOperation(ScheduleRespawnAfterDeath, "schedule the entity respawn");
 
-            GenerateRewards();
-            // TODO: schedule respawn
-
-            ThreatManager.ClearThreatList();
-
-            deathState = EntityDeathState.Dead;
+                    if (Loot.Count == 0)
+                        TryTransitionDeathState(EntityDeathState.Corpse, EntityDeathState.CorpseLooted);
+                }
+            }
         }
 
-        private void GenerateRewards()
+        private void ScheduleRespawnAfterDeath()
         {
-            foreach (IHostileEntity hostile in ThreatManager)
+            if (Map == null)
+            {
+                log.Error($"Persistent entity {EntityId} has no map available for respawn scheduling.");
+                return;
+            }
+
+            if (!Map.ScheduleRespawn(this))
+                log.Warn($"Map rejected the respawn reservation for persistent entity {EntityId}.");
+        }
+
+        private void ExecuteDeathOperation(Action operation, string description)
+        {
+            try
+            {
+                operation();
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to {description} for entity {Guid}.");
+            }
+        }
+
+        /// <summary>
+        /// Clear all hostile relationships after the entity has entered its corpse state.
+        /// </summary>
+        protected virtual void ClearThreatsAfterDeath()
+        {
+            ThreatManager.ClearThreatList();
+        }
+
+        /// <summary>
+        /// Grant kill credit and loot to eligible players captured by this entity's threat list.
+        /// </summary>
+        protected virtual void GenerateRewards()
+        {
+            foreach (IHostileEntity hostile in ThreatManager.ToArray())
             {
                 IUnitEntity entity = GetVisible<IUnitEntity>(hostile.HatedUnitId);
                 if (entity is IPlayer player)
                     RewardKiller(player);
             }
+        }
+
+        /// <inheritdoc />
+        protected override void OnLootRemoved(ILootInstance lootInstance)
+        {
+            base.OnLootRemoved(lootInstance);
+
+            if (this is not IPlayer && Loot.Count == 0)
+                TryTransitionDeathState(EntityDeathState.Corpse, EntityDeathState.CorpseLooted);
         }
 
         protected virtual void RewardKiller(IPlayer player)

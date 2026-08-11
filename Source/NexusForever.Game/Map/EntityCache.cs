@@ -11,6 +11,7 @@ namespace NexusForever.Game.Map
         public uint EntityCount { get; }
 
         private readonly Dictionary<(uint GridX, uint GridZ), HashSet<EntityModel>> entities = new();
+        private readonly Dictionary<uint, EntityModel> entitiesById = new();
 
         public EntityCache(ImmutableList<EntityModel> models)
         {
@@ -24,6 +25,11 @@ namespace NexusForever.Game.Map
         /// </summary>
         public void AddEntity(EntityModel model)
         {
+            ArgumentNullException.ThrowIfNull(model);
+
+            if (model.Id != 0u && entitiesById.ContainsKey(model.Id))
+                throw new InvalidOperationException($"Entity cache contains duplicate entity identifier {model.Id}.");
+
             var vector = new Vector3(model.X, model.Y, model.Z);
             (uint GridX, uint GridZ) coord = MapGrid.GetGridCoord(vector);
 
@@ -31,6 +37,16 @@ namespace NexusForever.Game.Map
                 entities.Add(coord, new HashSet<EntityModel>());
 
             entities[coord].Add(model);
+            if (model.Id != 0u)
+                entitiesById.Add(model.Id, model);
+        }
+
+        /// <summary>
+        /// Return the cached persistent entity model with the supplied identifier.
+        /// </summary>
+        public EntityModel GetEntity(uint entityId)
+        {
+            return entityId != 0u ? entitiesById.GetValueOrDefault(entityId) : null;
         }
 
         /// <summary>

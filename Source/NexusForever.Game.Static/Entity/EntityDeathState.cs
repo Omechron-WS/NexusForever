@@ -4,6 +4,7 @@
     {
         JustDied,
         Corpse,
+        CorpseLooted,
         Dead
     }
 }

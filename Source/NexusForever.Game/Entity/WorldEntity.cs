@@ -1026,7 +1026,17 @@ namespace NexusForever.Game.Entity
         public void RemoveLoot(ILootInstance lootInstance)
         {
             ArgumentNullException.ThrowIfNull(lootInstance);
-            loot.TryRemove(lootInstance, out _);
+
+            if (loot.TryRemove(lootInstance, out _))
+                OnLootRemoved(lootInstance);
+        }
+
+        /// <summary>
+        /// Invoked after a loot instance has been detached from this entity.
+        /// </summary>
+        protected virtual void OnLootRemoved(ILootInstance lootInstance)
+        {
+            // deliberately empty
         }
 
         /// <summary>

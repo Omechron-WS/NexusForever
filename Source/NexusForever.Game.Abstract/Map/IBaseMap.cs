@@ -25,6 +25,12 @@ namespace NexusForever.Game.Abstract.Map
         void EnqueueRemove(IGridEntity entity);
 
         /// <summary>
+        /// Schedule the database-backed non-player entity to respawn at its cached spawn point.
+        /// </summary>
+        /// <returns><see langword="true"/> when a new respawn reservation was created; otherwise, <see langword="false"/>.</returns>
+        bool ScheduleRespawn(IWorldEntity entity);
+
+        /// <summary>
         /// Enqueue <see cref="IGridEntity"/> to be relocated in <see cref="IBaseMap"/> to <see cref="Vector3"/>.
         /// </summary>
         void EnqueueRelocate(IGridEntity entity, Vector3 position);
