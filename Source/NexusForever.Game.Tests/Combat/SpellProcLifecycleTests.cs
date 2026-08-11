@@ -122,6 +122,36 @@ namespace NexusForever.Game.Tests.Combat
             remainingTarget.Verify(unit => unit.RemoveProc(remainingProc.Object), Times.Never);
         }
 
+        [Fact]
+        public void SpellTargetSelection_WithoutPrimaryTarget_UsesCasterAsTargetFallback()
+        {
+            var caster = new Mock<IUnitEntity>();
+            var spell = new TestSpell(caster.Object, CreateParameters());
+
+            IReadOnlyList<ISpellTargetInfo> targets = spell.SelectTargetsForTest();
+
+            ISpellTargetInfo target = Assert.Single(targets);
+            Assert.Same(caster.Object, target.Entity);
+            Assert.Equal(
+                SpellEffectTargetFlags.Caster | SpellEffectTargetFlags.Target,
+                target.Flags);
+        }
+
+        [Fact]
+        public void AuraTargetSelection_WithoutPrimaryTarget_UsesCasterAsTargetFallback()
+        {
+            var caster = new Mock<IUnitEntity>();
+            var spell = new TestSpellAura(caster.Object, CreateParameters());
+
+            IReadOnlyList<ISpellTargetInfo> targets = spell.SelectTargetsForTest();
+
+            ISpellTargetInfo target = Assert.Single(targets);
+            Assert.Same(caster.Object, target.Entity);
+            Assert.Equal(
+                SpellEffectTargetFlags.Caster | SpellEffectTargetFlags.Target,
+                target.Flags);
+        }
+
         /// <summary>
         /// Restore the shared service provider used before this fixture.
         /// </summary>
@@ -169,6 +199,12 @@ namespace NexusForever.Game.Tests.Combat
             {
                 status = value;
             }
+
+            public IReadOnlyList<ISpellTargetInfo> SelectTargetsForTest()
+            {
+                SelectTargets();
+                return targets;
+            }
         }
 
         private sealed class TestSpellAura : SpellAura
@@ -186,6 +222,12 @@ namespace NexusForever.Game.Tests.Combat
             public void SetStatus(SpellStatus value)
             {
                 status = value;
+            }
+
+            public IReadOnlyList<ISpellTargetInfo> SelectTargetsForTest()
+            {
+                SelectTargets();
+                return targets;
             }
         }
     }

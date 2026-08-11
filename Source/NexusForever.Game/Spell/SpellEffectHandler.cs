@@ -32,10 +32,11 @@ namespace NexusForever.Game.Spell
             if (info.DropEffect || info.Damage == null)
                 return;
 
-            if (info.Damage.CombatResult == CombatResult.Critical)
-                spell.Caster.FireProc(ProcType.CriticalDamage);
+            bool triggerProcs = !spell.Parameters.IsProcTriggered;
+            if (triggerProcs && info.Damage.CombatResult == CombatResult.Critical)
+                spell.Caster.FireProc(ProcType.CriticalDamage, target);
 
-            target.TakeDamage(spell.Caster, info.Damage);
+            target.TakeDamage(spell.Caster, info.Damage, triggerProcs);
         }
 
         [SpellEffectHandler(SpellEffectType.Proc)]
@@ -102,7 +103,8 @@ namespace NexusForever.Game.Spell
             {
                 ParentSpellInfo        = spell.Parameters.SpellInfo,
                 RootSpellInfo          = spell.Parameters.RootSpellInfo,
-                UserInitiatedSpellCast = false
+                UserInitiatedSpellCast = false,
+                IsProcTriggered        = spell.Parameters.IsProcTriggered
             });
         }
 

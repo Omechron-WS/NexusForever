@@ -127,7 +127,10 @@ namespace NexusForever.Game.Abstract.Entity
         /// <summary>
         /// Deal damage to this <see cref="IUnitEntity"/> from the supplied <see cref="IUnitEntity"/>.
         /// </summary>
-        void TakeDamage(IUnitEntity attacker, IDamageDescription damageDescription);
+        /// <param name="attacker">Entity dealing the damage.</param>
+        /// <param name="damageDescription">Calculated damage to apply.</param>
+        /// <param name="triggerProcs">Whether this damage can dispatch damage proc events.</param>
+        void TakeDamage(IUnitEntity attacker, IDamageDescription damageDescription, bool triggerProcs = true);
 
         /// <summary>
         /// Modify the health of this <see cref="IUnitEntity"/> by the supplied amount.
@@ -138,7 +141,7 @@ namespace NexusForever.Game.Abstract.Entity
         void ModifyHealth(uint amount, DamageType type, IUnitEntity source);
 
         /// <summary>
-        /// Register a proc on this entity, rejecting a duplicate applicator for the same event type.
+        /// Register a proc on this entity, rejecting a duplicate effect entry for the same event type.
         /// </summary>
         bool ApplyProc(IProcInfo proc);
 
@@ -150,7 +153,9 @@ namespace NexusForever.Game.Abstract.Entity
         /// <summary>
         /// Dispatch a proc event to all matching procs on this entity.
         /// </summary>
-        void FireProc(ProcType type);
+        /// <param name="type">Combat event that occurred.</param>
+        /// <param name="primaryTarget">Opposing unit involved in the event, if any.</param>
+        void FireProc(ProcType type, IUnitEntity primaryTarget = null);
 
         /// <summary>
         /// Set target to supplied target guid.

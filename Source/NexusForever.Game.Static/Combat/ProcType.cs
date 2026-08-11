@@ -5,8 +5,10 @@ namespace NexusForever.Game.Static.Combat
     /// </summary>
     public enum ProcType
     {
-        BeginMoving    = 11,
-        CriticalDamage = 145,
-        StopsMoving    = 214
+        BeginMoving      = 11,
+        OnHit            = 12,
+        OnDamageReceived = 16,
+        CriticalDamage   = 145,
+        StopsMoving      = 214
     }
 }

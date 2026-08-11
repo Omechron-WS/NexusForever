@@ -11,6 +11,7 @@ namespace NexusForever.Game.Spell
         public ISpellInfo ParentSpellInfo { get; set; }
         public ISpellInfo RootSpellInfo { get; set; }
         public bool UserInitiatedSpellCast { get; set; }
+        public bool IsProcTriggered { get; set; }
         public uint PrimaryTargetId { get; set; }
         public Position Position { get; set; }
         public ushort TaxiNode { get; set; }

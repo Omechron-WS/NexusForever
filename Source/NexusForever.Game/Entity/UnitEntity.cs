@@ -671,7 +671,7 @@ namespace NexusForever.Game.Entity
         }
 
         /// <summary>
-        /// Register a proc on this entity, rejecting a duplicate applicator for the same event type.
+        /// Register a proc on this entity, rejecting a duplicate effect entry for the same event type.
         /// </summary>
         public bool ApplyProc(IProcInfo proc)
         {
@@ -686,7 +686,7 @@ namespace NexusForever.Game.Entity
                 procs.Add(proc.Type, procList);
             }
 
-            if (procList.Any(existing => existing.ApplicatorSpell4Id == proc.ApplicatorSpell4Id))
+            if (procList.Any(existing => existing.EffectId == proc.EffectId))
                 return false;
 
             procList.Add(proc);
@@ -723,13 +723,13 @@ namespace NexusForever.Game.Entity
         /// <summary>
         /// Dispatch a proc event to all matching procs on this entity.
         /// </summary>
-        public void FireProc(ProcType type)
+        public void FireProc(ProcType type, IUnitEntity primaryTarget = null)
         {
             if (!procs.TryGetValue(type, out List<IProcInfo> procList))
                 return;
 
             foreach (IProcInfo proc in procList.ToArray())
-                proc.Trigger();
+                proc.Trigger(primaryTarget);
         }
 
         /// <summary>
@@ -766,10 +766,16 @@ namespace NexusForever.Game.Entity
         /// <summary>
         /// Deal damage to this <see cref="IUnitEntity"/> from the supplied <see cref="IUnitEntity"/>.
         /// </summary>
-        public void TakeDamage(IUnitEntity attacker, IDamageDescription damageDescription)
+        public void TakeDamage(IUnitEntity attacker, IDamageDescription damageDescription, bool triggerProcs = true)
         {
             if (!IsAlive || !attacker.IsAlive)
                 return;
+
+            if (triggerProcs)
+            {
+                attacker.FireProc(ProcType.OnHit, this);
+                FireProc(ProcType.OnDamageReceived, attacker);
+            }
 
             // TODO: Calculate Threat properly
             ThreatManager.UpdateThreat(attacker, (int)damageDescription.RawDamage);

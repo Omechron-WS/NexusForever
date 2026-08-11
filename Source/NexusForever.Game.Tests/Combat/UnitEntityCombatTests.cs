@@ -1,11 +1,13 @@
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using NexusForever.Game.Abstract.Combat;
+using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Entity.Movement;
 using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Entity;
 using NexusForever.Game.Static.Combat;
 using NexusForever.Game.Static.Entity;
+using NexusForever.Game.Static.Spell;
 using NexusForever.Network.World.Entity;
 using NexusForever.Network.World.Entity.Model;
 using NexusForever.Network.World.Message.Static;
@@ -18,11 +20,11 @@ namespace NexusForever.Game.Tests.Combat
     public class UnitEntityCombatTests
     {
         [Fact]
-        public void ApplyProc_DuplicateApplicatorForEventType_IsRejected()
+        public void ApplyProc_DuplicateEffectForEventType_IsRejected()
         {
             TestUnitEntity entity = CreateEntity(1u);
-            Mock<IProcInfo> first = CreateProc(entity, ProcType.CriticalDamage, 123u);
-            Mock<IProcInfo> duplicate = CreateProc(entity, ProcType.CriticalDamage, 123u);
+            Mock<IProcInfo> first = CreateProc(entity, ProcType.CriticalDamage, 789u, 123u);
+            Mock<IProcInfo> duplicate = CreateProc(entity, ProcType.CriticalDamage, 789u, 456u);
 
             bool firstApplied = entity.ApplyProc(first.Object);
             bool duplicateApplied = entity.ApplyProc(duplicate.Object);
@@ -30,15 +32,32 @@ namespace NexusForever.Game.Tests.Combat
 
             Assert.True(firstApplied);
             Assert.False(duplicateApplied);
-            first.Verify(p => p.Trigger(), Times.Once);
-            duplicate.Verify(p => p.Trigger(), Times.Never);
+            first.Verify(p => p.Trigger(null), Times.Once);
+            duplicate.Verify(p => p.Trigger(It.IsAny<IUnitEntity>()), Times.Never);
+        }
+
+        [Fact]
+        public void ApplyProc_DistinctEffectsFromSameApplicator_AreBothRegistered()
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            Mock<IProcInfo> first = CreateProc(entity, ProcType.OnDamageReceived, 789u, 123u);
+            Mock<IProcInfo> second = CreateProc(entity, ProcType.OnDamageReceived, 790u, 123u);
+
+            bool firstApplied = entity.ApplyProc(first.Object);
+            bool secondApplied = entity.ApplyProc(second.Object);
+            entity.FireProc(ProcType.OnDamageReceived);
+
+            Assert.True(firstApplied);
+            Assert.True(secondApplied);
+            first.Verify(p => p.Trigger(null), Times.Once);
+            second.Verify(p => p.Trigger(null), Times.Once);
         }
 
         [Fact]
         public void Update_AdvancesRegisteredProcsAndRemovalStopsDispatch()
         {
             TestUnitEntity entity = CreateEntity(1u);
-            Mock<IProcInfo> proc = CreateProc(entity, ProcType.BeginMoving, 123u);
+            Mock<IProcInfo> proc = CreateProc(entity, ProcType.BeginMoving, 789u, 123u);
             entity.ApplyProc(proc.Object);
 
             entity.Update(0.1d);
@@ -47,7 +66,7 @@ namespace NexusForever.Game.Tests.Combat
 
             Assert.True(removed);
             proc.Verify(p => p.Update(0.1d), Times.Once);
-            proc.Verify(p => p.Trigger(), Times.Never);
+            proc.Verify(p => p.Trigger(It.IsAny<IUnitEntity>()), Times.Never);
             proc.Verify(p => p.Cancel(), Times.Once);
         }
 
@@ -55,8 +74,8 @@ namespace NexusForever.Game.Tests.Combat
         public void RemoveProc_CancelsOnlyExactProcAndPreservesOtherRegistrations()
         {
             TestUnitEntity entity = CreateEntity(1u);
-            Mock<IProcInfo> removedProc = CreateProc(entity, ProcType.BeginMoving, 123u);
-            Mock<IProcInfo> remainingProc = CreateProc(entity, ProcType.BeginMoving, 456u);
+            Mock<IProcInfo> removedProc = CreateProc(entity, ProcType.BeginMoving, 789u, 123u);
+            Mock<IProcInfo> remainingProc = CreateProc(entity, ProcType.BeginMoving, 790u, 456u);
             entity.ApplyProc(removedProc.Object);
             entity.ApplyProc(remainingProc.Object);
 
@@ -64,9 +83,99 @@ namespace NexusForever.Game.Tests.Combat
             entity.FireProc(ProcType.BeginMoving);
 
             removedProc.Verify(p => p.Cancel(), Times.Once);
-            removedProc.Verify(p => p.Trigger(), Times.Never);
+            removedProc.Verify(p => p.Trigger(It.IsAny<IUnitEntity>()), Times.Never);
             remainingProc.Verify(p => p.Cancel(), Times.Never);
-            remainingProc.Verify(p => p.Trigger(), Times.Once);
+            remainingProc.Verify(p => p.Trigger(null), Times.Once);
+        }
+
+        [Fact]
+        public void TakeDamage_FiresHitAndReceivedProcsWithOpposingEventTargets()
+        {
+            IServiceProvider previousProvider = LegacyServiceProvider.Provider;
+            var entityManager = new EntityManager();
+            typeof(EntityManager).GetMethod(
+                    "InitialiseEntityStats",
+                    BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(entityManager, null);
+            using ServiceProvider serviceProvider = new ServiceCollection()
+                .AddSingleton(entityManager)
+                .BuildServiceProvider();
+            LegacyServiceProvider.Provider = serviceProvider;
+
+            try
+            {
+                TestUnitEntity attacker = CreateEntity(1u);
+                TestUnitEntity victim = CreateEntity(2u);
+                attacker.MaxHealth = 100u;
+                attacker.SetHealth(100u);
+                victim.MaxHealth = 100u;
+                victim.SetHealth(100u);
+
+                Mock<IProcInfo> hitProc = CreateProc(attacker, ProcType.OnHit, 789u, 123u);
+                Mock<IProcInfo> receivedProc = CreateProc(victim, ProcType.OnDamageReceived, 790u, 456u);
+                attacker.ApplyProc(hitProc.Object);
+                victim.ApplyProc(receivedProc.Object);
+
+                var damage = new Mock<IDamageDescription>();
+                damage.SetupGet(d => d.DamageType).Returns(DamageType.Physical);
+                damage.SetupGet(d => d.RawDamage).Returns(10u);
+                damage.SetupGet(d => d.AdjustedDamage).Returns(10u);
+
+                victim.TakeDamage(attacker, damage.Object);
+
+                hitProc.Verify(p => p.Trigger(victim), Times.Once);
+                receivedProc.Verify(p => p.Trigger(attacker), Times.Once);
+                Assert.Equal(90u, victim.Health);
+            }
+            finally
+            {
+                LegacyServiceProvider.Provider = previousProvider;
+            }
+        }
+
+        [Fact]
+        public void TakeDamage_ProcOriginDoesNotTriggerUnrelatedDamageProcs()
+        {
+            IServiceProvider previousProvider = LegacyServiceProvider.Provider;
+            var entityManager = new EntityManager();
+            typeof(EntityManager).GetMethod(
+                    "InitialiseEntityStats",
+                    BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(entityManager, null);
+            using ServiceProvider serviceProvider = new ServiceCollection()
+                .AddSingleton(entityManager)
+                .BuildServiceProvider();
+            LegacyServiceProvider.Provider = serviceProvider;
+
+            try
+            {
+                TestUnitEntity attacker = CreateEntity(1u);
+                TestUnitEntity victim = CreateEntity(2u);
+                attacker.MaxHealth = 100u;
+                attacker.SetHealth(100u);
+                victim.MaxHealth = 100u;
+                victim.SetHealth(100u);
+
+                Mock<IProcInfo> hitProc = CreateProc(attacker, ProcType.OnHit, 789u, 123u);
+                Mock<IProcInfo> receivedProc = CreateProc(victim, ProcType.OnDamageReceived, 790u, 456u);
+                attacker.ApplyProc(hitProc.Object);
+                victim.ApplyProc(receivedProc.Object);
+
+                var damage = new Mock<IDamageDescription>();
+                damage.SetupGet(d => d.DamageType).Returns(DamageType.Physical);
+                damage.SetupGet(d => d.RawDamage).Returns(10u);
+                damage.SetupGet(d => d.AdjustedDamage).Returns(10u);
+
+                victim.TakeDamage(attacker, damage.Object, false);
+
+                hitProc.Verify(p => p.Trigger(It.IsAny<IUnitEntity>()), Times.Never);
+                receivedProc.Verify(p => p.Trigger(It.IsAny<IUnitEntity>()), Times.Never);
+                Assert.Equal(90u, victim.Health);
+            }
+            finally
+            {
+                LegacyServiceProvider.Provider = previousProvider;
+            }
         }
 
         [Fact]
@@ -86,7 +195,7 @@ namespace NexusForever.Game.Tests.Combat
             try
             {
                 TestUnitEntity entity = CreateEntity(1u);
-                Mock<IProcInfo> proc = CreateProc(entity, ProcType.CriticalDamage, 123u);
+                Mock<IProcInfo> proc = CreateProc(entity, ProcType.CriticalDamage, 789u, 123u);
                 var castingSpell = new Mock<ISpell>();
                 castingSpell.Setup(s => s.IsCasting).Returns(true);
                 var executingSpell = new Mock<ISpell>();
@@ -98,7 +207,7 @@ namespace NexusForever.Game.Tests.Combat
                 entity.FireProc(ProcType.CriticalDamage);
 
                 proc.Verify(p => p.Cancel(), Times.Once);
-                proc.Verify(p => p.Trigger(), Times.Never);
+                proc.Verify(p => p.Trigger(It.IsAny<IUnitEntity>()), Times.Never);
                 castingSpell.Verify(s => s.CancelCast(CastResult.CasterCannotBeDead), Times.Once);
                 executingSpell.Verify(s => s.Finish(), Times.Once);
             }
@@ -112,7 +221,7 @@ namespace NexusForever.Game.Tests.Combat
         public void Dispose_CancelsRegisteredProcsAndDisposesPendingSpells()
         {
             TestUnitEntity entity = CreateEntity(1u);
-            Mock<IProcInfo> proc = CreateProc(entity, ProcType.CriticalDamage, 123u);
+            Mock<IProcInfo> proc = CreateProc(entity, ProcType.CriticalDamage, 789u, 123u);
             var spell = new Mock<ISpell>();
             AddPendingSpell(entity, spell.Object);
             entity.ApplyProc(proc.Object);
@@ -161,13 +270,15 @@ namespace NexusForever.Game.Tests.Combat
         private static Mock<IProcInfo> CreateProc(
             TestUnitEntity owner,
             ProcType type,
+            uint effectId,
             uint applicatorSpell4Id)
         {
             var proc = new Mock<IProcInfo>();
             proc.Setup(p => p.Owner).Returns(owner);
+            proc.Setup(p => p.EffectId).Returns(effectId);
             proc.Setup(p => p.Type).Returns(type);
             proc.Setup(p => p.ApplicatorSpell4Id).Returns(applicatorSpell4Id);
-            proc.Setup(p => p.Trigger()).Returns(true);
+            proc.Setup(p => p.Trigger(It.IsAny<IUnitEntity>())).Returns(true);
             return proc;
         }
 
@@ -194,9 +305,19 @@ namespace NexusForever.Game.Tests.Combat
                 Guid = guid;
             }
 
+            public void SetHealth(uint health)
+            {
+                Health = health;
+            }
+
             public void Die()
             {
                 OnDeath();
+            }
+
+            protected override float CalculateDefaultProperty(Property property)
+            {
+                return 0f;
             }
 
             protected override IEntityModel BuildEntityModel()

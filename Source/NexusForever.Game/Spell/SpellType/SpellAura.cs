@@ -182,7 +182,11 @@ namespace NexusForever.Game.Spell.SpellType
             }
 
             // Add caster
-            targets.Add(new SpellTargetInfo(SpellEffectTargetFlags.Caster, Caster));
+            SpellEffectTargetFlags casterFlags = SpellEffectTargetFlags.Caster;
+            if (Parameters.PrimaryTargetId == 0)
+                casterFlags |= SpellEffectTargetFlags.Target;
+
+            targets.Add(new SpellTargetInfo(casterFlags, Caster));
 
             // Add primary target
             if (Parameters.PrimaryTargetId != 0)

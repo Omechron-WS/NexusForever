@@ -337,7 +337,11 @@ namespace NexusForever.Game.Spell
 
         protected virtual void SelectTargets()
         {
-            targets.Add(new SpellTargetInfo(SpellEffectTargetFlags.Caster, Caster));
+            SpellEffectTargetFlags casterFlags = SpellEffectTargetFlags.Caster;
+            if (Parameters.PrimaryTargetId == 0)
+                casterFlags |= SpellEffectTargetFlags.Target;
+
+            targets.Add(new SpellTargetInfo(casterFlags, Caster));
 
             if (Parameters.PrimaryTargetId != 0)
             {
