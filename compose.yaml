@@ -1,0 +1,471 @@
+name: "${NF_COMPOSE_PROJECT_NAME:-nexusforever}"
+
+x-connection-strings:
+  auth: &auth-connection "Server=mysql;Port=3306;User ID=${NF_MYSQL_USER:-nexusforever};Password=${NF_MYSQL_PASSWORD};Database=nexus_forever_auth;Connection Timeout=15;Default Command Timeout=120"
+  character: &character-connection "Server=mysql;Port=3306;User ID=${NF_MYSQL_USER:-nexusforever};Password=${NF_MYSQL_PASSWORD};Database=nexus_forever_character;Connection Timeout=15;Default Command Timeout=120"
+  world: &world-connection "Server=mysql;Port=3306;User ID=${NF_MYSQL_USER:-nexusforever};Password=${NF_MYSQL_PASSWORD};Database=nexus_forever_world;Connection Timeout=15;Default Command Timeout=600;Allow User Variables=true"
+  group: &group-connection "Server=mysql;Port=3306;User ID=${NF_MYSQL_USER:-nexusforever};Password=${NF_MYSQL_PASSWORD};Database=nexus_forever_group;Connection Timeout=15;Default Command Timeout=120"
+  chat: &chat-connection "Server=mysql;Port=3306;User ID=${NF_MYSQL_USER:-nexusforever};Password=${NF_MYSQL_PASSWORD};Database=nexus_forever_chat;Connection Timeout=15;Default Command Timeout=120"
+  friendship: &friendship-connection "Server=mysql;Port=3306;User ID=${NF_MYSQL_USER:-nexusforever};Password=${NF_MYSQL_PASSWORD};Database=nexus_forever_friendship;Connection Timeout=15;Default Command Timeout=120"
+  query: &query-connection "Server=mysql;Port=3306;User ID=${NF_MYSQL_USER:-nexusforever};Password=${NF_MYSQL_PASSWORD};Database=nexus_forever_query;Connection Timeout=15;Default Command Timeout=120"
+  rabbitmq: &rabbitmq-connection "amqp://${NF_RABBITMQ_USER:-nexusforever}:${NF_RABBITMQ_PASSWORD}@rabbitmq:5672"
+
+x-nexusforever-app: &nexusforever-app
+  image: "${NF_IMAGE:-nexusforever-local:dev}"
+  build:
+    context: .
+    dockerfile: Dockerfile
+  init: true
+  read_only: true
+  restart: unless-stopped
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - nexusforever
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,noexec,size=64m
+
+x-api-healthcheck: &api-healthcheck
+  interval: 10s
+  timeout: 5s
+  retries: 12
+  start_period: 10s
+
+x-tcp-healthcheck: &tcp-healthcheck
+  interval: 10s
+  timeout: 5s
+  retries: 12
+  start_period: 10s
+
+services:
+  mysql:
+    image: "${NF_MYSQL_IMAGE:-mysql:8.4.10}"
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_ROOT_PASSWORD: "${NF_MYSQL_ROOT_PASSWORD}"
+      MYSQL_DATABASE: nexus_forever_auth
+      MYSQL_USER: "${NF_MYSQL_USER:-nexusforever}"
+      MYSQL_PASSWORD: "${NF_MYSQL_PASSWORD}"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    expose:
+      - "3306"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          MYSQL_PWD="$${MYSQL_ROOT_PASSWORD}"
+          mysqladmin ping --host=127.0.0.1 --user=root --silent
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks:
+      - nexusforever
+
+  rabbitmq:
+    image: "${NF_RABBITMQ_IMAGE:-rabbitmq:4.3.4-management}"
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: "${NF_RABBITMQ_USER:-nexusforever}"
+      RABBITMQ_DEFAULT_PASS: "${NF_RABBITMQ_PASSWORD}"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    expose:
+      - "5672"
+      - "15672"
+    healthcheck:
+      test:
+        - CMD
+        - rabbitmq-diagnostics
+        - -q
+        - ping
+      interval: 5s
+      timeout: 10s
+      retries: 24
+      start_period: 20s
+    networks:
+      - nexusforever
+
+  database-create:
+    image: "${NF_MYSQL_IMAGE:-mysql:8.4.10}"
+    restart: "no"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_ROOT_PASSWORD: "${NF_MYSQL_ROOT_PASSWORD}"
+      MYSQL_USER: "${NF_MYSQL_USER:-nexusforever}"
+      MYSQL_PASSWORD: "${NF_MYSQL_PASSWORD}"
+    entrypoint:
+      - /bin/sh
+      - /opt/nexusforever/create-databases.sh
+    volumes:
+      - type: bind
+        source: ./deploy/docker/mysql/create-databases.sh
+        target: /opt/nexusforever/create-databases.sh
+        read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16m
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - nexusforever
+
+  database-migrations:
+    <<: *nexusforever-app
+    working_dir: /app/migrations
+    command:
+      - NexusForever.Aspire.Database.Migrations.dll
+    restart: "no"
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      ConnectionStrings__authdb: *auth-connection
+      ConnectionStrings__characterdb: *character-connection
+      ConnectionStrings__worlddb: *world-connection
+      ConnectionStrings__groupdb: *group-connection
+      ConnectionStrings__chatdb: *chat-connection
+      ConnectionStrings__friendshipdb: *friendship-connection
+      ConnectionStrings__querydb: *query-connection
+      AccountCreation__UserName: "${NF_ADMIN_USERNAME:-nexusforever}"
+      AccountCreation__Password: "${NF_ADMIN_PASSWORD}"
+      Realm__Id: "1"
+      Realm__Name: "${NF_REALM_NAME:-NexusForever}"
+      Realm__Host: "${NF_REALM_HOST}"
+      Realm__Port: "${NF_WORLD_PUBLIC_PORT:-24000}"
+      WorldDatabase__Path: "${NF_WORLD_SQL_PATH:+/assets/world-sql}"
+    volumes:
+      - type: bind
+        source: "${NF_WORLD_SQL_PATH:-./.nexusforever/empty-world-database}"
+        target: /assets/world-sql
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      database-create:
+        condition: service_completed_successfully
+
+  account-api:
+    <<: *nexusforever-app
+    working_dir: /app/account-api
+    command:
+      - NexusForever.API.Account.dll
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      urls: http://0.0.0.0:4001
+      Authentication__Credential: "${NF_ACCOUNT_API_CREDENTIAL}"
+      Database__Auth__Provider: MySql
+      Database__Auth__ConnectionString: *auth-connection
+    expose:
+      - "4001"
+    healthcheck:
+      <<: *api-healthcheck
+      test:
+        - CMD-SHELL
+        - >-
+          code=$$(curl --silent --output /dev/null --write-out '%{http_code}'
+          --connect-timeout 2 --max-time 5
+          --header "X-NexusForever-Service-Credential: $${Authentication__Credential}"
+          http://127.0.0.1:4001/account/0) &&
+          { [ "$$code" = 200 ] || [ "$$code" = 404 ]; }
+    depends_on:
+      database-migrations:
+        condition: service_completed_successfully
+
+  character-api:
+    <<: *nexusforever-app
+    working_dir: /app/character-api
+    command:
+      - NexusForever.API.Character.dll
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      urls: http://0.0.0.0:4000
+      Authentication__Credential: "${NF_CHARACTER_API_CREDENTIAL}"
+      Database__Auth__Provider: MySql
+      Database__Auth__ConnectionString: *auth-connection
+      Database__Character__0__RealmId: "1"
+      Database__Character__0__Provider: MySql
+      Database__Character__0__ConnectionString: *character-connection
+    expose:
+      - "4000"
+    healthcheck:
+      <<: *api-healthcheck
+      test:
+        - CMD-SHELL
+        - >-
+          code=$$(curl --silent --output /dev/null --write-out '%{http_code}'
+          --connect-timeout 2 --max-time 5
+          --header "X-NexusForever-Service-Credential: $${Authentication__Credential}"
+          http://127.0.0.1:4000/character/1/0) &&
+          { [ "$$code" = 200 ] || [ "$$code" = 404 ]; }
+    depends_on:
+      database-migrations:
+        condition: service_completed_successfully
+
+  character-server:
+    <<: *nexusforever-app
+    working_dir: /app/character
+    command:
+      - NexusForever.Server.Character.dll
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      Database__Query__Provider: MySql
+      Database__Query__ConnectionString: *query-connection
+      API__Character__Host: http://character-api:4000
+      API__Character__Credential: "${NF_CHARACTER_API_CREDENTIAL}"
+      Network__Internal__Broker: RabbitMQ
+      Network__Internal__ConnectionString: *rabbitmq-connection
+      Network__Internal__InputQueue: CharacterServer
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      database-migrations:
+        condition: service_completed_successfully
+      character-api:
+        condition: service_healthy
+
+  group-server:
+    <<: *nexusforever-app
+    working_dir: /app/group
+    command:
+      - NexusForever.Server.GroupServer.dll
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      Database__Group__Provider: MySql
+      Database__Group__ConnectionString: *group-connection
+      API__Character__Host: http://character-api:4000
+      API__Character__Credential: "${NF_CHARACTER_API_CREDENTIAL}"
+      Network__Internal__Broker: RabbitMQ
+      Network__Internal__ConnectionString: *rabbitmq-connection
+      Network__Internal__InputQueue: GroupServer
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      database-migrations:
+        condition: service_completed_successfully
+      character-api:
+        condition: service_healthy
+
+  chat-server:
+    <<: *nexusforever-app
+    working_dir: /app/chat
+    command:
+      - NexusForever.Server.ChatServer.dll
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      Database__Chat__Provider: MySql
+      Database__Chat__ConnectionString: *chat-connection
+      API__Character__Host: http://character-api:4000
+      API__Character__Credential: "${NF_CHARACTER_API_CREDENTIAL}"
+      Network__Internal__Broker: RabbitMQ
+      Network__Internal__ConnectionString: *rabbitmq-connection
+      Network__Internal__InputQueue: ChatServer
+      GameTable__GameTablePath: /assets/tbl
+      GameTable__Cache__UseCache: "true"
+      GameTable__Cache__CachePath: /var/cache/nexusforever/chat
+    volumes:
+      - type: bind
+        source: "${NF_TBL_PATH:?Set NF_TBL_PATH to the host TBL directory}"
+        target: /assets/tbl
+        read_only: true
+        bind:
+          create_host_path: false
+      - chat-cache:/var/cache/nexusforever/chat
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      database-migrations:
+        condition: service_completed_successfully
+      character-api:
+        condition: service_healthy
+
+  friendship-server:
+    <<: *nexusforever-app
+    working_dir: /app/friendship
+    command:
+      - NexusForever.Server.Friendship.dll
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      Database__Friendship__Provider: MySql
+      Database__Friendship__ConnectionString: *friendship-connection
+      API__Account__Host: http://account-api:4001
+      API__Account__Credential: "${NF_ACCOUNT_API_CREDENTIAL}"
+      API__Character__Host: http://character-api:4000
+      API__Character__Credential: "${NF_CHARACTER_API_CREDENTIAL}"
+      Network__Internal__Broker: RabbitMQ
+      Network__Internal__ConnectionString: *rabbitmq-connection
+      Network__Internal__InputQueue: FriendshipServer
+      GameTable__GameTablePath: /assets/tbl
+      GameTable__Cache__UseCache: "true"
+      GameTable__Cache__CachePath: /var/cache/nexusforever/friendship
+    volumes:
+      - type: bind
+        source: "${NF_TBL_PATH:?Set NF_TBL_PATH to the host TBL directory}"
+        target: /assets/tbl
+        read_only: true
+        bind:
+          create_host_path: false
+      - friendship-cache:/var/cache/nexusforever/friendship
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      database-migrations:
+        condition: service_completed_successfully
+      account-api:
+        condition: service_healthy
+      character-api:
+        condition: service_healthy
+
+  workers-ready:
+    <<: *nexusforever-app
+    working_dir: /app
+    entrypoint:
+      - /bin/sh
+      - /opt/nexusforever/wait-for-workers.sh
+    command: []
+    restart: "no"
+    environment:
+      RABBITMQ_MANAGEMENT_URL: http://rabbitmq:15672
+      RABBITMQ_USER: "${NF_RABBITMQ_USER:-nexusforever}"
+      RABBITMQ_PASSWORD: "${NF_RABBITMQ_PASSWORD}"
+      WORKER_READY_TIMEOUT_SECONDS: "${NF_WORKER_READY_TIMEOUT_SECONDS:-180}"
+    volumes:
+      - type: bind
+        source: ./deploy/docker/wait-for-workers.sh
+        target: /opt/nexusforever/wait-for-workers.sh
+        read_only: true
+    depends_on:
+      character-server:
+        condition: service_started
+      group-server:
+        condition: service_started
+      chat-server:
+        condition: service_started
+      friendship-server:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+
+  world-server:
+    <<: *nexusforever-app
+    working_dir: /app/world
+    command:
+      - NexusForever.WorldServer.dll
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      urls: http://127.0.0.1:5000
+      WebSocketCommands__Enabled: "false"
+      Network__Host: 0.0.0.0
+      Network__Port: "24000"
+      Network__Internal__Broker: RabbitMQ
+      Network__Internal__ConnectionString: *rabbitmq-connection
+      Network__Internal__InputQueue: WorldServer_1
+      Database__Auth__Provider: MySql
+      Database__Auth__ConnectionString: *auth-connection
+      Database__Character__Provider: MySql
+      Database__Character__ConnectionString: *character-connection
+      Database__World__Provider: MySql
+      Database__World__ConnectionString: *world-connection
+      GameTable__GameTablePath: /assets/tbl
+      GameTable__Cache__UseCache: "true"
+      GameTable__Cache__CachePath: /var/cache/nexusforever/world
+      Realm__RealmId: "1"
+      Realm__Map__MapPath: /assets/map
+      Script__Enable: "true"
+      Script__Directory: /app/world
+      Script__Dynamic__Enable: "false"
+    volumes:
+      - type: bind
+        source: "${NF_TBL_PATH:?Set NF_TBL_PATH to the host TBL directory}"
+        target: /assets/tbl
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${NF_MAP_PATH:?Set NF_MAP_PATH to the host .nfmap directory}"
+        target: /assets/map
+        read_only: true
+        bind:
+          create_host_path: false
+      - world-cache:/var/cache/nexusforever/world
+    ports:
+      - "${NF_BIND_ADDRESS:-127.0.0.1}:${NF_WORLD_PUBLIC_PORT:-24000}:24000/tcp"
+    healthcheck:
+      <<: *tcp-healthcheck
+      test:
+        - CMD-SHELL
+        - nc -z -w 2 127.0.0.1 24000
+      start_period: 120s
+    stop_grace_period: 90s
+    depends_on:
+      database-migrations:
+        condition: service_completed_successfully
+      workers-ready:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  sts-server:
+    <<: *nexusforever-app
+    working_dir: /app/sts
+    command:
+      - NexusForever.StsServer.dll
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      Network__Host: 0.0.0.0
+      Network__Port: "6600"
+      Database__Auth__Provider: MySql
+      Database__Auth__ConnectionString: *auth-connection
+    ports:
+      - "${NF_BIND_ADDRESS:-127.0.0.1}:${NF_STS_PUBLIC_PORT:-6600}:6600/tcp"
+    healthcheck:
+      <<: *tcp-healthcheck
+      test:
+        - CMD-SHELL
+        - nc -z -w 2 127.0.0.1 6600
+    depends_on:
+      database-migrations:
+        condition: service_completed_successfully
+
+  auth-server:
+    <<: *nexusforever-app
+    working_dir: /app/auth
+    command:
+      - NexusForever.AuthServer.dll
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      Network__Host: 0.0.0.0
+      Network__Port: "23115"
+      Database__Auth__Provider: MySql
+      Database__Auth__ConnectionString: *auth-connection
+    ports:
+      - "${NF_BIND_ADDRESS:-127.0.0.1}:${NF_AUTH_PUBLIC_PORT:-23115}:23115/tcp"
+    healthcheck:
+      <<: *tcp-healthcheck
+      test:
+        - CMD-SHELL
+        - nc -z -w 2 127.0.0.1 23115
+      start_period: 25s
+    depends_on:
+      database-migrations:
+        condition: service_completed_successfully
+      world-server:
+        condition: service_healthy
+
+volumes:
+  mysql-data:
+  rabbitmq-data:
+  world-cache:
+  chat-cache:
+  friendship-cache:
+
+networks:
+  nexusforever:
+    driver: bridge

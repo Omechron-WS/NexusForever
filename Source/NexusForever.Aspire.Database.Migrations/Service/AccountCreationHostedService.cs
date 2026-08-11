@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Hosting;
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NexusForever.Aspire.Database.Migrations.Configuration.Model;
@@ -36,7 +37,9 @@ namespace NexusForever.Aspire.Database.Migrations.Service
                 return;
             }
 
-            AccountModel accountModel = _context.Account.SingleOrDefault(a => a.Email == _options.UserName);
+            AccountModel accountModel = await _context.Account.SingleOrDefaultAsync(
+                account => account.Email == _options.UserName,
+                cancellationToken);
             if (accountModel != null)
             {
                 _log.LogInformation("Account with username '{UserName}' already exists, skipping account creation.", _options.UserName);
@@ -51,15 +54,8 @@ namespace NexusForever.Aspire.Database.Migrations.Service
                 V     = vertifier
             });
 
-            try
-            {
-                await _context.SaveChangesAsync();
-                _log.LogInformation("Account with username '{UserName}' created successfully.", _options.UserName);
-            }
-            catch (Exception ex)
-            {
-                _log.LogError(ex, "Failed to create account with username '{UserName}'.", _options.UserName);
-            }
+            await _context.SaveChangesAsync(cancellationToken);
+            _log.LogInformation("Account with username '{UserName}' created successfully.", _options.UserName);
         }
 
         public Task StopAsync(CancellationToken cancellationToken)

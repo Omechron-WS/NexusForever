@@ -144,6 +144,7 @@ internal class Program
             .WithNexusForeverApi("Character", characterApi.Resource, characterApiCredential)
             .WaitFor(rmq)
             .WaitFor(querydb)
+            .WaitForCompletion(dbMigration)
             .WaitFor(characterApi);
 
         DistributedApplication host = builder.Build();

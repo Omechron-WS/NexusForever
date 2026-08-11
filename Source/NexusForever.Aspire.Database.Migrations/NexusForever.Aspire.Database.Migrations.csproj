@@ -25,6 +25,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Remove="WorldDatabase\WorldDatabaseManifest.json" />
+    <EmbeddedResource Include="WorldDatabase\WorldDatabaseManifest.json" LogicalName="NexusForever.WorldDatabaseManifest.json" />
     <None Update="AspireMigrations.example.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

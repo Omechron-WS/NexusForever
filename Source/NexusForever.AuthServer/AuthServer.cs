@@ -69,6 +69,7 @@ namespace NexusForever.AuthServer
             catch (Exception e)
             {
                 log.Fatal(e);
+                Environment.ExitCode = 1;
             }
         }
     }

@@ -1,0 +1,706 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIRECTORY=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPOSITORY_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIRECTORY/.." && pwd)
+COMPOSE_FILE="$REPOSITORY_ROOT/compose.yaml"
+ENVIRONMENT_FILE=${NF_ENV_FILE:-"$REPOSITORY_ROOT/.env"}
+EMPTY_WORLD_DATABASE="$REPOSITORY_ROOT/.nexusforever/empty-world-database"
+
+readonly SCRIPT_DIRECTORY REPOSITORY_ROOT COMPOSE_FILE ENVIRONMENT_FILE EMPTY_WORLD_DATABASE
+
+usage()
+{
+    cat <<'EOF'
+Usage: scripts/nexusforever <command> [options]
+
+Commands:
+  init       Create .env, generate local secrets, and optionally set asset paths.
+  preflight  Validate configuration and external asset paths without starting services.
+  build      Build the single local NexusForever application image.
+  up         Pull, build, start, wait for readiness, and run the smoke check.
+  status     Show service and one-shot container status.
+  logs       Follow service logs (optional service names may be supplied).
+  smoke      Check containers, databases, workers, and published TCP listeners.
+  down       Stop containers while retaining database, broker, and cache volumes.
+  reset      Stop containers and delete local named volumes after confirmation.
+
+init options:
+  --tbl PATH          Host directory containing build-16042 .tbl files and en-US.bin.
+  --map PATH          Host directory containing generated .nfmap files.
+  --world-sql PATH    Optional NexusForever.WorldDatabase root directory.
+  --realm-host IP     Client-reachable realm IPv4 address.
+  --bind-address IP   Host listener address (default: 0.0.0.0).
+
+Environment:
+  NF_ENV_FILE         Alternate Compose environment file (default: repository .env).
+  NF_COMPOSE_PROJECT_NAME
+                      Isolated Compose project name (default: value in .env).
+EOF
+}
+
+fail()
+{
+    echo "Error: $*" >&2
+    exit 1
+}
+
+require_command()
+{
+    command -v "$1" >/dev/null 2>&1 || fail "Required command '$1' was not found."
+}
+
+require_environment_file()
+{
+    [ -f "$ENVIRONMENT_FILE" ] \
+        || fail "Run '$SCRIPT_DIRECTORY/nexusforever init' first; $ENVIRONMENT_FILE does not exist."
+}
+
+environment_value()
+{
+    local key=$1
+    local value
+
+    value=$(sed -n "s/^${key}=//p" "$ENVIRONMENT_FILE" | tail -n 1)
+    value=${value%$'\r'}
+
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+        value=${value:1:${#value}-2}
+    elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+        value=${value:1:${#value}-2}
+    fi
+
+    printf '%s' "$value"
+}
+
+replace_environment_value()
+{
+    local key=$1
+    local value=$2
+    local temporary_file
+    local found=false
+
+    [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] \
+        || fail "Environment values cannot contain newlines."
+
+    temporary_file=$(mktemp "${ENVIRONMENT_FILE}.tmp.XXXXXX")
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "${line%%=*}" == "$key" ]]; then
+            printf '%s=%s\n' "$key" "$value" >>"$temporary_file"
+            found=true
+        else
+            printf '%s\n' "$line" >>"$temporary_file"
+        fi
+    done <"$ENVIRONMENT_FILE"
+
+    if [ "$found" = false ]; then
+        printf '%s=%s\n' "$key" "$value" >>"$temporary_file"
+    fi
+
+    chmod 600 "$temporary_file"
+    mv -- "$temporary_file" "$ENVIRONMENT_FILE"
+}
+
+generate_secret()
+{
+    od -An -N32 -tx1 /dev/urandom | tr -d ' \n'
+}
+
+compose()
+{
+    local project_name
+
+    project_name=$(compose_project_name)
+    docker compose \
+        --project-name "$project_name" \
+        --project-directory "$REPOSITORY_ROOT" \
+        --env-file "$ENVIRONMENT_FILE" \
+        --file "$COMPOSE_FILE" \
+        "$@"
+}
+
+compose_project_name()
+{
+    local project_name=${NF_COMPOSE_PROJECT_NAME:-}
+
+    if [ -z "$project_name" ] && [ -f "$ENVIRONMENT_FILE" ]; then
+        project_name=$(environment_value NF_COMPOSE_PROJECT_NAME)
+    fi
+
+    printf '%s' "${project_name:-nexusforever}"
+}
+
+validate_safe_secret()
+{
+    local key=$1
+    local value
+
+    value=$(environment_value "$key")
+    [ -n "$value" ] || fail "$key is empty in $ENVIRONMENT_FILE."
+    [[ "$value" != CHANGE_ME* ]] || fail "$key has not been generated; rerun init."
+    [[ "$value" =~ ^[A-Za-z0-9_-]+$ ]] \
+        || fail "$key must contain only base64url-safe characters."
+    [ "${#value}" -ge 32 ] && [ "${#value}" -le 128 ] \
+        || fail "$key must contain between 32 and 128 characters."
+}
+
+validate_service_identity()
+{
+    local key=$1
+    local maximum_length=$2
+    local value
+
+    value=$(environment_value "$key")
+    [[ "$value" =~ ^[A-Za-z0-9_]+$ ]] \
+        || fail "$key must contain only ASCII letters, digits, or underscores."
+    [ "${#value}" -le "$maximum_length" ] \
+        || fail "$key must contain no more than $maximum_length characters."
+}
+
+validate_external_directory()
+{
+    local label=$1
+    local path=$2
+    local resolved
+
+    [ -n "$path" ] || fail "$label is not configured in $ENVIRONMENT_FILE."
+    [[ "$path" == /* ]] || fail "$label must be an absolute host path: $path"
+    [ -d "$path" ] || fail "$label does not exist or is not a directory: $path"
+    [ -r "$path" ] || fail "$label is not readable: $path"
+
+    resolved=$(CDPATH='' cd -- "$path" && pwd -P)
+    if [[ "$resolved" == "$REPOSITORY_ROOT" || "$resolved" == "$REPOSITORY_ROOT/"* ]]; then
+        fail "$label must remain outside the repository: $resolved"
+    fi
+}
+
+validate_ipv4_address()
+{
+    local value=$1
+    local label=$2
+    local -a octets
+    local octet
+
+    IFS=. read -r -a octets <<<"$value"
+    [ "${#octets[@]}" -eq 4 ] || fail "$label must be an IPv4 address."
+    for octet in "${octets[@]}"; do
+        [[ "$octet" =~ ^[0-9]+$ ]] && [ "$octet" -le 255 ] \
+            || fail "$label must be an IPv4 address."
+    done
+}
+
+validate_advertised_ipv4_address()
+{
+    local value=$1
+    local label=$2
+    local first_octet
+
+    validate_ipv4_address "$value" "$label"
+    first_octet=${value%%.*}
+    first_octet=$((10#$first_octet))
+
+    case "$first_octet" in
+        0)
+            fail "$label cannot use the non-routable 0.0.0.0/8 range."
+            ;;
+        127)
+            fail "$label cannot use loopback with bridge networking."
+            ;;
+    esac
+
+    [ "$first_octet" -lt 224 ] \
+        || fail "$label must be a usable unicast address, not multicast, reserved, or broadcast."
+}
+
+initialise()
+{
+    local tbl_path=""
+    local map_path=""
+    local world_sql_path=""
+    local realm_host=""
+    local bind_address=""
+    local key
+    local current_value
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --tbl | --map | --world-sql | --realm-host | --bind-address)
+                [ "$#" -ge 2 ] || fail "$1 requires a value."
+                case "$1" in
+                    --tbl) tbl_path=$2 ;;
+                    --map) map_path=$2 ;;
+                    --world-sql) world_sql_path=$2 ;;
+                    --realm-host) realm_host=$2 ;;
+                    --bind-address) bind_address=$2 ;;
+                esac
+                shift 2
+                ;;
+            -h | --help)
+                usage
+                return 0
+                ;;
+            *)
+                fail "Unknown init option: $1"
+                ;;
+        esac
+    done
+
+    mkdir -p -- "$(dirname -- "$ENVIRONMENT_FILE")" "$EMPTY_WORLD_DATABASE"
+    if [ ! -f "$ENVIRONMENT_FILE" ]; then
+        cp -- "$REPOSITORY_ROOT/deploy/docker/.env.example" "$ENVIRONMENT_FILE"
+        echo "Created $ENVIRONMENT_FILE."
+    else
+        echo "Keeping existing values in $ENVIRONMENT_FILE."
+    fi
+    chmod 600 "$ENVIRONMENT_FILE"
+
+    for key in \
+        NF_MYSQL_ROOT_PASSWORD \
+        NF_MYSQL_PASSWORD \
+        NF_RABBITMQ_PASSWORD \
+        NF_ACCOUNT_API_CREDENTIAL \
+        NF_CHARACTER_API_CREDENTIAL \
+        NF_ADMIN_PASSWORD; do
+        current_value=$(environment_value "$key")
+        if [ -z "$current_value" ] || [[ "$current_value" == CHANGE_ME* ]]; then
+            replace_environment_value "$key" "$(generate_secret)"
+        fi
+    done
+
+    [ -z "$tbl_path" ] || replace_environment_value NF_TBL_PATH "$tbl_path"
+    [ -z "$map_path" ] || replace_environment_value NF_MAP_PATH "$map_path"
+    [ -z "$world_sql_path" ] || replace_environment_value NF_WORLD_SQL_PATH "$world_sql_path"
+    [ -z "$realm_host" ] || replace_environment_value NF_REALM_HOST "$realm_host"
+    [ -z "$bind_address" ] || replace_environment_value NF_BIND_ADDRESS "$bind_address"
+
+    echo "Generated any missing local secrets without printing them."
+    echo "Review NF_TBL_PATH, NF_MAP_PATH, NF_WORLD_SQL_PATH, and NF_REALM_HOST in $ENVIRONMENT_FILE."
+}
+
+validate_configuration()
+{
+    local tbl_path
+    local map_path
+    local world_sql_path
+    local realm_name
+    local realm_host
+    local bind_address
+    local admin_username
+    local port_key
+    local port
+    local file
+    local first_sql
+    local project_name
+
+    [ "$#" -eq 0 ] || fail "preflight does not accept arguments."
+
+    require_environment_file
+
+    for file in \
+        NF_MYSQL_ROOT_PASSWORD \
+        NF_MYSQL_PASSWORD \
+        NF_RABBITMQ_PASSWORD \
+        NF_ACCOUNT_API_CREDENTIAL \
+        NF_CHARACTER_API_CREDENTIAL \
+        NF_ADMIN_PASSWORD; do
+        validate_safe_secret "$file"
+    done
+
+    validate_service_identity NF_MYSQL_USER 32
+    validate_service_identity NF_RABBITMQ_USER 128
+
+    project_name=$(compose_project_name)
+    [[ "$project_name" =~ ^[a-z0-9][a-z0-9_-]*$ ]] \
+        || fail "NF_COMPOSE_PROJECT_NAME must start with a lowercase letter or digit and contain only lowercase letters, digits, dashes, or underscores."
+    [ "${#project_name}" -le 63 ] \
+        || fail "NF_COMPOSE_PROJECT_NAME must contain no more than 63 characters."
+
+    tbl_path=$(environment_value NF_TBL_PATH)
+    map_path=$(environment_value NF_MAP_PATH)
+    world_sql_path=$(environment_value NF_WORLD_SQL_PATH)
+    realm_name=$(environment_value NF_REALM_NAME)
+    realm_name=${realm_name:-NexusForever}
+    realm_host=$(environment_value NF_REALM_HOST)
+    bind_address=$(environment_value NF_BIND_ADDRESS)
+    admin_username=$(environment_value NF_ADMIN_USERNAME)
+    admin_username=${admin_username:-nexusforever}
+
+    validate_external_directory NF_TBL_PATH "$tbl_path"
+    validate_external_directory NF_MAP_PATH "$map_path"
+
+    for file in World.tbl WordFilter.tbl en-US.bin; do
+        [ -r "$tbl_path/$file" ] || fail "Required game-table asset is missing: $tbl_path/$file"
+    done
+
+    for file in Western.nfmap Eastern.nfmap NewCentral.nfmap; do
+        [ -r "$map_path/$file" ] || fail "Required default map asset is missing: $map_path/$file"
+    done
+
+    if [ -n "$world_sql_path" ]; then
+        validate_external_directory NF_WORLD_SQL_PATH "$world_sql_path"
+        first_sql=$(find "$world_sql_path" -type f -name '*.sql' -print -quit)
+        [ -n "$first_sql" ] \
+            || fail "NF_WORLD_SQL_PATH contains no SQL files: $world_sql_path"
+        echo "World SQL is enabled; the migrator will accept only files pinned by its image manifest."
+    else
+        mkdir -p -- "$EMPTY_WORLD_DATABASE"
+        echo "World SQL is disabled; schema, account, and realm bootstrap will still run."
+    fi
+
+    [ -n "$realm_host" ] || fail "NF_REALM_HOST is empty."
+    [[ "$realm_host" != CHANGE_ME* ]] || fail "Set NF_REALM_HOST to a client-reachable host."
+    validate_advertised_ipv4_address "$realm_host" NF_REALM_HOST
+
+    [ "${#realm_name}" -ge 1 ] && [ "${#realm_name}" -le 64 ] \
+        && [[ ! "$realm_name" =~ [[:cntrl:]] ]] \
+        || fail "NF_REALM_NAME must contain between 1 and 64 characters and no control characters."
+
+    [ "${#admin_username}" -ge 1 ] && [ "${#admin_username}" -le 128 ] \
+        && [[ ! "$admin_username" =~ [[:cntrl:]] ]] \
+        || fail "NF_ADMIN_USERNAME must contain between 1 and 128 characters and no control characters."
+
+    validate_ipv4_address "$bind_address" NF_BIND_ADDRESS
+    case "$bind_address" in
+        127.*)
+            fail "NF_BIND_ADDRESS cannot be loopback because AuthServer must probe the advertised realm through the published WorldServer port."
+            ;;
+    esac
+
+    for port_key in NF_AUTH_PUBLIC_PORT NF_STS_PUBLIC_PORT NF_WORLD_PUBLIC_PORT; do
+        port=$(environment_value "$port_key")
+        [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] \
+            || fail "$port_key must be an integer from 1 through 65535."
+    done
+
+    require_command docker
+    docker compose version >/dev/null 2>&1 \
+        || fail "Docker Compose v2 is required."
+    compose config --quiet
+
+    echo "Host configuration passed: external assets are mounted by path and are never copied into the image."
+}
+
+preflight_world_database()
+{
+    local world_sql_path
+    local image_name
+
+    world_sql_path=$(environment_value NF_WORLD_SQL_PATH)
+    [ -n "$world_sql_path" ] || return 0
+
+    image_name=$(application_image_name)
+    docker image inspect "$image_name" >/dev/null 2>&1 \
+        || fail "Application image '$image_name' is not built; run '$SCRIPT_DIRECTORY/nexusforever build' first."
+
+    docker run \
+        --rm \
+        --network none \
+        --read-only \
+        --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m \
+        --volume "$world_sql_path:/assets/world-sql:ro" \
+        --entrypoint dotnet \
+        "$image_name" \
+        /app/migrations/NexusForever.Aspire.Database.Migrations.dll \
+        --preflight-world-database \
+        /assets/world-sql
+}
+
+application_image_name()
+{
+    local image_name=${NF_IMAGE:-}
+
+    if [ -z "$image_name" ]; then
+        image_name=$(environment_value NF_IMAGE)
+    fi
+
+    printf '%s' "${image_name:-nexusforever-local:dev}"
+}
+
+verify_application_image()
+{
+    local verifier="$REPOSITORY_ROOT/deploy/docker/verify-image.sh"
+
+    [ -x "$verifier" ] || fail "Image verifier is missing or not executable: $verifier"
+    "$verifier" "$(application_image_name)"
+}
+
+preflight()
+{
+    validate_configuration "$@"
+    preflight_world_database
+    echo "Preflight passed without accessing a database."
+}
+
+build_image()
+{
+    validate_configuration
+    compose build "$@" database-migrations
+    verify_application_image
+    preflight_world_database
+}
+
+start_stack()
+{
+    [ "$#" -eq 0 ] || fail "up does not accept arguments."
+    validate_configuration
+    compose pull mysql rabbitmq
+    compose build database-migrations
+    verify_application_image
+    preflight_world_database
+    compose up --detach --wait --wait-timeout 600
+    smoke
+}
+
+show_status()
+{
+    [ "$#" -eq 0 ] || fail "status does not accept arguments."
+    require_environment_file
+    require_command docker
+    compose ps --all
+}
+
+show_logs()
+{
+    require_environment_file
+    require_command docker
+    compose logs --follow --tail=200 "$@"
+}
+
+assert_service_running()
+{
+    local service=$1
+    local container_id
+    local state
+    local health
+
+    container_id=$(compose ps --quiet "$service")
+    [ -n "$container_id" ] || fail "$service has no container."
+
+    state=$(docker inspect --format '{{.State.Status}}' "$container_id")
+    [ "$state" = running ] || fail "$service is $state, not running."
+
+    health=$(docker inspect \
+        --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+        "$container_id")
+    if [ "$health" != none ] && [ "$health" != healthy ]; then
+        fail "$service health is $health."
+    fi
+}
+
+assert_one_shot_completed()
+{
+    local service=$1
+    local container_id
+    local exit_code
+
+    container_id=$(compose ps --all --quiet "$service")
+    [ -n "$container_id" ] || fail "$service has no container."
+    exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$container_id")
+    [ "$exit_code" = 0 ] || fail "$service exited with code $exit_code."
+}
+
+probe_tcp()
+{
+    local host=$1
+    local port=$2
+
+    # Variables are intentionally expanded by the child Bash process.
+    # shellcheck disable=SC2016
+    PROBE_HOST=$host PROBE_PORT=$port timeout 5 \
+        bash -c 'exec 3<>"/dev/tcp/${PROBE_HOST}/${PROBE_PORT}"' \
+        || fail "TCP listener is not reachable at $host:$port."
+}
+
+mysql_root_query()
+{
+    local database=$1
+    local statement=$2
+
+    # Variables and positional parameters are intentionally expanded in the container.
+    # shellcheck disable=SC2016
+    compose exec -T mysql sh -ec '
+        MYSQL_PWD=$MYSQL_ROOT_PASSWORD
+        export MYSQL_PWD
+        exec mysql \
+            --protocol=TCP \
+            --host=127.0.0.1 \
+            --user=root \
+            --batch \
+            --raw \
+            --skip-column-names \
+            --database="$1" \
+            --execute="$2"
+    ' nexusforever-smoke "$database" "$statement"
+}
+
+smoke()
+{
+    local service
+    local database_count
+    local realm_name
+    local realm_host
+    local realm_port
+    local realm_record
+    local expected_realm_record
+    local admin_username
+    local account_email
+    local admin_found=false
+    local account_emails
+    local world_sql_path
+    local canonical_version_count
+    local excluded_world_counts
+    local bind_address
+    local probe_address
+
+    [ "$#" -eq 0 ] || fail "smoke does not accept arguments."
+    preflight
+    require_command timeout
+
+    for service in \
+        mysql \
+        rabbitmq \
+        account-api \
+        character-api \
+        character-server \
+        group-server \
+        chat-server \
+        friendship-server \
+        world-server \
+        sts-server \
+        auth-server; do
+        assert_service_running "$service"
+    done
+
+    for service in database-create database-migrations workers-ready; do
+        assert_one_shot_completed "$service"
+    done
+
+    database_count=$(mysql_root_query information_schema \
+        "SELECT COUNT(*) FROM schemata WHERE schema_name IN (
+            'nexus_forever_auth',
+            'nexus_forever_character',
+            'nexus_forever_world',
+            'nexus_forever_group',
+            'nexus_forever_chat',
+            'nexus_forever_friendship',
+            'nexus_forever_query'
+        );")
+    [ "$database_count" = 7 ] || fail "Expected seven NexusForever databases; found $database_count."
+
+    realm_name=$(environment_value NF_REALM_NAME)
+    realm_name=${realm_name:-NexusForever}
+    realm_host=$(environment_value NF_REALM_HOST)
+    realm_port=$(environment_value NF_WORLD_PUBLIC_PORT)
+    realm_port=$((10#$realm_port))
+    realm_record=$(mysql_root_query nexus_forever_auth \
+        "SELECT name, host, port FROM server WHERE id = 1;")
+    printf -v expected_realm_record '%s\t%s\t%s' "$realm_name" "$realm_host" "$realm_port"
+    [ "$realm_record" = "$expected_realm_record" ] \
+        || fail "Realm 1 does not exactly match configured name, IPv4 address, and public World port."
+
+    admin_username=$(environment_value NF_ADMIN_USERNAME)
+    admin_username=${admin_username:-nexusforever}
+    account_emails=$(mysql_root_query nexus_forever_auth "SELECT email FROM account;")
+    while IFS= read -r account_email; do
+        if [ "$account_email" = "$admin_username" ]; then
+            admin_found=true
+            break
+        fi
+    done <<<"$account_emails"
+    [ "$admin_found" = true ] \
+        || fail "Bootstrapped admin account '$admin_username' was not found."
+
+    world_sql_path=$(environment_value NF_WORLD_SQL_PATH)
+    if [ -n "$world_sql_path" ]; then
+        canonical_version_count=$(mysql_root_query nexus_forever_world \
+            "SELECT COUNT(*) FROM version WHERE LOCATE('/', fileName) > 0;")
+        [ "$canonical_version_count" = 28 ] \
+            || fail "Expected exactly 28 canonical relative-path world version rows; found $canonical_version_count."
+
+        excluded_world_counts=$(mysql_root_query nexus_forever_world \
+            "SELECT
+                (SELECT COUNT(*) FROM entity WHERE world = 3404),
+                (SELECT COUNT(*) FROM entity WHERE world = 3460);")
+        [ "$excluded_world_counts" = $'0\t0' ] \
+            || fail "Excluded worlds 3404 and 3460 must both contain zero entities; found $excluded_world_counts."
+    fi
+
+    compose run --rm --no-deps workers-ready \
+        CharacterServer \
+        ChatServer \
+        FriendshipServer \
+        GroupServer \
+        WorldServer_1
+
+    bind_address=$(environment_value NF_BIND_ADDRESS)
+    if [ "$bind_address" = 0.0.0.0 ]; then
+        probe_address=127.0.0.1
+    else
+        probe_address=$bind_address
+    fi
+
+    probe_tcp "$probe_address" "$(environment_value NF_AUTH_PUBLIC_PORT)"
+    probe_tcp "$probe_address" "$(environment_value NF_STS_PUBLIC_PORT)"
+    probe_tcp "$probe_address" "$(environment_value NF_WORLD_PUBLIC_PORT)"
+
+    echo "Infrastructure smoke passed. This does not claim a protocol login or in-world gameplay test."
+}
+
+stop_stack()
+{
+    [ "$#" -eq 0 ] || fail "down does not accept arguments."
+    require_environment_file
+    require_command docker
+    compose down --remove-orphans
+}
+
+reset_stack()
+{
+    local confirmation=""
+    local project_name
+
+    require_environment_file
+    require_command docker
+    project_name=$(compose_project_name)
+
+    if [ "${1:-}" = --yes ]; then
+        confirmation=RESET
+    elif [ "$#" -ne 0 ]; then
+        fail "reset accepts only the optional --yes flag."
+    elif [ -t 0 ]; then
+        echo "This deletes only Compose project '$project_name' containers and project-labelled named volumes."
+        echo "That includes its local MySQL, RabbitMQ, and game-table caches."
+        echo "Operator-supplied TBL, map, and world-SQL paths are not modified."
+        read -r -p "Type RESET to continue: " confirmation
+    else
+        fail "reset requires an interactive confirmation or the explicit --yes flag."
+    fi
+
+    [ "$confirmation" = RESET ] || fail "Reset cancelled."
+    compose down --volumes --remove-orphans
+    echo "Deleted Compose project '$project_name' containers, network, and named volumes."
+}
+
+command=${1:-help}
+if [ "$#" -gt 0 ]; then
+    shift
+fi
+
+case "$command" in
+    init) initialise "$@" ;;
+    preflight) preflight "$@" ;;
+    build) build_image "$@" ;;
+    up) start_stack "$@" ;;
+    status) show_status "$@" ;;
+    logs) show_logs "$@" ;;
+    smoke) smoke "$@" ;;
+    down) stop_stack "$@" ;;
+    reset) reset_stack "$@" ;;
+    help | -h | --help) usage ;;
+    *)
+        usage >&2
+        fail "Unknown command: $command"
+        ;;
+esac

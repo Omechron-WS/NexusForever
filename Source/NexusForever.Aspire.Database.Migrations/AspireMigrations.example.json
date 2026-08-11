@@ -4,6 +4,15 @@
         "Password": "nexusforever"
     },
     "WorldDatabase": {
-        "Path": "C:\\nexusforever-database"
+        "Path": "C:\\nexusforever-database",
+        "Required": false,
+        "LockTimeoutSeconds": 60,
+        "CommandTimeoutSeconds": 600
+    },
+    "Realm": {
+        "Id": 1,
+        "Name": "NexusForever",
+        "Host": "127.0.0.1",
+        "Port": 24000
     }
 }
