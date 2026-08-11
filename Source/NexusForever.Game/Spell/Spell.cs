@@ -198,9 +198,9 @@ namespace NexusForever.Game.Spell
             if (preReqCheck != CastResult.Ok)
                 return preReqCheck;
 
-            CastResult ccResult = CheckCCConditions();
-            if (ccResult != CastResult.Ok)
-                return ccResult;
+            CastResult conditionResult = CheckConditions();
+            if (conditionResult != CastResult.Ok)
+                return conditionResult;
 
             if (Caster is IPlayer player && !Parameters.IsThresholdChild)
             {
@@ -478,19 +478,15 @@ namespace NexusForever.Game.Spell
             return false;
         }
 
-        private CastResult CheckCCConditions()
+        private CastResult CheckConditions()
         {
-            // TODO: this just looks like a mask for CCState enum
-            if (Parameters.SpellInfo.CasterCCConditions != null)
-            {
-            }
-
-            // not sure if this should be for explicit and/or implicit targets
-            if (Parameters.SpellInfo.TargetCCConditions != null)
-            {
-            }
-
-            return CastResult.Ok;
+            return SpellConditionPolicy.TryCheck(
+                Caster,
+                Parameters.SpellInfo,
+                Parameters.PrimaryTargetId,
+                out CastResult result)
+                ? result
+                : CastResult.Ok;
         }
 
         protected void InitialiseTelegraphs()
