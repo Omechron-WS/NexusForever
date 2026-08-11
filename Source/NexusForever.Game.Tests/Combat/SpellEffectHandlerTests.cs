@@ -750,7 +750,8 @@ namespace NexusForever.Game.Tests.Combat
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
-        public void HandleEffectProxy_PropagatesProcOriginToChildSpell(bool isProcTriggered)
+        public void HandleEffectProxy_PropagatesProcOriginAndLeavesDataBits06Ungated(
+            bool isProcTriggered)
         {
             var parameters = new Mock<ISpellParameters>();
             parameters.SetupGet(p => p.IsProcTriggered).Returns(isProcTriggered);
@@ -760,7 +761,8 @@ namespace NexusForever.Game.Tests.Combat
             var info = new SpellTargetInfo.SpellTargetEffectInfo(1u, new Spell4EffectsEntry
             {
                 EffectType = SpellEffectType.Proxy,
-                DataBits00 = 456u
+                DataBits00 = 456u,
+                DataBits06 = 999u
             });
 
             SpellHandler.HandleEffectProxy(spell.Object, target.Object, info);

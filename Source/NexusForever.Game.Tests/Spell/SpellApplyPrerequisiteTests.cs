@@ -33,6 +33,179 @@ namespace NexusForever.Game.Tests.Spell
     [Collection(CombatServiceProviderCollection.Name)]
     public class SpellApplyPrerequisiteTests
     {
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void LegacyCasterCast_InCombatUsesPlayerPrerequisiteCheck(bool inCombat)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterInCombat = inCombat
+            };
+            Mock<IUnitEntity> target = context.CreateTarget(10u);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u),
+                casterCastPrerequisite: prerequisite,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            spell.Update(0d);
+
+            if (inCombat)
+            {
+                Assert.Empty(context.SessionPackets.OfType<ServerSpellCastResult>());
+                Assert.Single(context.Invocations);
+                Assert.Single(context.Packets.OfType<ServerSpellGo>());
+            }
+            else
+            {
+                ServerSpellCastResult result = Assert.Single(
+                    context.SessionPackets.OfType<ServerSpellCastResult>());
+                Assert.Equal(CastResult.PrereqCasterCast, result.CastResult);
+                Assert.Empty(context.Invocations);
+                Assert.Empty(context.Packets.OfType<ServerSpellStart>());
+                Assert.Empty(context.Packets.OfType<ServerSpellGo>());
+            }
+        }
+
+        [Fact]
+        public void TargetCast_InCombatRowRemainsUnevaluated()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            Mock<IUnitEntity> target = context.CreateTarget(10u, inCombat: () => false);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u),
+                targetCastPrerequisite: prerequisite,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            spell.Update(0d);
+
+            Assert.Single(context.Invocations);
+            Assert.Single(context.Packets.OfType<ServerSpellGo>());
+            target.VerifyGet(unit => unit.InCombat, Times.Never);
+        }
+
+        [Theory]
+        [InlineData(false, true, false)]
+        [InlineData(true, false, false)]
+        [InlineData(true, true, true)]
+        public void UnitApply_InCombatChecksCasterAndTarget(
+            bool casterInCombat,
+            bool targetInCombat,
+            bool expectedInvocation)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterInCombat = casterInCombat
+            };
+            Mock<IUnitEntity> target = context.CreateTarget(
+                10u,
+                inCombat: () => targetInCombat);
+            Spell4EffectsEntry effect = CreateEffect(
+                1u,
+                casterPrerequisite: prerequisite.Id,
+                targetPrerequisite: prerequisite.Id);
+            TestApplyPrerequisiteSpell spell = context.CreateSpell(
+                effect,
+                (SpellEffectTargetFlags.Target, target.Object));
+
+            spell.ExecuteForTest();
+
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Invocations.Count);
+            Assert.Equal(
+                expectedInvocation ? 1 : 0,
+                Assert.Single(context.Packets.OfType<ServerSpellGo>()).TargetInfoData.Count);
+            Assert.Empty(context.Packets.OfType<Server07F8>());
+        }
+
+        [Fact]
+        public void DelayedTargetApply_InCombatReevaluatesAtActivationTime()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            bool targetInCombat = false;
+            Mock<IUnitEntity> target = context.CreateTarget(
+                10u,
+                inCombat: () => targetInCombat);
+            Spell4EffectsEntry effect = CreateEffect(
+                1u,
+                targetPrerequisite: prerequisite.Id,
+                delayTime: 100u);
+            TestApplyPrerequisiteSpell spell = context.CreateSpell(
+                effect,
+                (SpellEffectTargetFlags.Target, target.Object));
+
+            spell.ExecuteForTest();
+            Assert.Empty(context.Invocations);
+
+            targetInCombat = true;
+            spell.Update(0.1d);
+
+            Assert.Single(context.Invocations);
+            Assert.Single(context.Packets.OfType<Server07F8>());
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void SpellPersistence_InCombatReevaluatesCasterOrTarget(bool targetPersistence)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterInCombat = true
+            };
+            bool targetInCombat = true;
+            Mock<IUnitEntity> target = context.CreateTarget(
+                42u,
+                inCombat: () => targetInCombat);
+            if (targetPersistence)
+            {
+                context.Caster
+                    .Setup(unit => unit.GetVisible<IWorldEntity>(target.Object.Guid))
+                    .Returns(target.Object);
+            }
+
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                CreateEffect(1u, delayTime: 100u),
+                casterPersistencePrerequisite: targetPersistence ? 0u : prerequisite.Id,
+                targetPersistencePrerequisite: targetPersistence ? prerequisite.Id : 0u,
+                primaryTargetId: targetPersistence ? target.Object.Guid : 0u,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+            spell.Cast();
+            Assert.True(spell.IsCasting);
+
+            if (targetPersistence)
+                targetInCombat = false;
+            else
+                context.CasterInCombat = false;
+
+            spell.Update(0.1d);
+
+            Assert.True(spell.IsFinishing);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<ServerSpellGo>());
+        }
+
         [Fact]
         public void CasterAndTargetGates_FilterBeforeEffectCostAndHandler()
         {
@@ -130,14 +303,17 @@ namespace NexusForever.Game.Tests.Spell
         [InlineData(0)]
         [InlineData(1)]
         [InlineData(2)]
-        public void PersistenceOrSuspendPrerequisite_RemainsGated(int field)
+        public void InCombatEffectPersistenceOrSuspendPrerequisite_RemainsGated(int field)
         {
             PrerequisiteEntry prerequisite = CreateEntry(
                 1u,
                 EvaluationMode.EvaluateAND,
-                (PrerequisiteType.Level, PrerequisiteComparison.GreaterThanOrEqual, 1u, 0u));
-            using var context = new SpellPrerequisiteContext(prerequisite);
-            Mock<IUnitEntity> target = context.CreateTarget(10u);
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterInCombat = true
+            };
+            Mock<IUnitEntity> target = context.CreateTarget(10u, inCombat: () => true);
             Spell4EffectsEntry effect = CreateEffect(1u, delayTime: 100u, cost: 10u);
             switch (field)
             {
@@ -782,6 +958,7 @@ namespace NexusForever.Game.Tests.Spell
             public int CasterLevelReads { get; private set; }
             public int CasterVitalReads { get; private set; }
             public Faction CasterFaction { get; set; } = Faction.Exile;
+            public bool CasterInCombat { get; set; }
             public float CasterResource0 { get; set; } = 100f;
             public float CasterResource1 { get; set; } = 100f;
             public bool ThrowOnCasterVitalRead { get; set; }
@@ -829,6 +1006,7 @@ namespace NexusForever.Game.Tests.Spell
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckLevel>(PrerequisiteType.Level);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckVital>(PrerequisiteType.Vital);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckBaseFaction>(PrerequisiteType.BaseFaction);
+                services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckInCombat>(PrerequisiteType.InCombat);
                 services.AddSingleton<PrerequisiteManager>();
                 services.AddSingleton<IPrerequisiteManager>(provider => provider.GetRequiredService<PrerequisiteManager>());
                 serviceProvider = services.BuildServiceProvider();
@@ -848,6 +1026,7 @@ namespace NexusForever.Game.Tests.Spell
                     return CasterLevel;
                 });
                 Caster.SetupGet(entity => entity.Faction1).Returns(() => CasterFaction);
+                Caster.SetupGet(entity => entity.InCombat).Returns(() => CasterInCombat);
                 Caster.Setup(entity => entity.TryGetVitalValue(
                         It.IsAny<Vital>(),
                         out It.Ref<float>.IsAny))
@@ -910,7 +1089,8 @@ namespace NexusForever.Game.Tests.Spell
                 Func<Vital, float?> vital = null,
                 Func<bool> alive = null,
                 Func<bool> inWorld = null,
-                Func<IBaseMap> map = null)
+                Func<IBaseMap> map = null,
+                Func<bool> inCombat = null)
             {
                 var target = new Mock<IUnitEntity>();
                 target.SetupGet(entity => entity.Guid).Returns(guid);
@@ -919,6 +1099,7 @@ namespace NexusForever.Game.Tests.Spell
                 target.SetupGet(entity => entity.Map).Returns(() => map?.Invoke() ?? Map.Object);
                 target.SetupGet(entity => entity.Level).Returns(() => level?.Invoke() ?? 1u);
                 target.SetupGet(entity => entity.Faction1).Returns(() => faction?.Invoke() ?? Faction.Dominion);
+                target.SetupGet(entity => entity.InCombat).Returns(() => inCombat?.Invoke() ?? false);
                 target.Setup(entity => entity.TryGetVitalValue(
                         It.IsAny<Vital>(),
                         out It.Ref<float>.IsAny))
@@ -945,6 +1126,22 @@ namespace NexusForever.Game.Tests.Spell
                     () => targets);
                 spell.SetStatus(SpellStatus.Casting);
                 return spell;
+            }
+
+            public TestApplyPrerequisiteSpell CreateCastSpell(
+                Spell4EffectsEntry effect,
+                PrerequisiteEntry casterCastPrerequisite = null,
+                PrerequisiteEntry targetCastPrerequisite = null,
+                params (SpellEffectTargetFlags Flags, IUnitEntity Entity)[] targets)
+            {
+                return new TestApplyPrerequisiteSpell(
+                    Caster.Object,
+                    CreateParameters(
+                        CastMethod.Normal,
+                        effect,
+                        casterCastPrerequisite,
+                        targetCastPrerequisite),
+                    () => targets);
             }
 
             public TestApplyPrerequisiteSpell CreatePersistenceSpell(
@@ -985,7 +1182,9 @@ namespace NexusForever.Game.Tests.Spell
 
             private static SpellParameters CreateParameters(
                 CastMethod castMethod,
-                Spell4EffectsEntry effect)
+                Spell4EffectsEntry effect,
+                PrerequisiteEntry casterCastPrerequisite = null,
+                PrerequisiteEntry targetCastPrerequisite = null)
             {
                 var baseInfo = new Mock<ISpellBaseInfo>();
                 baseInfo.SetupGet(info => info.Entry).Returns(new Spell4BaseEntry
@@ -1002,6 +1201,10 @@ namespace NexusForever.Game.Tests.Spell
                 spellInfo.SetupGet(info => info.Effects).Returns([effect]);
                 spellInfo.SetupGet(info => info.Telegraphs).Returns([]);
                 spellInfo.SetupGet(info => info.PrerequisiteRunners).Returns([]);
+                spellInfo.SetupGet(info => info.CasterCastPrerequisite)
+                    .Returns(casterCastPrerequisite);
+                spellInfo.SetupGet(info => info.TargetCastPrerequisites)
+                    .Returns(targetCastPrerequisite);
                 return new SpellParameters
                 {
                     SpellInfo = spellInfo.Object

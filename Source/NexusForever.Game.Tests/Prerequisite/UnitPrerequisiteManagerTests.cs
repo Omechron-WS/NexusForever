@@ -59,6 +59,54 @@ namespace NexusForever.Game.Tests.Prerequisite
         }
 
         [Fact]
+        public void InCombatRow_ReevaluatesStateWhileInvalidShapesAndUnderSpellRemainGated()
+        {
+            PrerequisiteEntry inCombatEntry = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 0u));
+            PrerequisiteEntry underSpellEntry = CreateEntry(
+                2u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.UnderSpell, PrerequisiteComparison.Equal, 123u, 0u));
+            PrerequisiteEntry invalidValueEntry = CreateEntry(
+                3u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 1u, 0u));
+            PrerequisiteEntry invalidObjectEntry = CreateEntry(
+                4u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.InCombat, PrerequisiteComparison.Equal, 0u, 1u));
+            using var context = new ManagerContext(
+                inCombatEntry,
+                underSpellEntry,
+                invalidValueEntry,
+                invalidObjectEntry);
+            bool inCombat = false;
+            Mock<IUnitEntity> unit = CreateUnit(inCombat: () => inCombat);
+
+            Assert.True(context.Manager.CanEvaluateForUnit(inCombatEntry.Id));
+            Assert.True(context.Manager.TryMeets(unit.Object, inCombatEntry.Id, out bool meets));
+            Assert.False(meets);
+
+            inCombat = true;
+
+            Assert.True(context.Manager.TryMeets(unit.Object, inCombatEntry.Id, out meets));
+            Assert.True(meets);
+            foreach (uint prerequisiteId in new[]
+            {
+                underSpellEntry.Id,
+                invalidValueEntry.Id,
+                invalidObjectEntry.Id
+            })
+            {
+                Assert.False(context.Manager.CanEvaluateForUnit(prerequisiteId));
+                Assert.False(context.Manager.TryMeets(unit.Object, prerequisiteId, out meets));
+                Assert.False(meets);
+            }
+        }
+
+        [Fact]
         public void TableBackedFactionOutsideLocalEnum_RemainsUnitSafe()
         {
             const uint factionId = 170u;
@@ -197,11 +245,13 @@ namespace NexusForever.Game.Tests.Prerequisite
         private static Mock<IUnitEntity> CreateUnit(
             uint level = 1u,
             Faction faction = Faction.Dominion,
-            float? resource1 = null)
+            float? resource1 = null,
+            Func<bool> inCombat = null)
         {
             var unit = new Mock<IUnitEntity>();
             unit.SetupGet(entity => entity.Level).Returns(level);
             unit.SetupGet(entity => entity.Faction1).Returns(faction);
+            unit.SetupGet(entity => entity.InCombat).Returns(() => inCombat?.Invoke() ?? false);
             unit.Setup(entity => entity.TryGetVitalValue(
                     It.IsAny<Vital>(),
                     out It.Ref<float>.IsAny))
@@ -311,6 +361,7 @@ namespace NexusForever.Game.Tests.Prerequisite
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckLevel>(PrerequisiteType.Level)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckVital>(PrerequisiteType.Vital)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckBaseFaction>(PrerequisiteType.BaseFaction)
+                    .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckInCombat>(PrerequisiteType.InCombat)
                     .BuildServiceProvider();
 
                 Manager = new PrerequisiteManager(
