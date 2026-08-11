@@ -12,6 +12,10 @@ namespace NexusForever.WorldServer.Command.Handler
         /// </summary>
         public override CommandResult Invoke(ICommandContext context, ParameterQueue queue)
         {
+            CommandResult result = CanInvoke(context);
+            if (result != CommandResult.Ok)
+                return result;
+
             CommandManager.Instance.HandleHelp(context, queue);
             return CommandResult.Ok;
         }

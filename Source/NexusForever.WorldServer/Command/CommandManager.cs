@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Linq.Expressions;
@@ -339,12 +340,8 @@ namespace NexusForever.WorldServer.Command
                 builder.AppendLine("-----------------------------------------------");
                 builder.AppendLine($"Showing help for: {queue.BreadcrumbTrail}");
 
-                foreach ((string _, ICommandHandler rootHandler) in handlers
-                    .OrderBy(p => p.Key))
+                foreach (ICommandHandler rootHandler in GetHelpHandlers(handlers, context))
                 {
-                    if (rootHandler.CanInvoke(context) != CommandResult.Ok)
-                        continue;
-
                     builder.Append("Category: ");
                     rootHandler.GetHelp(builder, context, false);
                 }
@@ -358,6 +355,22 @@ namespace NexusForever.WorldServer.Command
                 return CommandResult.NoCommand;
 
             return handler.InvokeHelp(context, queue);
+        }
+
+        /// <summary>
+        /// Return each accessible command handler once in deterministic alias order.
+        /// </summary>
+        internal static IEnumerable<ICommandHandler> GetHelpHandlers(
+            ImmutableDictionary<string, ICommandHandler> commandHandlers,
+            ICommandContext context)
+        {
+            IEqualityComparer<ICommandHandler> referenceComparer = ReferenceEqualityComparer.Instance;
+            return commandHandlers
+                .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => pair.Value)
+                .Distinct(referenceComparer)
+                .Where(handler => handler.CanInvoke(context) == CommandResult.Ok);
         }
     }
 }

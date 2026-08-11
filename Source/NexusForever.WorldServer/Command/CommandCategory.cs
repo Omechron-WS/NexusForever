@@ -84,11 +84,8 @@ namespace NexusForever.WorldServer.Command
 
             if (detailed)
             {
-                foreach (ICommandHandler handler in handlers.Values)
+                foreach (ICommandHandler handler in CommandManager.GetHelpHandlers(handlers, context))
                 {
-                    if (handler.CanInvoke(context) != CommandResult.Ok)
-                        continue;
-
                     builder.Append(handler is CommandCategory ? "Category: " : "Command: ");
                     handler.GetHelp(builder, context, false);
                 }
