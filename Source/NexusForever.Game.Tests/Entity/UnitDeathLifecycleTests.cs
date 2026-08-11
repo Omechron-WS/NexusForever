@@ -1,6 +1,7 @@
 using System.Numerics;
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
+using NexusForever.Game.Abstract.Combat;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Entity.Movement;
 using NexusForever.Game.Abstract.Loot;
@@ -8,6 +9,7 @@ using NexusForever.Game.Abstract.Map;
 using NexusForever.Game.Entity;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Spell;
+using NexusForever.Network.Session;
 using NexusForever.Network.World.Entity;
 using NexusForever.Network.World.Entity.Model;
 using NexusForever.Shared;
@@ -216,6 +218,48 @@ namespace NexusForever.Game.Tests.Entity
         }
 
         [Fact]
+        public void OnDeath_ParticipantRewardFailureDoesNotBlockLaterParticipants()
+        {
+            var map = new Mock<IBaseMap>();
+            map.Setup(world => world.ScheduleRespawn(It.IsAny<IWorldEntity>())).Returns(true);
+            TestUnitEntity entity = CreateEntity(map.Object, 42u);
+            Mock<IPlayer> failingPlayer = CreateRewardParticipant(10u, 100ul);
+            Mock<IPlayer> laterPlayer = CreateRewardParticipant(20u, 200ul);
+            entity.UseParticipantRewards = true;
+            entity.FailingParticipantCharacterId = failingPlayer.Object.CharacterId;
+            entity.AddRewardParticipant(failingPlayer.Object);
+            entity.AddRewardParticipant(laterPlayer.Object);
+
+            entity.ModifyHealth(100u, DamageType.Physical, null);
+            entity.ModifyHealth(100u, DamageType.Physical, null);
+
+            Assert.Equal(1, entity.GetParticipantRewardCount(failingPlayer.Object.CharacterId));
+            Assert.Equal(1, entity.GetParticipantRewardCount(laterPlayer.Object.CharacterId));
+            Assert.Equal(EntityDeathState.CorpseLooted, entity.CurrentDeathState);
+            map.Verify(world => world.ScheduleRespawn(entity), Times.Once);
+        }
+
+        [Fact]
+        public void ModifyHealth_DuplicateLethalHitsRewardEachParticipantOnce()
+        {
+            var map = new Mock<IBaseMap>();
+            map.Setup(world => world.ScheduleRespawn(It.IsAny<IWorldEntity>())).Returns(true);
+            TestUnitEntity entity = CreateEntity(map.Object, 42u);
+            Mock<IPlayer> firstPlayer = CreateRewardParticipant(10u, 100ul);
+            Mock<IPlayer> secondPlayer = CreateRewardParticipant(20u, 200ul);
+            entity.UseParticipantRewards = true;
+            entity.AddRewardParticipant(firstPlayer.Object);
+            entity.AddRewardParticipant(secondPlayer.Object);
+
+            entity.ModifyHealth(100u, DamageType.Physical, null);
+            entity.ModifyHealth(100u, DamageType.Physical, null);
+
+            Assert.Equal(1, entity.GetParticipantRewardCount(firstPlayer.Object.CharacterId));
+            Assert.Equal(1, entity.GetParticipantRewardCount(secondPlayer.Object.CharacterId));
+            map.Verify(world => world.ScheduleRespawn(entity), Times.Once);
+        }
+
+        [Fact]
         public void OnDeath_NotificationFailureDoesNotBlockRewardsOrFinalisation()
         {
             var map = new Mock<IBaseMap>();
@@ -283,6 +327,16 @@ namespace NexusForever.Game.Tests.Entity
             return entity;
         }
 
+        private static Mock<IPlayer> CreateRewardParticipant(uint guid, ulong characterId)
+        {
+            var player = new Mock<IPlayer>();
+            player.SetupGet(value => value.Guid).Returns(guid);
+            player.SetupGet(value => value.CharacterId).Returns(characterId);
+            player.SetupGet(value => value.ThreatManager).Returns(new Mock<IThreatManager>().Object);
+            player.SetupGet(value => value.Session).Returns(new Mock<IGameSession>().Object);
+            return player;
+        }
+
         private sealed class TestUnitEntity : UnitEntity
         {
             public override EntityType Type => EntityType.NonPlayer;
@@ -293,7 +347,11 @@ namespace NexusForever.Game.Tests.Entity
             public bool ThrowDuringRewards { get; set; }
             public bool ThrowDuringDeathNotification { get; set; }
             public bool ThrowDuringThreatCleanup { get; set; }
+            public bool UseParticipantRewards { get; set; }
+            public ulong? FailingParticipantCharacterId { get; set; }
             public ILootInstance GeneratedLoot { get; set; }
+
+            private readonly Dictionary<ulong, int> participantRewardCounts = [];
 
             public TestUnitEntity(IMovementManager movementManager)
                 : base(movementManager)
@@ -315,8 +373,25 @@ namespace NexusForever.Game.Tests.Entity
                 Health = health;
             }
 
+            public void AddRewardParticipant(IPlayer player)
+            {
+                AddVisible(player);
+                ThreatManager.UpdateThreat(player, 1);
+            }
+
+            public int GetParticipantRewardCount(ulong characterId)
+            {
+                return participantRewardCounts.GetValueOrDefault(characterId);
+            }
+
             protected override void GenerateRewards()
             {
+                if (UseParticipantRewards)
+                {
+                    base.GenerateRewards();
+                    return;
+                }
+
                 RewardCount++;
                 StateDuringReward = DeathState;
 
@@ -325,6 +400,14 @@ namespace NexusForever.Game.Tests.Entity
 
                 if (ThrowDuringRewards)
                     throw new InvalidOperationException("reward failure");
+            }
+
+            protected override void RewardKiller(IPlayer player)
+            {
+                participantRewardCounts[player.CharacterId] = GetParticipantRewardCount(player.CharacterId) + 1;
+
+                if (FailingParticipantCharacterId == player.CharacterId)
+                    throw new InvalidOperationException("participant reward failure");
             }
 
             protected override void PublishDeathState()

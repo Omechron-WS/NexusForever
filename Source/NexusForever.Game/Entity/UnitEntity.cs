@@ -889,9 +889,12 @@ namespace NexusForever.Game.Entity
         {
             foreach (IHostileEntity hostile in ThreatManager.ToArray())
             {
-                IUnitEntity entity = GetVisible<IUnitEntity>(hostile.HatedUnitId);
-                if (entity is IPlayer player)
-                    RewardKiller(player);
+                ExecuteDeathOperation(() =>
+                {
+                    IUnitEntity entity = GetVisible<IUnitEntity>(hostile.HatedUnitId);
+                    if (entity is IPlayer player)
+                        RewardKiller(player);
+                }, $"generate death rewards for threat participant {hostile.HatedUnitId}");
             }
         }
 

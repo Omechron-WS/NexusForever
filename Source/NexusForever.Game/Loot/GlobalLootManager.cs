@@ -37,6 +37,8 @@ namespace NexusForever.Game.Loot
         private readonly ConcurrentDictionary<LootInstance, IWorldEntity> lootOwners = new();
 
         private readonly ILootTableProvider lootTableProvider;
+        private readonly Func<double> omnibitChanceRoll;
+        private readonly Func<int, int, int> omnibitAmountRoll;
 
         private double updateTimer = UpdateInterval;
         private bool isInitialised;
@@ -45,8 +47,21 @@ namespace NexusForever.Game.Loot
         /// Create the global loot manager with its world database record provider.
         /// </summary>
         public GlobalLootManager(ILootTableProvider lootTableProvider)
+            : this(
+                lootTableProvider,
+                static () => Random.Shared.NextDouble(),
+                static (minimum, maximum) => Random.Shared.Next(minimum, maximum))
         {
-            this.lootTableProvider = lootTableProvider ?? throw new ArgumentNullException(nameof(lootTableProvider));
+        }
+
+        internal GlobalLootManager(
+            ILootTableProvider lootTableProvider,
+            Func<double> omnibitChanceRoll,
+            Func<int, int, int> omnibitAmountRoll)
+        {
+            this.lootTableProvider  = lootTableProvider ?? throw new ArgumentNullException(nameof(lootTableProvider));
+            this.omnibitChanceRoll  = omnibitChanceRoll ?? throw new ArgumentNullException(nameof(omnibitChanceRoll));
+            this.omnibitAmountRoll  = omnibitAmountRoll ?? throw new ArgumentNullException(nameof(omnibitAmountRoll));
         }
 
         /// <summary>
@@ -164,25 +179,29 @@ namespace NexusForever.Game.Loot
             if (looter.Map == null || !ReferenceEquals(looter.Map, lootedEntity.Map))
                 return null;
 
-            if (!creatureLoot.TryGetValue(lootedEntity.CreatureId, out List<ILootGroup> groups))
-                return null;
+            LootInstance instance = null;
+            if (creatureLoot.TryGetValue(lootedEntity.CreatureId, out List<ILootGroup> groups))
+            {
+                instance = GenerateLootInstance(
+                    looter,
+                    lootedEntity.Guid,
+                    LootEntityType.Creature,
+                    lootedEntity.Position,
+                    groups);
+            }
 
-            LootInstance instance = GenerateLootInstance(
-                looter,
-                lootedEntity.Guid,
-                LootEntityType.Creature,
-                lootedEntity.Position,
-                groups);
+            if (TryRollOmnibitAmount(looter, out uint omnibitAmount))
+            {
+                instance ??= CreateLootInstance(
+                    looter,
+                    lootedEntity.Guid,
+                    LootEntityType.Creature,
+                    lootedEntity.Position);
+                instance.AddLootItem((uint)AccountCurrencyType.Omnibits, LootItemType.AccountCurrency, omnibitAmount);
+            }
 
             if (instance == null)
                 return null;
-
-            // Omnibit drop chance
-            if (Random.Shared.NextDouble() * 100d < OmnibitDropChance)
-            {
-                uint omnibitAmount = OmnibitMinAmount + (uint)Random.Shared.Next(0, (int)(OmnibitMaxAmount - OmnibitMinAmount + 1)) + looter.Level;
-                instance.AddLootItem((uint)AccountCurrencyType.Omnibits, LootItemType.AccountCurrency, omnibitAmount);
-            }
 
             RegisterLootInstance(instance, looter.Map, lootedEntity);
             try
@@ -379,13 +398,36 @@ namespace NexusForever.Game.Loot
             if (allDrops.Count == 0)
                 return null;
 
-            var instance = new LootInstance(entityGuid, entityType, LooterType.Player, position);
-            instance.AddLooter(looter.CharacterId, looter.Guid);
+            LootInstance instance = CreateLootInstance(looter, entityGuid, entityType, position);
 
             foreach ((ILootItem item, uint count) in allDrops)
                 instance.AddLootItem(item.StaticId, item.Type, count);
 
             return instance;
+        }
+
+        private static LootInstance CreateLootInstance(IPlayer looter, uint entityGuid, LootEntityType entityType, Vector3 position)
+        {
+            var instance = new LootInstance(entityGuid, entityType, LooterType.Player, position);
+            instance.AddLooter(looter.CharacterId, looter.Guid);
+            return instance;
+        }
+
+        private bool TryRollOmnibitAmount(IPlayer looter, out uint amount)
+        {
+            amount = 0u;
+
+            double chance = omnibitChanceRoll();
+            if (!double.IsFinite(chance) || chance < 0d || chance * 100d >= OmnibitDropChance)
+                return false;
+
+            int exclusiveMaximum = (int)(OmnibitMaxAmount - OmnibitMinAmount + 1u);
+            int amountOffset = omnibitAmountRoll(0, exclusiveMaximum);
+            if (amountOffset < 0 || amountOffset >= exclusiveMaximum)
+                return false;
+
+            amount = OmnibitMinAmount + (uint)amountOffset + looter.Level;
+            return true;
         }
 
         private LootInstance GetLootInstanceForItem(uint itemId)

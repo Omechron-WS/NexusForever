@@ -13,6 +13,7 @@ using NexusForever.Game.Static.AccountInventory;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Loot;
 using NexusForever.Network.Session;
+using NexusForever.Network.World.Message.Model.Loot;
 using NexusForever.Network.World.Message.Static;
 using Moq;
 
@@ -131,6 +132,126 @@ namespace NexusForever.Game.Tests.Loot
             manager.Update(1801d);
 
             Assert.True(instance.HasExpired);
+        }
+
+        [Fact]
+        public void DropLoot_WithoutCreatureTable_RollsAndAwardsOmnibits()
+        {
+            int chanceRolls = 0;
+            int amountRolls = 0;
+            var accountCurrencyManager = new Mock<IAccountCurrencyManager>();
+            var session = new Mock<IGameSession>();
+            GlobalLootManager manager = CreateManager(
+                CreateLootTableData([], []),
+                () =>
+                {
+                    chanceRolls++;
+                    return 0d;
+                },
+                (minimum, maximum) =>
+                {
+                    amountRolls++;
+                    Assert.Equal(0, minimum);
+                    Assert.Equal(19, maximum);
+                    return 0;
+                });
+            IPlayer player = CreatePlayer(
+                level: 10u,
+                accountCurrencyManager: accountCurrencyManager,
+                session: session);
+            Mock<IWorldEntity> entity = CreateEntityMock(100u);
+            manager.Initialise();
+
+            ILootInstance instance = manager.DropLoot(player, entity.Object);
+
+            Assert.NotNull(instance);
+            ILootInstanceItem omnibits = Assert.Single(instance);
+            Assert.Equal(LootItemType.AccountCurrency, omnibits.Type);
+            Assert.Equal((uint)AccountCurrencyType.Omnibits, omnibits.StaticId);
+            Assert.Equal(17u, omnibits.Amount);
+            Assert.True(omnibits.Delivered);
+            Assert.Equal(1, chanceRolls);
+            Assert.Equal(1, amountRolls);
+            accountCurrencyManager.Verify(
+                currency => currency.CurrencyAddAmount(AccountCurrencyType.Omnibits, 17ul, 0ul),
+                Times.Once);
+            session.Verify(gameSession => gameSession.EnqueueMessageEncrypted(
+                It.Is<ServerLootNotify>(message =>
+                    message.OwnerUnitId == entity.Object.Guid
+                    && message.LootItems.Count > 0
+                    && message.LootItems.All(item => item.Type == LootItemType.AccountCurrency))),
+                Times.Once);
+            entity.Verify(owner => owner.AddLoot(instance), Times.Once);
+            entity.Verify(owner => owner.RemoveLoot(instance), Times.Once);
+        }
+
+        [Fact]
+        public void DropLoot_WithEmptyCreatureTable_RollsAndAwardsOmnibits()
+        {
+            int chanceRolls = 0;
+            var accountCurrencyManager = new Mock<IAccountCurrencyManager>();
+            GlobalLootManager manager = CreateManager(
+                CreateLootTableData(
+                    [CreateEntityMapping(100u, 1ul)],
+                    [CreateLootGroup(1ul)]),
+                () =>
+                {
+                    chanceRolls++;
+                    return 0d;
+                },
+                static (_, _) => 18);
+            IPlayer player = CreatePlayer(
+                level: 10u,
+                accountCurrencyManager: accountCurrencyManager);
+            manager.Initialise();
+
+            ILootInstance instance = manager.DropLoot(player, CreateEntity(100u));
+
+            Assert.NotNull(instance);
+            ILootInstanceItem omnibits = Assert.Single(instance);
+            Assert.Equal(35u, omnibits.Amount);
+            Assert.True(omnibits.Delivered);
+            Assert.Equal(1, chanceRolls);
+            accountCurrencyManager.Verify(
+                currency => currency.CurrencyAddAmount(AccountCurrencyType.Omnibits, 35ul, 0ul),
+                Times.Once);
+        }
+
+        [Fact]
+        public void DropLoot_WithNormalCreatureTable_RollsItemsAndOmnibitsOnce()
+        {
+            int chanceRolls = 0;
+            int amountRolls = 0;
+            var accountCurrencyManager = new Mock<IAccountCurrencyManager>();
+            GlobalLootManager manager = CreateManager(
+                CreateLootTableData(
+                    [CreateEntityMapping(100u, 1ul)],
+                    [CreateLootGroup(1ul, staticItemId: 1001u)]),
+                () =>
+                {
+                    chanceRolls++;
+                    return 0d;
+                },
+                (_, _) =>
+                {
+                    amountRolls++;
+                    return 5;
+                });
+            IPlayer player = CreatePlayer(
+                level: 10u,
+                accountCurrencyManager: accountCurrencyManager);
+            manager.Initialise();
+
+            ILootInstance instance = manager.DropLoot(player, CreateEntity(100u));
+
+            Assert.NotNull(instance);
+            Assert.Contains(instance, item => item.Type == LootItemType.StaticItem && item.StaticId == 1001u && !item.Delivered);
+            Assert.Contains(instance, item => item.Type == LootItemType.AccountCurrency && item.Amount == 22u && item.Delivered);
+            Assert.Equal(1, chanceRolls);
+            Assert.Equal(1, amountRolls);
+            accountCurrencyManager.Verify(
+                currency => currency.CurrencyAddAmount(AccountCurrencyType.Omnibits, 22ul, 0ul),
+                Times.Once);
         }
 
         [Fact]
@@ -333,6 +454,16 @@ namespace NexusForever.Game.Tests.Loot
             return new GlobalLootManager(provider.Object);
         }
 
+        private static GlobalLootManager CreateManager(
+            LootTableData data,
+            Func<double> omnibitChanceRoll,
+            Func<int, int, int> omnibitAmountRoll)
+        {
+            var provider = new Mock<ILootTableProvider>();
+            provider.Setup(p => p.LoadLootTables()).Returns(data);
+            return new GlobalLootManager(provider.Object, omnibitChanceRoll, omnibitAmountRoll);
+        }
+
         private static LootTableData CreateLootTableData(
             IEnumerable<EntityLootModel> entityLoot,
             IEnumerable<LootGroupModel> lootGroups)
@@ -387,9 +518,12 @@ namespace NexusForever.Game.Tests.Loot
         private static IPlayer CreatePlayer(
             Mock<IInventory> inventory = null,
             IBaseMap map = null,
-            bool configureInventory = true)
+            bool configureInventory = true,
+            uint level = 1u,
+            Mock<IAccountCurrencyManager> accountCurrencyManager = null,
+            Mock<IGameSession> session = null)
         {
-            var accountCurrencyManager = new Mock<IAccountCurrencyManager>();
+            accountCurrencyManager ??= new Mock<IAccountCurrencyManager>();
             var account = new Mock<IAccount>();
             account.Setup(a => a.CurrencyManager).Returns(accountCurrencyManager.Object);
 
@@ -409,12 +543,12 @@ namespace NexusForever.Game.Tests.Loot
             var player = new Mock<IPlayer>();
             player.Setup(p => p.CharacterId).Returns(1ul);
             player.Setup(p => p.Guid).Returns(10u);
-            player.Setup(p => p.Level).Returns(1u);
+            player.Setup(p => p.Level).Returns(level);
             player.Setup(p => p.Position).Returns(Vector3.Zero);
             player.Setup(p => p.Map).Returns(map ?? DefaultMap);
             player.Setup(p => p.Account).Returns(account.Object);
             player.Setup(p => p.Inventory).Returns(inventory.Object);
-            player.Setup(p => p.Session).Returns(new Mock<IGameSession>().Object);
+            player.Setup(p => p.Session).Returns((session ?? new Mock<IGameSession>()).Object);
             return player.Object;
         }
 
