@@ -54,7 +54,10 @@ namespace NexusForever.Game.Combat
         /// </summary>
         public IHostileEntity GetTopHostile()
         {
-            return hostiles.Values.OrderByDescending(x => x.Threat).FirstOrDefault();
+            return hostiles.Values
+                .OrderByDescending(x => x.Threat)
+                .ThenBy(x => x.HatedUnitId)
+                .FirstOrDefault();
         }
 
         /// <summary>
@@ -193,6 +196,7 @@ namespace NexusForever.Game.Combat
             // TODO: should this be target plus top 4?
             IHostileEntity[] hostileEntities = hostiles.Values
                 .OrderByDescending(h => h.Threat)
+                .ThenBy(h => h.HatedUnitId)
                 .Take(5)
                 .ToArray();
 

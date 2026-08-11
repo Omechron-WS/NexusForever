@@ -2,6 +2,7 @@ using NexusForever.Game.Abstract.Combat;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Combat;
 using NexusForever.Network.Message;
+using NexusForever.Network.Session;
 using NexusForever.Network.World.Message.Model;
 using Moq;
 
@@ -9,6 +10,40 @@ namespace NexusForever.Game.Tests.Combat
 {
     public class ThreatManagerTests
     {
+        [Fact]
+        public void GetTopHostile_EqualThreatUsesLowestUnitId()
+        {
+            (Mock<IUnitEntity> owner, ThreatManager manager) = CreateThreatOwner(100u);
+            IUnitEntity highId = CreateThreatTarget(9u, owner.Object);
+            IUnitEntity lowId = CreateThreatTarget(3u, owner.Object);
+
+            manager.UpdateThreat(highId, 10);
+            manager.UpdateThreat(lowId, 10);
+
+            Assert.Equal(3u, manager.GetTopHostile().HatedUnitId);
+        }
+
+        [Fact]
+        public void SendThreatList_EqualThreatUsesLowestFiveUnitIds()
+        {
+            (Mock<IUnitEntity> owner, ThreatManager manager) = CreateThreatOwner(100u);
+            foreach (uint unitId in new uint[] { 9u, 3u, 7u, 1u, 5u, 2u })
+                manager.UpdateThreat(CreateThreatTarget(unitId, owner.Object), 10);
+
+            var session = new Mock<IGameSession>();
+            ServerEntityThreatListUpdate message = null;
+            session
+                .Setup(s => s.EnqueueMessageEncrypted(It.IsAny<IWritable>()))
+                .Callback<IWritable>(writable => message = Assert.IsType<ServerEntityThreatListUpdate>(writable));
+
+            manager.SendThreatList(session.Object);
+
+            Assert.NotNull(message);
+            Assert.Equal(100u, message.SrcUnitId);
+            Assert.Equal(new uint[] { 1u, 2u, 3u, 5u, 7u }, message.ThreatUnitIds);
+            Assert.All(message.ThreatLevels, threat => Assert.Equal(10u, threat));
+        }
+
         [Fact]
         public void Update_PlayerPairExpiresAtTenSecondsAndRemovesReciprocal()
         {
@@ -123,6 +158,27 @@ namespace NexusForever.Game.Tests.Combat
 
             firstManager.UpdateThreat(second.Object, 10);
             return new PlayerThreatPair(first, firstManager, second, secondManager);
+        }
+
+        private static (Mock<IUnitEntity> Owner, ThreatManager Manager) CreateThreatOwner(uint unitId)
+        {
+            var owner = new Mock<IUnitEntity>();
+            owner.SetupGet(entity => entity.Guid).Returns(unitId);
+
+            var manager = new ThreatManager(owner.Object);
+            owner.SetupGet(entity => entity.ThreatManager).Returns(manager);
+            return (owner, manager);
+        }
+
+        private static IUnitEntity CreateThreatTarget(uint unitId, IUnitEntity owner)
+        {
+            var target = new Mock<IUnitEntity>();
+            target.SetupGet(entity => entity.Guid).Returns(unitId);
+
+            var manager = new ThreatManager(target.Object);
+            target.SetupGet(entity => entity.ThreatManager).Returns(manager);
+            target.Setup(entity => entity.GetVisible<IUnitEntity>(owner.Guid)).Returns(owner);
+            return target.Object;
         }
 
         private static void VerifyRemovalPacket(Mock<IPlayer> player, uint unitId, uint targetId)
