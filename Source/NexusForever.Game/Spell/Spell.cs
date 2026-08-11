@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using NexusForever.Game.Abstract.Combat;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Spell;
@@ -23,6 +24,7 @@ namespace NexusForever.Game.Spell
     public partial class Spell : ISpell
     {
         private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+        private static readonly ConcurrentDictionary<(uint Spell4Id, uint PrerequisiteId, bool Target), byte> reportedUnsupportedPersistencePrerequisites = new();
 
         public ISpellParameters Parameters { get; }
         public uint CastingId { get; }
@@ -50,6 +52,12 @@ namespace NexusForever.Game.Spell
         private bool executionCommitted;
         private bool startPublished;
         private bool finishPublicationAttempted;
+        private PersistencePrerequisiteSupport casterPersistenceSupport;
+        private PersistencePrerequisiteSupport targetPersistenceSupport;
+        private IUnitEntity persistenceTarget;
+        private uint persistenceTargetGuid;
+        private bool persistenceTargetsCaster;
+        private bool persistenceTargetCaptured;
         private ulong nextEffectActivationId;
 
         protected byte currentPhase = 255;
@@ -79,9 +87,27 @@ namespace NexusForever.Game.Spell
 
         public virtual void Update(double lastTick)
         {
+            if (!IsValidUpdateDelta(lastTick)
+                || status is SpellStatus.Finishing or SpellStatus.Finished)
+                return;
+
+            if (IsPersistenceActive() && !MeetsPersistencePrerequisites())
+            {
+                Finish();
+                return;
+            }
+
             scriptCollection.Invoke<IUpdate>(s => s.Update(lastTick));
             ProcessEffectTimeline(effectTimeline.Advance(lastTick));
             events.Update(lastTick);
+
+            if (IsPersistenceActive() && !MeetsPersistencePrerequisites())
+                Finish();
+        }
+
+        protected static bool IsValidUpdateDelta(double lastTick)
+        {
+            return double.IsFinite(lastTick) && lastTick >= 0d;
         }
 
         /// <summary>
@@ -254,31 +280,193 @@ namespace NexusForever.Game.Spell
 
         private CastResult CheckPrerequisites()
         {
-            // TODO: Remove below line and evaluate PreReq's for Non-Player Entities
-            if (Caster is not IPlayer player)
+            if (Caster is IPlayer player)
+            {
+                if (Parameters.SpellInfo.CasterCastPrerequisite != null && !CheckRunnerOverride(player))
+                {
+                    if (!PrerequisiteManager.Instance.Meets(player, Parameters.SpellInfo.CasterCastPrerequisite.Id))
+                        return CastResult.PrereqCasterCast;
+                }
+
+                // not sure if this should be for explicit and/or implicit targets
+                if (Parameters.SpellInfo.TargetCastPrerequisites != null)
+                {
+                }
+            }
+
+            return CheckPersistencePrerequisites(captureTarget: true);
+        }
+
+        private CastResult CheckPersistencePrerequisites(bool captureTarget)
+        {
+            uint casterPrerequisiteId = Parameters.SpellInfo.Entry.PrerequisiteIdCasterPersistence;
+            PersistencePrerequisiteSupport casterSupport = GetPersistenceSupport(
+                casterPrerequisiteId,
+                target: false,
+                ref casterPersistenceSupport);
+            if (casterSupport == PersistencePrerequisiteSupport.Failed
+                || (casterSupport == PersistencePrerequisiteSupport.Supported
+                    && !TryMeetsPersistencePrerequisite(Caster, casterPrerequisiteId, target: false)))
+                return CastResult.PrereqCasterPersistence;
+
+            uint targetPrerequisiteId = Parameters.SpellInfo.Entry.PrerequisiteIdTargetPersistence;
+            PersistencePrerequisiteSupport targetSupport = GetPersistenceSupport(
+                targetPrerequisiteId,
+                target: true,
+                ref targetPersistenceSupport);
+            if (targetSupport == PersistencePrerequisiteSupport.Failed)
+                return CastResult.PrereqTargetPersistence;
+            if (targetSupport != PersistencePrerequisiteSupport.Supported)
                 return CastResult.Ok;
 
-            if (Parameters.SpellInfo.CasterCastPrerequisite != null && !CheckRunnerOverride(player))
-            {
-                if (!PrerequisiteManager.Instance.Meets(player, Parameters.SpellInfo.CasterCastPrerequisite.Id))
-                    return CastResult.PrereqCasterCast;
-            }
+            if (captureTarget)
+                CapturePersistenceTarget();
 
-            // not sure if this should be for explicit and/or implicit targets
-            if (Parameters.SpellInfo.TargetCastPrerequisites != null)
-            {
-            }
-
-            // this probably isn't the correct place, name implies this should be constantly checked
-            if (Parameters.SpellInfo.CasterPersistencePrerequisites != null)
-            {
-            }
-
-            if (Parameters.SpellInfo.TargetPersistencePrerequisites != null)
-            {
-            }
+            if (!IsPersistenceTargetValid()
+                || !TryMeetsPersistencePrerequisite(
+                    persistenceTarget,
+                    targetPrerequisiteId,
+                    target: true))
+                return CastResult.PrereqTargetPersistence;
 
             return CastResult.Ok;
+        }
+
+        private PersistencePrerequisiteSupport GetPersistenceSupport(
+            uint prerequisiteId,
+            bool target,
+            ref PersistencePrerequisiteSupport support)
+        {
+            if (prerequisiteId == 0u)
+                return PersistencePrerequisiteSupport.Unsupported;
+
+            if (support != PersistencePrerequisiteSupport.Unknown)
+                return support;
+
+            bool canEvaluate;
+            try
+            {
+                canEvaluate = PrerequisiteManager.Instance.CanEvaluateForUnit(prerequisiteId);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} failed to classify {(target ? "target" : "caster")} persistence prerequisite {prerequisiteId}.");
+                support = PersistencePrerequisiteSupport.Failed;
+                return support;
+            }
+
+            support = canEvaluate
+                ? PersistencePrerequisiteSupport.Supported
+                : PersistencePrerequisiteSupport.Unsupported;
+            if (!canEvaluate)
+                LogUnsupportedPersistencePrerequisite(prerequisiteId, target);
+
+            return support;
+        }
+
+        private bool TryMeetsPersistencePrerequisite(
+            IUnitEntity unit,
+            uint prerequisiteId,
+            bool target)
+        {
+            try
+            {
+                if (PrerequisiteManager.Instance.TryMeets(unit, prerequisiteId, out bool meets))
+                    return meets;
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} failed to evaluate {(target ? "target" : "caster")} persistence prerequisite {prerequisiteId}.");
+                return false;
+            }
+
+            log.Warn($"Spell {Parameters.SpellInfo.Entry.Id} could not evaluate {(target ? "target" : "caster")} persistence prerequisite {prerequisiteId} and failed closed.");
+            return false;
+        }
+
+        private void CapturePersistenceTarget()
+        {
+            if (persistenceTargetCaptured)
+                return;
+
+            persistenceTargetCaptured = true;
+            try
+            {
+                persistenceTargetsCaster = Parameters.PrimaryTargetId == 0u;
+                persistenceTargetGuid = persistenceTargetsCaster
+                    ? Caster.Guid
+                    : Parameters.PrimaryTargetId;
+                persistenceTarget = persistenceTargetsCaster
+                    ? Caster
+                    : Caster.GetVisible<IWorldEntity>(persistenceTargetGuid) as IUnitEntity;
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} failed to capture its persistence target.");
+                persistenceTarget = null;
+                persistenceTargetGuid = 0u;
+            }
+        }
+
+        private bool IsPersistenceTargetValid()
+        {
+            try
+            {
+                if (!persistenceTargetCaptured
+                    || persistenceTarget == null
+                    || !persistenceTarget.IsAlive
+                    || !persistenceTarget.InWorld
+                    || !Caster.InWorld
+                    || persistenceTarget.Guid != persistenceTargetGuid)
+                    return false;
+
+                var casterMap = Caster.Map;
+                if (casterMap == null
+                    || !ReferenceEquals(persistenceTarget.Map, casterMap))
+                    return false;
+
+                if (persistenceTargetsCaster)
+                    return Caster.Guid == persistenceTargetGuid
+                        && ReferenceEquals(persistenceTarget, Caster);
+
+                IWorldEntity currentTarget = Caster.GetVisible<IWorldEntity>(persistenceTargetGuid);
+                return ReferenceEquals(currentTarget, persistenceTarget);
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Spell {Parameters.SpellInfo.Entry.Id} failed to validate its persistence target.");
+                return false;
+            }
+        }
+
+        private bool MeetsPersistencePrerequisites()
+        {
+            return CheckPersistencePrerequisites(captureTarget: false) == CastResult.Ok;
+        }
+
+        private bool IsPersistenceActive()
+        {
+            return status is SpellStatus.Casting or SpellStatus.Executing or SpellStatus.Waiting;
+        }
+
+        private void LogUnsupportedPersistencePrerequisite(uint prerequisiteId, bool target)
+        {
+            var identity = (
+                Spell4Id: Parameters.SpellInfo.Entry.Id,
+                PrerequisiteId: prerequisiteId,
+                Target: target);
+            if (reportedUnsupportedPersistencePrerequisites.TryAdd(identity, 0))
+            {
+                log.Warn($"Spell {identity.Spell4Id} declares unsupported {(target ? "target" : "caster")} persistence prerequisite {prerequisiteId}; preserving legacy lifetime behaviour.");
+            }
+        }
+
+        private enum PersistencePrerequisiteSupport
+        {
+            Unknown,
+            Supported,
+            Unsupported,
+            Failed
         }
 
         private bool CheckRunnerOverride(IPlayer player)

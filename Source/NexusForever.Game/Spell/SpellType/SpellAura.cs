@@ -39,6 +39,9 @@ namespace NexusForever.Game.Spell.SpellType
 
         public override void Update(double lastTick)
         {
+            if (!IsValidUpdateDelta(lastTick))
+                return;
+
             base.Update(lastTick);
 
             if (status != SpellStatus.Executing)

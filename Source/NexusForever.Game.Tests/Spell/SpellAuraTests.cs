@@ -243,6 +243,47 @@ namespace NexusForever.Game.Tests.Spell
             Assert.False(spell.IsFinishing);
         }
 
+        [Theory]
+        [InlineData(double.NaN)]
+        [InlineData(double.PositiveInfinity)]
+        [InlineData(double.NegativeInfinity)]
+        [InlineData(-0.001d)]
+        public void InvalidDelta_DoesNotMutateAuraRefreshCadence(double delta)
+        {
+            using var context = new SpellTimelineTestContext();
+            var firstTarget = new Mock<IUnitEntity>();
+            firstTarget.SetupGet(entity => entity.Guid).Returns(10u);
+            var replacementTarget = new Mock<IUnitEntity>();
+            replacementTarget.SetupGet(entity => entity.Guid).Returns(11u);
+            IUnitEntity visibleTarget = firstTarget.Object;
+            context.Caster.Setup(entity => entity.GetVisible<IUnitEntity>(42u))
+                .Returns(() => visibleTarget);
+
+            Spell4EffectsEntry effect = SpellTimelineTestContext.CreateEffect(1u);
+            effect.TargetFlags = (uint)SpellEffectTargetFlags.Target;
+            SpellParameters parameters = SpellTimelineTestContext.CreateParameters(
+                CastMethod.Aura,
+                new Spell4Entry
+                {
+                    Id            = 123u,
+                    SpellDuration = 1_000u
+                },
+                [effect]);
+            parameters.PrimaryTargetId = 42u;
+            var spell = new SpellAura(context.Caster.Object, parameters);
+            spell.Cast();
+            spell.Update(0d);
+            spell.Update(0.05d);
+
+            spell.Update(delta);
+            visibleTarget = replacementTarget.Object;
+            spell.Update(0.05d);
+
+            Assert.Equal(
+                [11u],
+                context.Invocations.Select(invocation => invocation.Target.Guid));
+        }
+
         [Fact]
         public void DelayedEffect_UsesAuraMembershipAtActivationTime()
         {

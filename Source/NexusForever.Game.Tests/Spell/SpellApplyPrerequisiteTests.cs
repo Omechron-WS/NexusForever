@@ -5,6 +5,7 @@ using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Map;
 using NexusForever.Game.Abstract.Prerequisite;
 using NexusForever.Game.Abstract.Spell;
+using NexusForever.Game.Entity;
 using NexusForever.Game.Prerequisite;
 using NexusForever.Game.Prerequisite.Check;
 using NexusForever.Game.Spell;
@@ -21,6 +22,7 @@ using NexusForever.Network.Session;
 using NexusForever.Network.World.Entity;
 using NexusForever.Network.World.Message.Model;
 using NexusForever.Network.World.Message.Model.Shared;
+using NexusForever.Network.World.Message.Static;
 using NexusForever.Script;
 using NexusForever.Script.Template.Collection;
 using NexusForever.Shared;
@@ -307,6 +309,356 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Empty(Assert.Single(context.Packets.OfType<ServerSpellGo>()).TargetInfoData);
         }
 
+        [Fact]
+        public void PersistenceFalseBeforeStart_FailsWithoutPublishingSpellLifetime()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Level, PrerequisiteComparison.GreaterThanOrEqual, 10u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterLevel = 9u
+            };
+            Spell4EffectsEntry effect = CreateEffect(1u, cost: 10u);
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                effect,
+                casterPersistencePrerequisite: prerequisite.Id,
+                targets: [(SpellEffectTargetFlags.Target, context.Caster.Object)]);
+
+            spell.Cast();
+            spell.Update(0d);
+            spell.LateUpdate(0d);
+
+            Assert.True(spell.IsFinished);
+            ServerSpellCastResult result = Assert.Single(context.SessionPackets.OfType<ServerSpellCastResult>());
+            Assert.Equal(CastResult.PrereqCasterPersistence, result.CastResult);
+            Assert.Empty(context.CostMutations);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<ServerSpellStart>());
+            Assert.Empty(context.Packets.OfType<ServerSpellGo>());
+            Assert.Empty(context.Packets.OfType<ServerSpellFinish>());
+        }
+
+        [Fact]
+        public void PersistenceClassificationException_FailsClosedBeforeStart()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Level, PrerequisiteComparison.GreaterThanOrEqual, 10u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                CreateEffect(1u),
+                casterPersistencePrerequisite: prerequisite.Id,
+                targets: [(SpellEffectTargetFlags.Target, context.Caster.Object)]);
+            IServiceProvider provider = LegacyServiceProvider.Provider;
+
+            try
+            {
+                LegacyServiceProvider.Provider = new ThrowingPrerequisiteServiceProvider(provider);
+                Exception exception = Record.Exception(spell.Cast);
+
+                Assert.Null(exception);
+                Assert.True(spell.IsFinishing);
+                ServerSpellCastResult result = Assert.Single(context.SessionPackets.OfType<ServerSpellCastResult>());
+                Assert.Equal(CastResult.PrereqCasterPersistence, result.CastResult);
+                Assert.Empty(context.Packets.OfType<ServerSpellStart>());
+            }
+            finally
+            {
+                LegacyServiceProvider.Provider = provider;
+            }
+        }
+
+        [Theory]
+        [InlineData(double.NaN)]
+        [InlineData(double.PositiveInfinity)]
+        [InlineData(double.NegativeInfinity)]
+        [InlineData(-0.001d)]
+        public void InvalidDelta_PerformsNoPersistenceOrTimelineWork(double delta)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Level, PrerequisiteComparison.GreaterThanOrEqual, 10u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                CreateEffect(1u),
+                casterPersistencePrerequisite: prerequisite.Id,
+                targets: [(SpellEffectTargetFlags.Target, context.Caster.Object)]);
+            spell.Cast();
+            int readsAfterCast = context.CasterLevelReads;
+
+            spell.Update(delta);
+
+            Assert.True(spell.IsCasting);
+            Assert.Equal(readsAfterCast, context.CasterLevelReads);
+            Assert.Empty(context.CostMutations);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<ServerSpellGo>());
+        }
+
+        [Fact]
+        public void ZeroDelta_IsValidAndExecutesDueWork()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Level, PrerequisiteComparison.GreaterThanOrEqual, 10u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                CreateEffect(1u),
+                casterPersistencePrerequisite: prerequisite.Id,
+                targets: [(SpellEffectTargetFlags.Target, context.Caster.Object)]);
+            spell.Cast();
+
+            spell.Update(0d);
+
+            Assert.Single(context.Invocations);
+            Assert.Single(context.Packets.OfType<ServerSpellGo>());
+        }
+
+        [Fact]
+        public void UnsupportedPersistenceRow_PreservesLegacyLifetime()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Level, PrerequisiteComparison.GreaterThanOrEqual, 10u, 0u),
+                (PrerequisiteType.Race, PrerequisiteComparison.Equal, 1u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                CreateEffect(1u),
+                casterPersistencePrerequisite: prerequisite.Id,
+                targets: [(SpellEffectTargetFlags.Target, context.Caster.Object)]);
+
+            spell.Cast();
+            spell.Update(0d);
+
+            Assert.False(spell.IsFinishing);
+            Assert.Single(context.Invocations);
+            Assert.Single(context.Packets.OfType<ServerSpellGo>());
+        }
+
+        [Fact]
+        public void SupportedPersistenceReadFailure_IsContainedAndFailsClosedOnce()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Vital, PrerequisiteComparison.GreaterThan, 25u, (uint)Vital.Resource0));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterResource0 = 50f
+            };
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                CreateEffect(1u),
+                casterPersistencePrerequisite: prerequisite.Id,
+                targets: [(SpellEffectTargetFlags.Target, context.Caster.Object)]);
+            spell.Cast();
+            context.ThrowOnCasterVitalRead = true;
+
+            Exception exception = Record.Exception(() => spell.Update(0d));
+            int readsAfterFailure = context.CasterVitalReads;
+            spell.Update(0d);
+
+            Assert.Null(exception);
+            Assert.True(spell.IsFinishing);
+            Assert.Equal(readsAfterFailure, context.CasterVitalReads);
+            Assert.Empty(context.CostMutations);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<ServerSpellGo>());
+        }
+
+        [Fact]
+        public void PersistenceFalseBeforeDueTick_SkipsActivationAndFinishes()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Vital, PrerequisiteComparison.GreaterThan, 25u, (uint)Vital.Resource0));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterResource0 = 50f
+            };
+            Spell4EffectsEntry effect = CreateEffect(
+                1u,
+                tickTime: 250u,
+                cost: 25u,
+                costVital: Vital.Resource0,
+                flags: SpellEffectFlags.CancelOnly);
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                effect,
+                casterPersistencePrerequisite: prerequisite.Id,
+                targets: [(SpellEffectTargetFlags.Target, context.Caster.Object)]);
+            spell.Cast();
+            spell.Update(0d);
+            context.CasterResource0 = 25f;
+
+            spell.Update(0.25d);
+
+            Assert.True(spell.IsFinishing);
+            Assert.Empty(context.CostMutations);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<Server07F8>());
+        }
+
+        [Fact]
+        public void SprintShapedTick_InvalidatesAfterOneActivationThenCleansAndFinishesOnce()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                38044u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Vital, PrerequisiteComparison.GreaterThan, 25u, (uint)Vital.Resource0));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterResource0 = 50f
+            };
+            Spell4EffectsEntry effect = CreateEffect(
+                1u,
+                tickTime: 250u,
+                cost: 25u,
+                costVital: Vital.Resource0,
+                flags: SpellEffectFlags.CancelOnly);
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                effect,
+                casterPersistencePrerequisite: prerequisite.Id,
+                targets: [(SpellEffectTargetFlags.Target, context.Caster.Object)]);
+            var operations = new List<string>();
+            Mock<IUnitEntity> modifierTarget = context.CreateTarget(99u);
+            modifierTarget.Setup(entity => entity.AddSpellModifierProperty(It.IsAny<ISpellPropertyModifier>()))
+                .Returns(true);
+            modifierTarget.Setup(entity => entity.RemoveSpellModifierProperty(
+                    Property.Strength,
+                    It.IsAny<SpellEffectIdentity>()))
+                .Callback(() => operations.Add("cleanup"))
+                .Returns(true);
+            context.PacketObserved = packet =>
+            {
+                if (packet is ServerSpellFinish)
+                    operations.Add("finish");
+            };
+            spell.Cast();
+            spell.Update(0d);
+            var modifier = new SpellPropertyModifier(
+                new SpellEffectIdentity(spell.CastingId, 123u, 999u),
+                Property.Strength,
+                1u,
+                0f,
+                5f,
+                0f);
+            Assert.True(spell.ApplyPropertyModifier(modifierTarget.Object, modifier));
+
+            spell.Update(0.25d);
+
+            Assert.Equal(25f, context.CasterResource0);
+            Assert.Equal([-25f], context.CostMutations);
+            Assert.Single(context.Invocations);
+            Assert.Single(context.Packets.OfType<Server07F8>());
+            Assert.True(spell.IsFinishing);
+            Assert.Equal(["cleanup"], operations);
+            Assert.Empty(context.Packets.OfType<ServerSpellFinish>());
+
+            spell.LateUpdate(0d);
+            spell.LateUpdate(0d);
+            spell.Update(0d);
+            spell.Dispose();
+
+            Assert.True(spell.IsFinished);
+            Assert.Equal(["cleanup", "finish"], operations);
+            ServerSpellFinish finish = Assert.Single(context.Packets.OfType<ServerSpellFinish>());
+            Assert.Equal(spell.CastingId, finish.ServerUniqueId);
+            modifierTarget.Verify(entity => entity.RemoveSpellModifierProperty(
+                Property.Strength,
+                modifier.Identity), Times.Once);
+        }
+
+        [Theory]
+        [InlineData(PersistenceTargetDrift.Predicate)]
+        [InlineData(PersistenceTargetDrift.Dead)]
+        [InlineData(PersistenceTargetDrift.OutOfWorld)]
+        [InlineData(PersistenceTargetDrift.CrossMap)]
+        [InlineData(PersistenceTargetDrift.Rebound)]
+        [InlineData(PersistenceTargetDrift.Disappeared)]
+        [InlineData(PersistenceTargetDrift.LookupThrows)]
+        public void SupportedTargetPersistence_CapturesExactTargetAndFailsOnDrift(
+            PersistenceTargetDrift drift)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Level, PrerequisiteComparison.GreaterThanOrEqual, 10u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            uint originalLevel = 10u;
+            bool alive = true;
+            bool inWorld = true;
+            IBaseMap targetMap = context.Map.Object;
+            Mock<IUnitEntity> original = context.CreateTarget(
+                42u,
+                level: () => originalLevel,
+                alive: () => alive,
+                inWorld: () => inWorld,
+                map: () => targetMap);
+            Mock<IUnitEntity> replacement = context.CreateTarget(42u, level: () => 10u);
+            IWorldEntity visible = original.Object;
+            bool throwOnLookup = false;
+            context.Caster.Setup(entity => entity.GetVisible<IWorldEntity>(42u))
+                .Returns(() => throwOnLookup
+                    ? throw new InvalidOperationException("Test persistence target lookup failure.")
+                    : visible);
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                CreateEffect(1u),
+                targetPersistencePrerequisite: prerequisite.Id,
+                primaryTargetId: 42u,
+                targets: [(SpellEffectTargetFlags.Target, original.Object)]);
+            spell.Cast();
+
+            switch (drift)
+            {
+                case PersistenceTargetDrift.Predicate:
+                    originalLevel = 9u;
+                    break;
+                case PersistenceTargetDrift.Dead:
+                    alive = false;
+                    break;
+                case PersistenceTargetDrift.OutOfWorld:
+                    inWorld = false;
+                    break;
+                case PersistenceTargetDrift.CrossMap:
+                    targetMap = Mock.Of<IBaseMap>();
+                    break;
+                case PersistenceTargetDrift.Rebound:
+                    visible = replacement.Object;
+                    break;
+                case PersistenceTargetDrift.Disappeared:
+                    visible = null;
+                    break;
+                case PersistenceTargetDrift.LookupThrows:
+                    throwOnLookup = true;
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(drift));
+            }
+
+            spell.Update(0d);
+
+            Assert.True(spell.IsFinishing);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<ServerSpellGo>());
+        }
+
+        public enum PersistenceTargetDrift
+        {
+            Predicate,
+            Dead,
+            OutOfWorld,
+            CrossMap,
+            Rebound,
+            Disappeared,
+            LookupThrows
+        }
+
         private static Spell4EffectsEntry CreateEffect(
             uint id,
             uint casterPrerequisite = 0u,
@@ -314,7 +666,9 @@ namespace NexusForever.Game.Tests.Spell
             uint delayTime = 0u,
             uint tickTime = 0u,
             uint durationTime = 0u,
-            uint cost = 0u)
+            uint cost = 0u,
+            Vital costVital = Vital.Resource1,
+            SpellEffectFlags flags = SpellEffectFlags.None)
         {
             return new Spell4EffectsEntry
             {
@@ -324,10 +678,11 @@ namespace NexusForever.Game.Tests.Spell
                 DelayTime                 = delayTime,
                 TickTime                  = tickTime,
                 DurationTime              = durationTime,
+                Flags                     = (uint)flags,
                 PhaseFlags                = 1u,
                 PrerequisiteIdCasterApply = casterPrerequisite,
                 PrerequisiteIdTargetApply = targetPrerequisite,
-                InnateCostPerTickType0     = (uint)Vital.Resource1,
+                InnateCostPerTickType0     = (uint)costVital,
                 InnateCostPerTick0         = cost,
                 ParameterType             = new SpellEffectParameterType[4],
                 ParameterValue            = new float[4]
@@ -421,11 +776,17 @@ namespace NexusForever.Game.Tests.Spell
             public List<IWritable> Packets { get; } = [];
             public List<(ISpell Spell, IUnitEntity Target, ISpellTargetEffectInfo Effect)> Invocations { get; } = [];
             public List<float> CostMutations { get; } = [];
+            public List<IWritable> SessionPackets { get; } = [];
             public int InvocationAttempts { get; private set; }
             public uint CasterLevel { get; set; } = 50u;
+            public int CasterLevelReads { get; private set; }
+            public int CasterVitalReads { get; private set; }
             public Faction CasterFaction { get; set; } = Faction.Exile;
+            public float CasterResource0 { get; set; } = 100f;
             public float CasterResource1 { get; set; } = 100f;
+            public bool ThrowOnCasterVitalRead { get; set; }
             public Action<ISpell, IUnitEntity, ISpellTargetEffectInfo> Handler { get; set; }
+            public Action<IWritable> PacketObserved { get; set; }
 
             private readonly IServiceProvider previousProvider;
             private readonly ServiceProvider serviceProvider;
@@ -475,20 +836,39 @@ namespace NexusForever.Game.Tests.Spell
 
                 var spellManager = new Mock<ISpellManager>();
                 Caster.SetupGet(entity => entity.Guid).Returns(7u);
+                Caster.SetupGet(entity => entity.IsAlive).Returns(true);
                 Caster.SetupGet(entity => entity.InWorld).Returns(true);
                 Caster.SetupGet(entity => entity.Map).Returns(Map.Object);
                 Caster.SetupGet(entity => entity.IsLoading).Returns(false);
                 Caster.SetupGet(entity => entity.Session).Returns(Session.Object);
                 Caster.SetupGet(entity => entity.SpellManager).Returns(spellManager.Object);
-                Caster.SetupGet(entity => entity.Level).Returns(() => CasterLevel);
+                Caster.SetupGet(entity => entity.Level).Returns(() =>
+                {
+                    CasterLevelReads++;
+                    return CasterLevel;
+                });
                 Caster.SetupGet(entity => entity.Faction1).Returns(() => CasterFaction);
                 Caster.Setup(entity => entity.TryGetVitalValue(
                         It.IsAny<Vital>(),
                         out It.Ref<float>.IsAny))
                     .Returns(new TryGetVitalValue((Vital vital, out float value) =>
                     {
-                        value = CasterResource1;
-                        return vital == Vital.Resource1;
+                        CasterVitalReads++;
+                        if (ThrowOnCasterVitalRead)
+                            throw new InvalidOperationException("Test caster vital read failure.");
+
+                        switch (vital)
+                        {
+                            case Vital.Resource0:
+                                value = CasterResource0;
+                                return true;
+                            case Vital.Resource1:
+                                value = CasterResource1;
+                                return true;
+                            default:
+                                value = 0f;
+                                return false;
+                        }
                     }));
                 Caster.Setup(entity => entity.TryModifyVital(
                         It.IsAny<Vital>(),
@@ -496,30 +876,47 @@ namespace NexusForever.Game.Tests.Spell
                         It.IsAny<IUnitEntity>()))
                     .Returns((Vital vital, float delta, IUnitEntity _) =>
                     {
-                        if (vital != Vital.Resource1)
-                            return false;
+                        switch (vital)
+                        {
+                            case Vital.Resource0:
+                                CasterResource0 += delta;
+                                break;
+                            case Vital.Resource1:
+                                CasterResource1 += delta;
+                                break;
+                            default:
+                                return false;
+                        }
 
-                        CasterResource1 += delta;
                         CostMutations.Add(delta);
                         return true;
                     });
                 Caster.Setup(entity => entity.EnqueueToVisible(
                         It.IsAny<IWritable>(),
                         It.IsAny<bool>()))
-                    .Callback<IWritable, bool>((packet, _) => Packets.Add(packet));
-                Session.Setup(session => session.EnqueueMessageEncrypted(It.IsAny<IWritable>()));
+                    .Callback<IWritable, bool>((packet, _) =>
+                    {
+                        Packets.Add(packet);
+                        PacketObserved?.Invoke(packet);
+                    });
+                Session.Setup(session => session.EnqueueMessageEncrypted(It.IsAny<IWritable>()))
+                    .Callback<IWritable>(SessionPackets.Add);
             }
 
             public Mock<IUnitEntity> CreateTarget(
                 uint guid,
                 Func<uint> level = null,
                 Func<Faction> faction = null,
-                Func<Vital, float?> vital = null)
+                Func<Vital, float?> vital = null,
+                Func<bool> alive = null,
+                Func<bool> inWorld = null,
+                Func<IBaseMap> map = null)
             {
                 var target = new Mock<IUnitEntity>();
                 target.SetupGet(entity => entity.Guid).Returns(guid);
-                target.SetupGet(entity => entity.InWorld).Returns(true);
-                target.SetupGet(entity => entity.Map).Returns(Map.Object);
+                target.SetupGet(entity => entity.IsAlive).Returns(() => alive?.Invoke() ?? true);
+                target.SetupGet(entity => entity.InWorld).Returns(() => inWorld?.Invoke() ?? true);
+                target.SetupGet(entity => entity.Map).Returns(() => map?.Invoke() ?? Map.Object);
                 target.SetupGet(entity => entity.Level).Returns(() => level?.Invoke() ?? 1u);
                 target.SetupGet(entity => entity.Faction1).Returns(() => faction?.Invoke() ?? Faction.Dominion);
                 target.Setup(entity => entity.TryGetVitalValue(
@@ -548,6 +945,23 @@ namespace NexusForever.Game.Tests.Spell
                     () => targets);
                 spell.SetStatus(SpellStatus.Casting);
                 return spell;
+            }
+
+            public TestApplyPrerequisiteSpell CreatePersistenceSpell(
+                Spell4EffectsEntry effect,
+                uint casterPersistencePrerequisite = 0u,
+                uint targetPersistencePrerequisite = 0u,
+                uint primaryTargetId = 0u,
+                params (SpellEffectTargetFlags Flags, IUnitEntity Entity)[] targets)
+            {
+                SpellParameters parameters = CreateParameters(CastMethod.Normal, effect);
+                parameters.SpellInfo.Entry.PrerequisiteIdCasterPersistence = casterPersistencePrerequisite;
+                parameters.SpellInfo.Entry.PrerequisiteIdTargetPersistence = targetPersistencePrerequisite;
+                parameters.PrimaryTargetId = primaryTargetId;
+                return new TestApplyPrerequisiteSpell(
+                    Caster.Object,
+                    parameters,
+                    () => targets);
             }
 
             public TestApplyPrerequisiteAura CreateAura(
@@ -592,6 +1006,17 @@ namespace NexusForever.Game.Tests.Spell
                 {
                     SpellInfo = spellInfo.Object
                 };
+            }
+        }
+
+        private sealed class ThrowingPrerequisiteServiceProvider(IServiceProvider inner) : IServiceProvider
+        {
+            public object GetService(Type serviceType)
+            {
+                if (serviceType == typeof(PrerequisiteManager))
+                    throw new InvalidOperationException("Test persistence classification failure.");
+
+                return inner.GetService(serviceType);
             }
         }
 
