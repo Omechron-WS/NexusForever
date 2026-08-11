@@ -99,6 +99,36 @@ namespace NexusForever.Game.Spell
         }
 
         /// <summary>
+        /// Validate every supplied threshold-row cost without modifying the entity.
+        /// </summary>
+        public static CastResult CheckCosts(
+            IUnitEntity entity,
+            IEnumerable<Spell4ThresholdsEntry> entries)
+        {
+            ArgumentNullException.ThrowIfNull(entity);
+            ArgumentNullException.ThrowIfNull(entries);
+
+            CastResult result = TryBuildCosts(entries, out List<VitalCost> costs);
+            if (result != CastResult.Ok)
+                return result;
+
+            return CheckCosts(entity, costs);
+        }
+
+        /// <summary>
+        /// Return whether every supplied threshold-row cost has a supported, exactly representable shape.
+        /// </summary>
+        public static bool HasSupportedCosts(IEnumerable<Spell4ThresholdsEntry> entries)
+        {
+            ArgumentNullException.ThrowIfNull(entries);
+
+            if (TryBuildCosts(entries, out List<VitalCost> costs) != CastResult.Ok)
+                return false;
+
+            return costs.All(cost => TryConvertCostAmount(cost, out _));
+        }
+
+        /// <summary>
         /// Return whether a spell entry declares a non-zero innate vital cost.
         /// </summary>
         public static bool HasCost(Spell4Entry entry)
@@ -167,6 +197,23 @@ namespace NexusForever.Game.Spell
         public static CastResult TryConsumeCosts(
             IUnitEntity entity,
             IEnumerable<Spell4EffectsEntry> entries)
+        {
+            ArgumentNullException.ThrowIfNull(entity);
+            ArgumentNullException.ThrowIfNull(entries);
+
+            CastResult result = TryBuildCosts(entries, out List<VitalCost> costs);
+            if (result != CastResult.Ok)
+                return result;
+
+            return TryConsumeCosts(entity, costs);
+        }
+
+        /// <summary>
+        /// Validate and consume the aggregate cost of every supplied threshold row as one transaction.
+        /// </summary>
+        public static CastResult TryConsumeCosts(
+            IUnitEntity entity,
+            IEnumerable<Spell4ThresholdsEntry> entries)
         {
             ArgumentNullException.ThrowIfNull(entity);
             ArgumentNullException.ThrowIfNull(entries);
@@ -410,6 +457,38 @@ namespace NexusForever.Game.Spell
                     costs,
                     entry.InnateCostPerTickType1,
                     entry.InnateCostPerTick1);
+                if (result != CastResult.Ok)
+                    return result;
+            }
+
+            return CastResult.Ok;
+        }
+
+        private static CastResult TryBuildCosts(
+            IEnumerable<Spell4ThresholdsEntry> entries,
+            out List<VitalCost> costs)
+        {
+            costs = [];
+
+            foreach (Spell4ThresholdsEntry entry in entries)
+            {
+                if (entry == null)
+                {
+                    log.Warn("Threshold cost transaction contains a null threshold row.");
+                    return CastResult.SpellBad;
+                }
+
+                CastResult result = AddCost(
+                    costs,
+                    entry.VitalEnumCostType00,
+                    entry.VitalCostValue00);
+                if (result != CastResult.Ok)
+                    return result;
+
+                result = AddCost(
+                    costs,
+                    entry.VitalEnumCostType01,
+                    entry.VitalCostValue01);
                 if (result != CastResult.Ok)
                     return result;
             }

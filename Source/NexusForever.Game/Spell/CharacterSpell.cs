@@ -154,7 +154,7 @@ namespace NexusForever.Game.Spell
         /// </summary>
         public void Cast()
         {
-            CastSpell();
+            Cast(buttonPressed: true);
         }
 
         /// <summary>
@@ -164,11 +164,29 @@ namespace NexusForever.Game.Spell
         {
             // TODO: Handle continuous casting of spell for Player if button remains depressed
 
+            ISpell activeThresholdRoot = Owner.GetActiveSpell(IsOwnedThresholdRoot);
+            if (activeThresholdRoot is IThresholdSpell thresholdSpell)
+            {
+                thresholdSpell.TryHandleThresholdInput(buttonPressed);
+                return;
+            }
+
             // If the player depresses button after the spell had exceeded its threshold, don't try and recast the spell until button is pressed down again.
             if (!buttonPressed)
                 return;
 
             CastSpell();
+        }
+
+        private bool IsOwnedThresholdRoot(ISpell spell)
+        {
+            return spell is IThresholdSpell
+                && !spell.IsFinished
+                && ReferenceEquals(spell.Parameters.CharacterSpell, this)
+                && !spell.Parameters.IsThresholdChild
+                && spell.Parameters.ThresholdParent == null
+                && spell.Parameters.ParentSpellInfo == null
+                && ReferenceEquals(spell.Parameters.RootSpellInfo, spell.Parameters.SpellInfo);
         }
 
         private void CastSpell()

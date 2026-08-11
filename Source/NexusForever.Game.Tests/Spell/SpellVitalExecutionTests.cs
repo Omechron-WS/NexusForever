@@ -513,25 +513,52 @@ namespace NexusForever.Game.Tests.Spell
         }
 
         [Fact]
-        public void CostBearingThresholdCastFailsClosedAndBecomesCleanupEligible()
+        public void ThresholdParentBaseCostUsesTheNormalSingleExecutionTransaction()
         {
+            var mutations = new List<(Vital Vital, float Delta)>();
             Mock<IPlayer> player = CreatePlayer(
-                new Dictionary<Vital, float> { [Vital.Focus] = 100f });
+                new Dictionary<Vital, float> { [Vital.Focus] = 100f },
+                mutations);
             SpellParameters parameters = CreateParameters(
                 CastMethod.RapidTap,
-                new Spell4Entry { Id = 123u });
-            var spell = new TestSpell(player.Object, parameters)
-            {
-                UnsupportedThresholdVitalCost = true
-            };
+                new Spell4Entry
+                {
+                    Id              = 123u,
+                    InnateCostType0 = (uint)Vital.Focus,
+                    InnateCost0     = 10u
+                });
+            var spell = new TestSpell(player.Object, parameters);
+
+            spell.Cast();
+            spell.Update(0d);
+
+            Assert.Equal([(Vital.Focus, -10f)], mutations);
+            Assert.False(spell.IsFinishing);
+        }
+
+        [Fact]
+        public void InvalidThresholdChildMetadataFailsBeforeAnyVitalMutation()
+        {
+            var mutations = new List<(Vital Vital, float Delta)>();
+            Mock<IPlayer> player = CreatePlayer(
+                new Dictionary<Vital, float> { [Vital.Focus] = 100f },
+                mutations);
+            SpellParameters parameters = CreateParameters(
+                CastMethod.Normal,
+                new Spell4Entry
+                {
+                    Id              = 123u,
+                    InnateCostType0 = (uint)Vital.Focus,
+                    InnateCost0     = 10u
+                });
+            parameters.IsThresholdChild = true;
+            parameters.ThresholdValue = 1;
+            var spell = new TestSpell(player.Object, parameters);
 
             spell.Cast();
 
             Assert.True(spell.IsFinishing);
-            spell.LateUpdate(0d);
-            Assert.True(spell.IsFinished);
-            player.Verify(unit => unit.TryModifyVital(
-                It.IsAny<Vital>(), It.IsAny<float>(), It.IsAny<IUnitEntity>()), Times.Never);
+            Assert.Empty(mutations);
         }
 
         [Fact]
@@ -753,7 +780,6 @@ namespace NexusForever.Game.Tests.Spell
 
         private sealed class TestSpell : NexusForever.Game.Spell.Spell
         {
-            public bool UnsupportedThresholdVitalCost { get; init; }
             public int TargetSelectionCount { get; private set; }
 
             public TestSpell(IUnitEntity caster, ISpellParameters parameters)
@@ -779,11 +805,6 @@ namespace NexusForever.Game.Tests.Spell
             protected override void SelectTargets()
             {
                 TargetSelectionCount++;
-            }
-
-            protected override bool HasUnsupportedThresholdVitalCost()
-            {
-                return UnsupportedThresholdVitalCost;
             }
         }
 

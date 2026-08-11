@@ -1,98 +1,101 @@
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Spell;
-using NexusForever.Game.Spell.Event;
 using NexusForever.Game.Static.Spell;
 using NexusForever.Network.World.Message.Static;
-using NLog;
 
 namespace NexusForever.Game.Spell.SpellType
 {
     /// <summary>
-    /// Hold-to-charge, release-to-cast spell mechanic.
-    /// Charge builds over the hold duration, then releases at the current threshold.
+    /// Hold-to-charge threshold spell. Release or timeout dispatches exactly one selected child.
     /// </summary>
     [SpellType(CastMethod.ChargeRelease)]
-    public class SpellChargeRelease : Spell
+    public class SpellChargeRelease : SpellThreshold
     {
-        private static readonly ILogger log = LogManager.GetCurrentClassLogger();
-
-        private double holdDuration;
-        private double totalThresholdTimer;
+        private int selectedThresholdIndex;
+        private bool releaseRequested;
+        private bool advancingThreshold;
 
         public SpellChargeRelease(IUnitEntity caster, ISpellParameters parameters)
-            : base(caster, parameters)
+            : base(caster, parameters, CastMethod.ChargeRelease)
         {
         }
 
-        public override void Cast()
+        protected override void HandleThresholdInput(bool buttonPressed)
         {
+            // Additional presses never create another root. A release which arrives during cast time or
+            // a packet callback is latched and resolved after the root is ready/current advancement ends.
+            if (buttonPressed || InputClosed)
+                return;
+
+            if (!RootReady || status is SpellStatus.Casting or SpellStatus.Executing || advancingThreshold)
+            {
+                releaseRequested = true;
+                return;
+            }
+
             if (status == SpellStatus.Waiting)
+                ReleaseThreshold();
+        }
+
+        protected override void OnThresholdReady()
+        {
+            if (releaseRequested && !InputClosed)
+                ReleaseThreshold();
+        }
+
+        protected override void AdvanceThreshold(double elapsedSeconds)
+        {
+            advancingThreshold = true;
+            try
             {
-                // Release — execute at current threshold
-                Execute();
-                status = SpellStatus.Finishing;
+                while (selectedThresholdIndex + 1 < ThresholdRows.Count
+                    && ThresholdElapsedMilliseconds >= GetCumulativeThresholdDuration(selectedThresholdIndex + 1))
+                {
+                    selectedThresholdIndex++;
+                    // Promotion packets are monotonic and best-effort. Re-entrant release is latched by
+                    // advancingThreshold and is handled after all due boundaries have been committed.
+                    TryPublishSelectedThreshold();
+                }
+            }
+            finally
+            {
+                advancingThreshold = false;
+            }
+
+            if (InputClosed)
+                return;
+
+            if (releaseRequested
+                || ThresholdElapsedMilliseconds >= ThresholdWindowMilliseconds)
+                ReleaseThreshold();
+        }
+
+        private void ReleaseThreshold()
+        {
+            if (InputClosed || DispatchInProgress || status != SpellStatus.Waiting)
+                return;
+
+            // Commit the terminal selection before any cost, child-start, or packet callback can re-enter.
+            BeginThresholdClose();
+
+            if (!TryActivateThreshold(
+                    selectedThresholdIndex,
+                    consumeCumulativeThresholdCosts: true,
+                    out CastResult failure))
+            {
+                FailThreshold(failure);
                 return;
             }
 
-            if (status != SpellStatus.Initiating)
-                throw new InvalidOperationException();
-
-            CastResult result = CheckCast();
-            if (result != CastResult.Ok)
-            {
-                FailCast(result);
-                return;
-            }
-
-            if (Caster is IPlayer player)
-                if (Parameters.SpellInfo.GlobalCooldown != null)
-                    player.SpellManager.SetGlobalSpellCooldown(Parameters.SpellInfo.GlobalCooldown.CooldownTime / 1000d);
-
-            if (Caster is not IPlayer)
-                InitialiseTelegraphs();
-
-            SendSpellStart();
-
-            totalThresholdTimer = Parameters.SpellInfo.Entry.ThresholdTime / 1000d;
-
-            events.EnqueueEvent(new SpellEvent(Parameters.SpellInfo.Entry.CastTime / 1000d, () =>
-            {
-                Execute();
-                status = SpellStatus.Waiting;
-            }));
-
-            status = SpellStatus.Casting;
-            log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} has started charge-release casting.");
+            TryPublishSelectedThreshold();
+            PublishThresholdClear();
         }
 
-        public override void Update(double lastTick)
+        private void TryPublishSelectedThreshold()
         {
-            base.Update(lastTick);
-
-            // Check status after base.Update in case events changed it
-            if (status != SpellStatus.Waiting)
-                return;
-
-            holdDuration += lastTick;
-            if (totalThresholdTimer > 0 && holdDuration >= totalThresholdTimer)
-            {
-                // Auto-release at max charge
-                Execute();
-                status = SpellStatus.Finishing;
-            }
-        }
-
-        protected override bool IsCastingInternal()
-        {
-            return status == SpellStatus.Casting || status == SpellStatus.Executing || status == SpellStatus.Waiting;
-        }
-
-        protected override bool CanFinish()
-        {
-            if (status == SpellStatus.Waiting)
-                return false;
-
-            return base.CanFinish();
+            // TryActivateThreshold publishes the same one-based value on release. Promotions reach this
+            // helper first, so the shared monotonic packet guard suppresses any duplicate final value.
+            PublishThresholdValue(checked((byte)(selectedThresholdIndex + 1)));
         }
     }
 }

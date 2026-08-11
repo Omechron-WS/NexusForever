@@ -46,7 +46,6 @@ namespace NexusForever.Game.Spell
 
         private IScriptCollection scriptCollection;
         private bool executionCommitted;
-        private bool? unsupportedThresholdVitalCost;
         private ulong nextEffectActivationId;
 
         protected byte currentPhase = 255;
@@ -64,7 +63,7 @@ namespace NexusForever.Game.Spell
             scriptCollection = ScriptManager.Instance.InitialiseOwnedScripts<ISpell>(this, parameters.SpellInfo.Entry.Id);
         }
 
-        public void Dispose()
+        public virtual void Dispose()
         {
             RemoveAllEffects();
 
@@ -137,7 +136,7 @@ namespace NexusForever.Game.Spell
                 return;
             }
 
-            if (Caster is IPlayer player)
+            if (Caster is IPlayer player && !Parameters.IsThresholdChild)
                 if (Parameters.SpellInfo.GlobalCooldown != null)
                     player.SpellManager.SetGlobalSpellCooldown(Parameters.SpellInfo.GlobalCooldown.CooldownTime / 1000d);
 
@@ -157,6 +156,9 @@ namespace NexusForever.Game.Spell
 
         protected virtual CastResult CheckCast()
         {
+            if (!HasValidThresholdMetadata())
+                return CastResult.SpellBad;
+
             CastResult preReqCheck = CheckPrerequisites();
             if (preReqCheck != CastResult.Ok)
                 return preReqCheck;
@@ -165,7 +167,7 @@ namespace NexusForever.Game.Spell
             if (ccResult != CastResult.Ok)
                 return ccResult;
 
-            if (Caster is IPlayer player)
+            if (Caster is IPlayer player && !Parameters.IsThresholdChild)
             {
                 if (player.SpellManager.GetSpellCooldown(Parameters.SpellInfo.Entry.Id) > 0d)
                     return CastResult.SpellCooldown;
@@ -196,14 +198,14 @@ namespace NexusForever.Game.Spell
             if (result != CastResult.Ok)
                 return result;
 
+            if (Parameters.IsThresholdChild)
+                return HasValidThresholdChildLineage() ? CastResult.Ok : CastResult.SpellBad;
+
             if (Caster is not IPlayer)
                 return CastResult.Ok;
 
             if (costMode == VitalCostMode.Skip)
                 return CastResult.Ok;
-
-            if (HasUnsupportedThresholdVitalCost())
-                return CastResult.SpellBad;
 
             return costMode == VitalCostMode.Consume
                 ? SpellVitalPolicy.TryConsumeCosts(Caster, entry)
@@ -211,23 +213,36 @@ namespace NexusForever.Game.Spell
         }
 
         /// <summary>
-        /// Return whether this threshold spell declares vital costs which cannot be applied safely by
-        /// the current parent-only threshold implementation.
+        /// Return whether threshold-only parameter metadata is internally consistent.
         /// </summary>
-        protected virtual bool HasUnsupportedThresholdVitalCost()
+        private bool HasValidThresholdMetadata()
         {
-            CastMethod castMethod = (CastMethod)Parameters.SpellInfo.BaseInfo.Entry.CastMethod;
-            if (castMethod is not (CastMethod.RapidTap or CastMethod.ChargeRelease))
+            if (!Parameters.IsThresholdChild)
+                return Parameters.ThresholdParent == null && Parameters.ThresholdValue == 0;
+
+            return HasValidThresholdChildLineage();
+        }
+
+        /// <summary>
+        /// Validate the exact active-parent and build-row lineage which authorises a threshold child
+        /// to bypass its own base cost, charge, and cooldown transaction.
+        /// </summary>
+        private bool HasValidThresholdChildLineage()
+        {
+            if (!Parameters.IsThresholdChild
+                || Parameters.ThresholdValue == 0
+                || Parameters.CharacterSpell != null
+                || Parameters.ThresholdParent is not IThresholdSpell thresholdParent
+                || Parameters.ThresholdParent.IsFinished
+                || !ReferenceEquals(Parameters.ThresholdParent.Caster, Caster)
+                || Parameters.ParentSpellInfo == null
+                || Parameters.RootSpellInfo == null
+                || Parameters.ThresholdParent.Parameters.IsThresholdChild
+                || Parameters.ThresholdParent.Parameters.ParentSpellInfo != null
+                || !thresholdParent.IsValidThresholdChild(this))
                 return false;
 
-            if (unsupportedThresholdVitalCost.HasValue)
-                return unsupportedThresholdVitalCost.Value;
-
-            Spell4Entry entry = Parameters.SpellInfo.Entry;
-            unsupportedThresholdVitalCost = SpellVitalPolicy.HasCost(entry)
-                || GameTableManager.Instance.Spell4Thresholds.Entries.Any(threshold =>
-                    threshold.Spell4IdParent == entry.Id && SpellVitalPolicy.HasCost(threshold));
-            return unsupportedThresholdVitalCost.Value;
+            return true;
         }
 
         private CastResult CheckPrerequisites()
@@ -528,11 +543,13 @@ namespace NexusForever.Game.Spell
 
         private CastResult CheckExecutionCommit()
         {
-            if (Caster is IPlayer player
+            if (!Parameters.IsThresholdChild
+                && Caster is IPlayer player
                 && player.SpellManager.GetSpellCooldown(Parameters.SpellInfo.Entry.Id) > 0d)
                 return CastResult.SpellCooldown;
 
-            if (Parameters.CharacterSpell?.MaxAbilityCharges > 0u
+            if (!Parameters.IsThresholdChild
+                && Parameters.CharacterSpell?.MaxAbilityCharges > 0u
                 && Parameters.CharacterSpell.AbilityCharges == 0u)
                 return CastResult.SpellNoCharges;
 
@@ -541,6 +558,9 @@ namespace NexusForever.Game.Spell
 
         private bool TryCommitAbilityCharge()
         {
+            if (Parameters.IsThresholdChild)
+                return true;
+
             ICharacterSpell characterSpell = Parameters.CharacterSpell;
             if (characterSpell?.MaxAbilityCharges is not > 0u)
                 return true;
@@ -568,7 +588,9 @@ namespace NexusForever.Game.Spell
 
         private bool TryCommitSpellCooldown()
         {
-            if (Caster is not IPlayer player || Parameters.SpellInfo.Entry.SpellCoolDown == 0u)
+            if (Parameters.IsThresholdChild
+                || Caster is not IPlayer player
+                || Parameters.SpellInfo.Entry.SpellCoolDown == 0u)
                 return true;
 
             try

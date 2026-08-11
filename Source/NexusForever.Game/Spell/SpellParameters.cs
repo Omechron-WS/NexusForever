@@ -12,6 +12,9 @@ namespace NexusForever.Game.Spell
         public ISpellInfo RootSpellInfo { get; set; }
         public bool UserInitiatedSpellCast { get; set; }
         public bool IsProcTriggered { get; set; }
+        public bool IsThresholdChild { get; set; }
+        public byte ThresholdValue { get; set; }
+        public ISpell ThresholdParent { get; set; }
         public uint CastTimeOverride { get; set; }
         public uint PrimaryTargetId { get; set; }
         public Position Position { get; set; }

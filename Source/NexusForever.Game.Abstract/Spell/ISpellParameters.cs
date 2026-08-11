@@ -21,6 +21,37 @@ namespace NexusForever.Game.Abstract.Spell
         bool IsProcTriggered { get; set; }
 
         /// <summary>
+        /// Gets or sets whether this spell is the selected child of a threshold root.
+        /// </summary>
+        /// <remarks>
+        /// The default implementation keeps existing specialised parameter implementations source-compatible.
+        /// The concrete threshold parameter implementation stores and validates the complete lineage.
+        /// </remarks>
+        bool IsThresholdChild
+        {
+            get => false;
+            set { }
+        }
+
+        /// <summary>
+        /// Gets or sets the one-based threshold row selected for a threshold child.
+        /// </summary>
+        byte ThresholdValue
+        {
+            get => 0;
+            set { }
+        }
+
+        /// <summary>
+        /// Gets or sets the exact active root which dispatched a threshold child.
+        /// </summary>
+        ISpell ThresholdParent
+        {
+            get => null;
+            set { }
+        }
+
+        /// <summary>
         /// Gets or sets a creature activation cast-time override in milliseconds.
         /// </summary>
         uint CastTimeOverride { get; set; }

@@ -636,20 +636,75 @@ namespace NexusForever.Game.Entity
                 return null;
             }
 
-            if (parameters.UserInitiatedSpellCast)
-            {
-                if (this is IPlayer player)
-                    player.Dismount();
-            }
+            ApplyUserInitiatedCastSideEffects(parameters);
 
             CastMethod castMethod = ResolveCastMethod(parameters);
             ISpell spell = GlobalSpellManager.Instance.NewSpell(castMethod, this, parameters);
             if (spell == null)
                 return null;
 
-            spell.Cast();
-            pendingSpells.Add(spell);
-            return spell;
+            return StartAndTrackSpell(spell);
+        }
+
+        /// <summary>
+        /// Apply side effects which belong to the one user-started root transaction.
+        /// </summary>
+        internal void ApplyUserInitiatedCastSideEffects(ISpellParameters parameters)
+        {
+            ArgumentNullException.ThrowIfNull(parameters);
+
+            if (parameters.UserInitiatedSpellCast && !parameters.IsThresholdChild)
+                DismountForUserInitiatedCast();
+        }
+
+        /// <summary>
+        /// Dismount a player for a user-started root cast.
+        /// </summary>
+        protected virtual void DismountForUserInitiatedCast()
+        {
+            if (this is IPlayer player)
+                player.Dismount();
+        }
+
+        /// <summary>
+        /// Make a spell discoverable before its start callbacks and tear it down if start throws.
+        /// </summary>
+        internal ISpell StartAndTrackSpell(ISpell spell)
+        {
+            ArgumentNullException.ThrowIfNull(spell);
+
+            try
+            {
+                pendingSpells.Add(spell);
+                spell.Cast();
+                return spell;
+            }
+            catch
+            {
+                int trackedIndex = pendingSpells.FindIndex(candidate => ReferenceEquals(candidate, spell));
+                if (trackedIndex >= 0)
+                    pendingSpells.RemoveAt(trackedIndex);
+
+                try
+                {
+                    spell.Finish();
+                }
+                catch (Exception cleanupException)
+                {
+                    log.Error(cleanupException, "Failed to finish a spell after its start threw.");
+                }
+
+                try
+                {
+                    spell.Dispose();
+                }
+                catch (Exception cleanupException)
+                {
+                    log.Error(cleanupException, "Failed to dispose a spell after its start threw.");
+                }
+
+                throw;
+            }
         }
 
         /// <summary>

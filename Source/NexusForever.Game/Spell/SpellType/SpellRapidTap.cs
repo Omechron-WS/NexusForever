@@ -1,83 +1,58 @@
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Spell;
-using NexusForever.Game.Spell.Event;
 using NexusForever.Game.Static.Spell;
 using NexusForever.Network.World.Message.Static;
-using NLog;
 
 namespace NexusForever.Game.Spell.SpellType
 {
     /// <summary>
-    /// Rapid button-press spell mechanic.
-    /// Each press increments the threshold; effects scale based on tap count.
+    /// Rapid button-press threshold spell. The root executes once; later presses dispatch exact children.
     /// </summary>
     [SpellType(CastMethod.RapidTap)]
-    public class SpellRapidTap : Spell
+    public class SpellRapidTap : SpellThreshold
     {
-        private static readonly ILogger log = LogManager.GetCurrentClassLogger();
-
-        private uint thresholdValue;
+        private int nextThresholdIndex;
 
         public SpellRapidTap(IUnitEntity caster, ISpellParameters parameters)
-            : base(caster, parameters)
+            : base(caster, parameters, CastMethod.RapidTap)
         {
         }
 
-        public override void Cast()
+        protected override void HandleThresholdInput(bool buttonPressed)
         {
-            if (status == SpellStatus.Waiting)
+            // Releases and presses received before the root is ready are deliberately consumed without
+            // creating another root. An in-progress dispatch is likewise not recursively advanced.
+            if (!buttonPressed
+                || InputClosed
+                || !RootReady
+                || status != SpellStatus.Waiting
+                || DispatchInProgress)
+                return;
+
+            if (nextThresholdIndex >= ThresholdRows.Count)
             {
-                // Subsequent tap — increment threshold
-                thresholdValue++;
-                targets.Clear();
-                Execute();
+                CloseThresholdWindow();
                 return;
             }
 
-            if (status != SpellStatus.Initiating)
-                throw new InvalidOperationException();
-
-            CastResult result = CheckCast();
-            if (result != CastResult.Ok)
+            int selectedIndex = nextThresholdIndex++;
+            if (!TryActivateThreshold(
+                    selectedIndex,
+                    consumeCumulativeThresholdCosts: false,
+                    out CastResult failure))
             {
-                FailCast(result);
+                FailThreshold(failure);
                 return;
             }
 
-            if (Caster is IPlayer player)
-                if (Parameters.SpellInfo.GlobalCooldown != null)
-                    player.SpellManager.SetGlobalSpellCooldown(Parameters.SpellInfo.GlobalCooldown.CooldownTime / 1000d);
-
-            if (Caster is not IPlayer)
-                InitialiseTelegraphs();
-
-            SendSpellStart();
-
-            // Schedule finish at cast time + threshold time
-            double finishDelay = (Parameters.SpellInfo.Entry.CastTime + Parameters.SpellInfo.Entry.ThresholdTime) / 1000d;
-            events.EnqueueEvent(new SpellEvent(finishDelay, Finish));
-
-            events.EnqueueEvent(new SpellEvent(Parameters.SpellInfo.Entry.CastTime / 1000d, () =>
-            {
-                Execute();
-                status = SpellStatus.Waiting;
-            }));
-
-            status = SpellStatus.Casting;
-            log.Trace($"Spell {Parameters.SpellInfo.Entry.Id} has started rapid-tap casting.");
+            if (nextThresholdIndex == ThresholdRows.Count)
+                CloseThresholdWindow();
         }
 
-        protected override bool IsCastingInternal()
+        protected override void AdvanceThreshold(double elapsedSeconds)
         {
-            return status == SpellStatus.Casting || status == SpellStatus.Waiting;
-        }
-
-        protected override bool CanFinish()
-        {
-            if (status == SpellStatus.Waiting)
-                return false;
-
-            return base.CanFinish();
+            if (ThresholdElapsedMilliseconds >= ThresholdWindowMilliseconds)
+                CloseThresholdWindow();
         }
     }
 }
