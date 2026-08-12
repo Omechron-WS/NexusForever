@@ -68,7 +68,8 @@ namespace NexusForever.Game.Entity.Movement.Command.Position
             if (Command == null)
                 return;
 
-            Command.Update(lastTick);
+            IPositionCommand completedCommand = Command;
+            completedCommand.Update(lastTick);
 
             relocationTimer.Update(lastTick);
             if (relocationTimer.HasElapsed)
@@ -77,10 +78,11 @@ namespace NexusForever.Game.Entity.Movement.Command.Position
                 relocationTimer.Reset();
             }
 
-            if (Command.IsFinalised)
+            if (ReferenceEquals(Command, completedCommand) && completedCommand.IsFinalised)
             {
-                movementManager.Owner.InvokeScriptCollection<IWorldEntityScript>(s => s.OnPositionEntityCommandFinalise(Command));
                 Finalise();
+                movementManager.Owner.InvokeScriptCollection<IWorldEntityScript>(
+                    script => script.OnPositionEntityCommandFinalise(completedCommand));
             }
         }
 
@@ -133,9 +135,13 @@ namespace NexusForever.Game.Entity.Movement.Command.Position
                 return;
 
             Vector3 position = GetPosition();
-            Command = null;
+            var replacement = factory.Resolve<PositionCommand>();
+            if (replacement == null)
+                throw new InvalidOperationException("Unable to resolve a position command.");
+            replacement.Initialise(position, true);
 
-            SetPosition(position, true);
+            Command = replacement;
+            IsDirty = true;
         }
 
         /// <summary>
