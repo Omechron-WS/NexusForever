@@ -28,7 +28,7 @@ namespace NexusForever.WorldServer.Command.Handler
 
         [Command(Permission.MapPlayerRemove, "Remove player from current map instance.", "remove")]
         public void HandleMapPlayerRemove(ICommandContext context,
-            [Parameter("Removal reason.", converter: typeof(EnumParameterConverter<WorldRemovalReason>))]
+            [Parameter("Removal reason.", converter: typeof(DefinedEnumParameterConverter<WorldRemovalReason>))]
             WorldRemovalReason removalReason)
         {
             IPlayer player = context.GetTargetOrInvoker<IPlayer>();

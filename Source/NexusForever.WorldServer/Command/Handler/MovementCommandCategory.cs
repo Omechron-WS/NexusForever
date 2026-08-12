@@ -91,7 +91,7 @@ namespace NexusForever.WorldServer.Command.Handler
 
             [Command(Permission.MovementSplineLaunch, "Launch spline for target entity with previously defined nodes and optional mode and speed.", "launch")]
             public void MovementSplineLaunchHandler(ICommandContext context,
-                [Parameter("Mode to launch the spline.", ParameterFlags.None, typeof(EnumParameterConverter<SplineMode>))]
+                [Parameter("Mode to launch the spline.", ParameterFlags.None, typeof(DefinedEnumParameterConverter<SplineMode>))]
                 SplineMode? mode,
                 [Parameter("Speed to launch the spline.")]
                 float? speed)

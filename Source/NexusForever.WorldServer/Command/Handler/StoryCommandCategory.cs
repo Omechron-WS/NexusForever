@@ -41,11 +41,11 @@ namespace NexusForever.WorldServer.Command.Handler
             uint creatureId,
             [Parameter("")]
             uint? duration,
-            [Parameter("", ParameterFlags.None, typeof(EnumParameterConverter<CommunicatorOverlay>))]
+            [Parameter("", ParameterFlags.None, typeof(DefinedEnumParameterConverter<CommunicatorOverlay>))]
             CommunicatorOverlay? overlay,
-            [Parameter("", ParameterFlags.None, typeof(EnumParameterConverter<CommunicatorPortraitPlacement>))]
+            [Parameter("", ParameterFlags.None, typeof(DefinedEnumParameterConverter<CommunicatorPortraitPlacement>))]
             CommunicatorPortraitPlacement? placement,
-            [Parameter("", ParameterFlags.None, typeof(EnumParameterConverter<CommunicatorBackground>))]
+            [Parameter("", ParameterFlags.None, typeof(DefinedEnumParameterConverter<CommunicatorBackground>))]
             CommunicatorBackground? background)
         {
             duration       ??= 10000u;

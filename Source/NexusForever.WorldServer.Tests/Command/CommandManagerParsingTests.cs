@@ -158,6 +158,18 @@ namespace NexusForever.WorldServer.Tests.Command
         }
 
         [Fact]
+        public void HandleCommand_CompositeRoleDoesNotInvokeHandler()
+        {
+            using TestHarness harness = TestHarness.CreateRole();
+
+            harness.Handle("test Player,GameMaster");
+
+            Assert.Equal(0, harness.Target.InvocationCount);
+            Assert.Null(harness.Target.RoleValue);
+            Assert.Equal([CommandFailureMessage], harness.Context.Errors);
+        }
+
+        [Fact]
         public void HandleCommand_OptionalStringDistinguishesOmissionFromExplicitEmpty()
         {
             using TestHarness omittedHarness = TestHarness.CreateOptionalString();
@@ -244,6 +256,13 @@ namespace NexusForever.WorldServer.Tests.Command
                     new CommandHandler.CommandParameter(typeof(Vector3), new Vector3ParameterConverter(), false));
             }
 
+            public static TestHarness CreateRole()
+            {
+                return new TestHarness(
+                    nameof(InvocationCategory.HandleRole),
+                    new CommandHandler.CommandParameter(typeof(Role), new EnumParameterConverter<Role>(), false));
+            }
+
             public static TestHarness CreateOptionalString()
             {
                 return new TestHarness(
@@ -308,6 +327,7 @@ namespace NexusForever.WorldServer.Tests.Command
             public int? IntValue { get; private set; }
             public float? FloatValue { get; private set; }
             public Vector3? VectorValue { get; private set; }
+            public Role? RoleValue { get; private set; }
 
             public void HandleNoParameters(ICommandContext context)
             {
@@ -336,6 +356,12 @@ namespace NexusForever.WorldServer.Tests.Command
             {
                 InvocationCount++;
                 VectorValue = value;
+            }
+
+            public void HandleRole(ICommandContext context, Role value)
+            {
+                InvocationCount++;
+                RoleValue = value;
             }
 
             public void HandleOptionalString(ICommandContext context, string value)

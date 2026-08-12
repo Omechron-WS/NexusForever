@@ -16,7 +16,7 @@ namespace NexusForever.WorldServer.Command.Handler
     {
         [Command(Permission.BroadcastMessage, "Broadcast message to all players on the server.", "message")]
         public void HandleBroadcastMessage(ICommandContext context,
-            [Parameter("Tier of the message being broadcast.", ParameterFlags.None, typeof(EnumParameterConverter<BroadcastTier>))]
+            [Parameter("Tier of the message being broadcast.", ParameterFlags.None, typeof(DefinedEnumParameterConverter<BroadcastTier>))]
             BroadcastTier tier,
             [Parameter("Message to broadcast.")]
             string message)

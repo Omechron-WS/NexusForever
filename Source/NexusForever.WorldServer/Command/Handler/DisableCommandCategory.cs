@@ -12,7 +12,7 @@ namespace NexusForever.WorldServer.Command.Handler
     {
         [Command(Permission.DisableInfo, "Return information on the supplied disable and object id.", "info")]
         public void HandleDisableInfo(ICommandContext context,
-            [Parameter("Disabled entity type.", ParameterFlags.None, typeof(EnumParameterConverter<DisableType>))]
+            [Parameter("Disabled entity type.", ParameterFlags.None, typeof(DefinedEnumParameterConverter<DisableType>))]
             DisableType disableType,
             [Parameter("Object id for the disabled entity type.")]
             uint objectId)

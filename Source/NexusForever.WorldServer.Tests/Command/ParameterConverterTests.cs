@@ -1,9 +1,19 @@
 using System.Globalization;
 using System.Numerics;
+using System.Reflection;
 using Moq;
+using NexusForever.Game.Static;
+using NexusForever.Game.Static.Entity.Movement.Spline;
+using NexusForever.Game.Static.Guild;
+using NexusForever.Game.Static.Map;
+using NexusForever.Game.Static.RBAC;
+using NexusForever.Game.Static.Story;
+using NexusForever.Network.World.Message.Model.Shared;
+using NexusForever.Script.Static;
 using NexusForever.WorldServer.Command;
 using NexusForever.WorldServer.Command.Context;
 using NexusForever.WorldServer.Command.Convert;
+using PlayerPath = NexusForever.Game.Static.PlayerPath.Path;
 
 namespace NexusForever.WorldServer.Tests.Command
 {
@@ -110,6 +120,79 @@ namespace NexusForever.WorldServer.Tests.Command
             Assert.Throws<FormatException>(() => Convert<TimeSpan>(
                 new TimeSpanParameterConverter(),
                 "00:00:00,5"));
+        }
+
+        [Fact]
+        public void EnumConverter_PreservesNamedAndOpenNumericValuesButRejectsComposites()
+        {
+            Assert.Equal(Role.Player, Convert<Role>(new EnumParameterConverter<Role>(), "Player"));
+            Assert.Equal((Role)99, Convert<Role>(new EnumParameterConverter<Role>(), "99"));
+
+            Assert.Throws<FormatException>(() => Convert<Role>(
+                new EnumParameterConverter<Role>(),
+                "Player,GameMaster"));
+        }
+
+        [Fact]
+        public void DefinedEnumConverter_RejectsUndefinedNamesAndNumbers()
+        {
+            Assert.Equal(BroadcastTier.High, Convert<BroadcastTier>(
+                new DefinedEnumParameterConverter<BroadcastTier>(),
+                "High"));
+            Assert.Equal(BroadcastTier.Medium, Convert<BroadcastTier>(
+                new DefinedEnumParameterConverter<BroadcastTier>(),
+                "1"));
+
+            Assert.Throws<ArgumentException>(() => Convert<BroadcastTier>(
+                new DefinedEnumParameterConverter<BroadcastTier>(),
+                "Unknown"));
+            Assert.Throws<FormatException>(() => Convert<BroadcastTier>(
+                new DefinedEnumParameterConverter<BroadcastTier>(),
+                "99"));
+            Assert.Throws<FormatException>(() => Convert<BroadcastTier>(
+                new DefinedEnumParameterConverter<BroadcastTier>(),
+                "High,Medium"));
+        }
+
+        [Fact]
+        public void CommandEnumConverters_UseClosedPolicyOnlyForAuditedTypesAndNeverFlags()
+        {
+            HashSet<Type> closedTypes =
+            [
+                typeof(DisableType),
+                typeof(WorldRemovalReason),
+                typeof(PlayerPath),
+                typeof(CommunicatorOverlay),
+                typeof(CommunicatorPortraitPlacement),
+                typeof(CommunicatorBackground),
+                typeof(ReloadType),
+                typeof(BroadcastTier),
+                typeof(SplineMode),
+                typeof(GuildType)
+            ];
+
+            Type openConverter = typeof(EnumParameterConverter<>);
+            Type closedConverter = typeof(DefinedEnumParameterConverter<>);
+            List<Type> converters = typeof(CommandManager).Assembly
+                .GetTypes()
+                .SelectMany(type => type.GetMethods(
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                .SelectMany(method => method.GetParameters())
+                .Select(parameter => parameter.GetCustomAttribute<ParameterAttribute>()?.Converter)
+                .Where(type => type?.IsGenericType == true
+                    && (type.GetGenericTypeDefinition() == openConverter
+                        || type.GetGenericTypeDefinition() == closedConverter))
+                .ToList();
+
+            Assert.NotEmpty(converters);
+            foreach (Type converter in converters)
+            {
+                Type enumType = converter.GetGenericArguments()[0];
+                Assert.False(enumType.IsDefined(typeof(FlagsAttribute), inherit: false));
+                Assert.Equal(
+                    closedTypes.Contains(enumType) ? closedConverter : openConverter,
+                    converter.GetGenericTypeDefinition());
+            }
         }
 
         private static T Convert<T>(IParameterConvert converter, params string[] values)

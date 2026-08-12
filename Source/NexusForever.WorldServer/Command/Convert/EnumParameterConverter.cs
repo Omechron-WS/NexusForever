@@ -7,7 +7,15 @@ namespace NexusForever.WorldServer.Command.Convert
     {
         public object Convert(ICommandContext context, ParameterQueue queue)
         {
-            return Enum.Parse(typeof(T), queue.Dequeue());
+            return Parse(queue.Dequeue());
+        }
+
+        internal static T Parse(string token)
+        {
+            if (token.Contains(',', StringComparison.Ordinal))
+                throw new FormatException("Composite enum values are not supported.");
+
+            return (T)Enum.Parse(typeof(T), token);
         }
     }
 }

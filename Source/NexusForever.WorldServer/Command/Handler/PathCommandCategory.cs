@@ -13,7 +13,7 @@ namespace NexusForever.WorldServer.Command.Handler
     {
         [Command(Permission.PathUnlock, "Unlock a path for character.", "unlock")]
         public void HandlePathUnlock(ICommandContext context,
-            [Parameter("Path id to unlock.", ParameterFlags.None, typeof(EnumParameterConverter<Path>))]
+            [Parameter("Path id to unlock.", ParameterFlags.None, typeof(DefinedEnumParameterConverter<Path>))]
             Path path)
         {
             context.GetTargetOrInvoker<IPlayer>().PathManager.UnlockPath(path);
@@ -21,7 +21,7 @@ namespace NexusForever.WorldServer.Command.Handler
 
         [Command(Permission.PathActivate, "Activate a path for character.", "activate")]
         public void HandlePathActivate(ICommandContext context,
-            [Parameter("Path id to activate.", ParameterFlags.None, typeof(EnumParameterConverter<Path>))]
+            [Parameter("Path id to activate.", ParameterFlags.None, typeof(DefinedEnumParameterConverter<Path>))]
             Path path)
         {
             context.GetTargetOrInvoker<IPlayer>().PathManager.ActivatePath(path);

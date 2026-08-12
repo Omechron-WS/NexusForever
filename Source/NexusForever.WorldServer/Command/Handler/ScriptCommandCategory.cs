@@ -15,7 +15,7 @@ namespace NexusForever.WorldServer.Command.Handler
             ICommandContext context,
             [Parameter("Assembly name to reload.")]
             string assemblyName,
-            [Parameter("Type of assembly reload to perform.", converter: typeof(EnumParameterConverter<ReloadType>))]
+            [Parameter("Type of assembly reload to perform.", converter: typeof(DefinedEnumParameterConverter<ReloadType>))]
             ReloadType reloadType)
         {
             DateTime start = DateTime.UtcNow;

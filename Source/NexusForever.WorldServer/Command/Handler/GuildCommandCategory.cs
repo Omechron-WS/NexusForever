@@ -15,7 +15,7 @@ namespace NexusForever.WorldServer.Command.Handler
     {
         [Command(Permission.GuildRegister, "Register a new guild.", "register")]
         public void HandleGuildRegister(ICommandContext context,
-            [Parameter("Guild type to create.", ParameterFlags.None, typeof(EnumParameterConverter<GuildType>))]
+            [Parameter("Guild type to create.", ParameterFlags.None, typeof(DefinedEnumParameterConverter<GuildType>))]
             GuildType type,
             [Parameter("Name of newly created guild.")]
             string name,
@@ -50,7 +50,7 @@ namespace NexusForever.WorldServer.Command.Handler
 
         [Command(Permission.GuildJoin, "Join an existing guild.", "join")]
         public void HandleGuildJoin(ICommandContext context,
-            [Parameter("Type of guild to join.", ParameterFlags.None, typeof(EnumParameterConverter<GuildType>))]
+            [Parameter("Type of guild to join.", ParameterFlags.None, typeof(DefinedEnumParameterConverter<GuildType>))]
             GuildType type,
             [Parameter("Name of guild to join.")]
             string name)
