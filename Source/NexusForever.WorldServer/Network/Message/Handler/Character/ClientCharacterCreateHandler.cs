@@ -63,6 +63,10 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Character
                 if (characterCreate.Path > (byte)Game.Static.PlayerPath.Path.Explorer)
                     return CharacterModifyResult.CreateFailed;
 
+                if (characterCreate.Bones.Count >= 1 << 6
+                    || characterCreate.Bones.Any(bone => !float.IsFinite(bone)))
+                    return CharacterModifyResult.CreateFailed;
+
                 if (!textFilterManager.IsTextValid(characterCreate.Name)
                     || !textFilterManager.IsTextValid(characterCreate.Name, UserText.CharacterName))
                     return CharacterModifyResult.CreateFailed_InvalidName;

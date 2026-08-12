@@ -31,21 +31,58 @@ namespace NexusForever.WorldServer.Tests.Character
 
             fixture.Handler.HandleMessage(fixture.Session.Object, CreateMessage(path));
 
+            AssertCreateFailedBeforeDownstreamWork(fixture);
+        }
+
+        [Fact]
+        public void BoneCountBeyondEntityProjectionCapacity_IsRejectedBeforeDownstreamWork()
+        {
+            CharacterCreateFixture fixture = CreateFixture();
+
+            fixture.Handler.HandleMessage(
+                fixture.Session.Object,
+                CreateMessage(0, Enumerable.Repeat(1f, 64)));
+
+            AssertCreateFailedBeforeDownstreamWork(fixture);
+        }
+
+        [Theory]
+        [InlineData(float.NaN)]
+        [InlineData(float.PositiveInfinity)]
+        [InlineData(float.NegativeInfinity)]
+        public void NonFiniteBone_IsRejectedBeforeDownstreamWork(float bone)
+        {
+            CharacterCreateFixture fixture = CreateFixture();
+
+            fixture.Handler.HandleMessage(fixture.Session.Object, CreateMessage(0, [bone]));
+
+            AssertCreateFailedBeforeDownstreamWork(fixture);
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(63)]
+        public void BoundedFiniteBones_ReachExistingNameValidation(int boneCount)
+        {
+            CharacterCreateFixture fixture = CreateFixture();
+            fixture.TextFilterManager
+                .Setup(manager => manager.IsTextValid(
+                    "ValidName",
+                    TextFilterClass.Strict,
+                    Language.English))
+                .Returns(false);
+
+            fixture.Handler.HandleMessage(
+                fixture.Session.Object,
+                CreateMessage(0, Enumerable.Repeat(1f, boneCount)));
+
+            fixture.TextFilterManager.Verify(manager => manager.IsTextValid(
+                "ValidName",
+                TextFilterClass.Strict,
+                Language.English), Times.Once);
             fixture.Session.Verify(session => session.EnqueueMessageEncrypted(
-                It.Is<ServerCharacterCreate>(message => message.Result == CharacterModifyResult.CreateFailed)),
+                It.Is<ServerCharacterCreate>(message => message.Result == CharacterModifyResult.CreateFailed_InvalidName)),
                 Times.Once);
-            fixture.TextFilterManager.VerifyNoOtherCalls();
-            fixture.DatabaseManager.Verify(manager => manager.GetDatabase<CharacterDatabase>(), Times.Never);
-            fixture.GameTableManager.VerifyGet(manager => manager.CharacterCreation, Times.Never);
-            fixture.CustomisationManager.Verify(manager => manager.Validate(
-                It.IsAny<Race>(),
-                It.IsAny<Sex>(),
-                It.IsAny<Faction>(),
-                It.IsAny<IList<(uint Label, uint Value)>>()), Times.Never);
-            fixture.CharacterManager.VerifyGet(manager => manager.NextCharacterId, Times.Never);
-            fixture.Session.VerifyGet(session => session.Account, Times.Never);
-            fixture.Session.VerifyGet(session => session.Events, Times.Never);
-            fixture.Session.VerifySet(session => session.CanProcessIncomingPackets = It.IsAny<bool>(), Times.Never);
         }
 
         [Theory]
@@ -99,12 +136,33 @@ namespace NexusForever.WorldServer.Tests.Character
                 characterManager);
         }
 
-        private static ClientCharacterCreate CreateMessage(byte path)
+        private static ClientCharacterCreate CreateMessage(byte path, IEnumerable<float> bones = null)
         {
             var message = new ClientCharacterCreate();
             SetProperty(message, nameof(ClientCharacterCreate.Name), "ValidName");
             SetProperty(message, nameof(ClientCharacterCreate.Path), path);
+            if (bones != null)
+                message.Bones.AddRange(bones);
             return message;
+        }
+
+        private static void AssertCreateFailedBeforeDownstreamWork(CharacterCreateFixture fixture)
+        {
+            fixture.Session.Verify(session => session.EnqueueMessageEncrypted(
+                It.Is<ServerCharacterCreate>(message => message.Result == CharacterModifyResult.CreateFailed)),
+                Times.Once);
+            fixture.TextFilterManager.VerifyNoOtherCalls();
+            fixture.DatabaseManager.Verify(manager => manager.GetDatabase<CharacterDatabase>(), Times.Never);
+            fixture.GameTableManager.VerifyGet(manager => manager.CharacterCreation, Times.Never);
+            fixture.CustomisationManager.Verify(manager => manager.Validate(
+                It.IsAny<Race>(),
+                It.IsAny<Sex>(),
+                It.IsAny<Faction>(),
+                It.IsAny<IList<(uint Label, uint Value)>>()), Times.Never);
+            fixture.CharacterManager.VerifyGet(manager => manager.NextCharacterId, Times.Never);
+            fixture.Session.VerifyGet(session => session.Account, Times.Never);
+            fixture.Session.VerifyGet(session => session.Events, Times.Never);
+            fixture.Session.VerifySet(session => session.CanProcessIncomingPackets = It.IsAny<bool>(), Times.Never);
         }
 
         private static void SetProperty<T>(ClientCharacterCreate message, string name, T value)
