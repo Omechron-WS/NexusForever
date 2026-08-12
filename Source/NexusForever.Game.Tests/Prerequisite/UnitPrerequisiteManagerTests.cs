@@ -152,6 +152,138 @@ namespace NexusForever.Game.Tests.Prerequisite
         }
 
         [Fact]
+        public void TrueLevelBuildRowsEvaluateUnsignedComparisonsAndIgnoredObjectDynamically()
+        {
+            PrerequisiteEntry minimumLevel = CreateEntry(
+                8235u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.TrueLevel, PrerequisiteComparison.GreaterThanOrEqual, 1u, 0u));
+            PrerequisiteEntry exactLevel = CreateEntry(
+                30481u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.TrueLevel, PrerequisiteComparison.Equal, 10u, 0u));
+            PrerequisiteEntry boundedLevel = CreateEntry(
+                44139u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.TrueLevel, PrerequisiteComparison.GreaterThan, 10u, 0u),
+                (PrerequisiteType.TrueLevel, PrerequisiteComparison.LessThanOrEqual, 20u, 0u));
+            PrerequisiteEntry levelThirty = CreateEntry(
+                27883u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.TrueLevel, PrerequisiteComparison.GreaterThanOrEqual, 30u, 0u));
+            PrerequisiteEntry levelFifty = CreateEntry(
+                27903u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.TrueLevel, PrerequisiteComparison.GreaterThanOrEqual, 50u, 0u));
+            PrerequisiteEntry[] entries =
+            [
+                minimumLevel,
+                exactLevel,
+                boundedLevel,
+                levelThirty,
+                levelFifty
+            ];
+            using var context = new ManagerContext(entries);
+            uint level = 10u;
+            Mock<IUnitEntity> unit = CreateUnit(dynamicLevel: () => level);
+
+            foreach (PrerequisiteEntry entry in entries)
+                Assert.True(context.Manager.CanEvaluateForUnit(entry.Id));
+
+            bool[] expectedAtTen = [true, true, false, false, false];
+            for (int i = 0; i < entries.Length; i++)
+            {
+                Assert.True(context.Manager.TryMeets(unit.Object, entries[i].Id, out bool meets));
+                Assert.Equal(expectedAtTen[i], meets);
+            }
+
+            level = 20u;
+            bool[] expectedAtTwenty = [true, false, true, false, false];
+            for (int i = 0; i < entries.Length; i++)
+            {
+                Assert.True(context.Manager.TryMeets(unit.Object, entries[i].Id, out bool meets));
+                Assert.Equal(expectedAtTwenty[i], meets);
+            }
+
+            level = 50u;
+            bool[] expectedAtFifty = [true, false, false, true, true];
+            for (int i = 0; i < entries.Length; i++)
+            {
+                Assert.True(context.Manager.TryMeets(unit.Object, entries[i].Id, out bool meets));
+                Assert.Equal(expectedAtFifty[i], meets);
+            }
+        }
+
+        [Fact]
+        public void TrueLevelBuildRowsComposeWithFactionAndEffectiveLevelComponents()
+        {
+            PrerequisiteEntry dominionTransport = CreateEntry(
+                31171u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.BaseFaction, PrerequisiteComparison.Equal, (uint)Faction.Dominion, 0u),
+                (PrerequisiteType.TrueLevel, PrerequisiteComparison.GreaterThanOrEqual, 50u, 6548u));
+            PrerequisiteEntry exileTransport = CreateEntry(
+                31172u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.BaseFaction, PrerequisiteComparison.Equal, (uint)Faction.Exile, 0u),
+                (PrerequisiteType.TrueLevel, PrerequisiteComparison.GreaterThanOrEqual, 50u, 6548u));
+            PrerequisiteEntry boundedEffectiveLevel = CreateEntry(
+                35530u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.TrueLevel, PrerequisiteComparison.GreaterThanOrEqual, 4u, 0u),
+                (PrerequisiteType.Level, PrerequisiteComparison.LessThanOrEqual, 14u, 0u));
+            PrerequisiteEntry[] entries = [dominionTransport, exileTransport, boundedEffectiveLevel];
+            using var context = new ManagerContext(entries);
+            uint level = 50u;
+            Faction faction = Faction.Dominion;
+            Mock<IUnitEntity> unit = CreateUnit(
+                dynamicLevel: () => level,
+                dynamicFaction: () => faction);
+
+            foreach (PrerequisiteEntry entry in entries)
+                Assert.True(context.Manager.CanEvaluateForUnit(entry.Id));
+
+            Assert.True(context.Manager.TryMeets(unit.Object, dominionTransport.Id, out bool meets));
+            Assert.True(meets);
+            Assert.True(context.Manager.TryMeets(unit.Object, exileTransport.Id, out meets));
+            Assert.False(meets);
+            Assert.True(context.Manager.TryMeets(unit.Object, boundedEffectiveLevel.Id, out meets));
+            Assert.False(meets);
+
+            faction = Faction.Exile;
+            Assert.True(context.Manager.TryMeets(unit.Object, dominionTransport.Id, out meets));
+            Assert.False(meets);
+            Assert.True(context.Manager.TryMeets(unit.Object, exileTransport.Id, out meets));
+            Assert.True(meets);
+
+            level = 14u;
+            Assert.True(context.Manager.TryMeets(unit.Object, boundedEffectiveLevel.Id, out meets));
+            Assert.True(meets);
+        }
+
+        [Fact]
+        public void MalformedInactiveTrueLevelBuildRowRetainsLegacyPlayerEvaluationButIsUnitGated()
+        {
+            PrerequisiteEntry entry = CreateEntry(
+                26696u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.TrueLevel, PrerequisiteComparison.Equal, 50u, 0u));
+            entry.PrerequisiteComparisonId[1] = PrerequisiteComparison.LessThanOrEqual;
+            entry.Value[1] = 2u;
+            entry.PrerequisiteComparisonId[2] = PrerequisiteComparison.Equal;
+            using var context = new ManagerContext(entry);
+            var player = new Mock<IPlayer>(MockBehavior.Strict);
+            player.SetupGet(unit => unit.Level).Returns(50u);
+
+            Assert.True(context.Manager.Meets(player.Object, entry.Id, null));
+            Assert.False(context.Manager.CanEvaluateForUnit(entry.Id));
+            Assert.False(context.Manager.TryMeets(player.Object, entry.Id, out bool meets));
+            Assert.False(meets);
+            player.VerifyGet(unit => unit.Level, Times.Once);
+            player.VerifyNoOtherCalls();
+        }
+
+        [Fact]
         public void ValidFalsePredicate_IsDistinguishedFromEvaluationFailure()
         {
             PrerequisiteEntry entry = CreateEntry(
@@ -1144,11 +1276,13 @@ namespace NexusForever.Game.Tests.Prerequisite
             Func<uint> maximumHealth = null,
             Func<uint> creatureId = null,
             Func<uint> shield = null,
-            Func<uint> maximumShield = null)
+            Func<uint> maximumShield = null,
+            Func<uint> dynamicLevel = null,
+            Func<Faction> dynamicFaction = null)
         {
             var unit = new Mock<IUnitEntity>();
-            unit.SetupGet(entity => entity.Level).Returns(level);
-            unit.SetupGet(entity => entity.Faction1).Returns(faction);
+            unit.SetupGet(entity => entity.Level).Returns(() => dynamicLevel?.Invoke() ?? level);
+            unit.SetupGet(entity => entity.Faction1).Returns(() => dynamicFaction?.Invoke() ?? faction);
             unit.SetupGet(entity => entity.CreatureId).Returns(() => creatureId?.Invoke() ?? 0u);
             unit.SetupGet(entity => entity.IsAlive).Returns(() => alive?.Invoke() ?? true);
             unit.SetupGet(entity => entity.InCombat).Returns(() => inCombat?.Invoke() ?? false);
@@ -1280,6 +1414,7 @@ namespace NexusForever.Game.Tests.Prerequisite
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckShield>(PrerequisiteType.Shield215)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckShieldRequirement>(PrerequisiteType.Shield216)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDifficulty>(PrerequisiteType.Difficulty)
+                    .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckTrueLevel>(PrerequisiteType.TrueLevel)
                     .BuildServiceProvider();
 
                 Manager = new PrerequisiteManager(
