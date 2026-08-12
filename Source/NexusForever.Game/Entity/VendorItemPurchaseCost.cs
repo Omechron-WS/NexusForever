@@ -19,8 +19,8 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void AddCurrencyCost(CurrencyType currencyType, ulong cost)
         {
-            if (currencyCost.ContainsKey(currencyType))
-                currencyCost[currencyType] += cost;
+            if (currencyCost.TryGetValue(currencyType, out ulong existingCost))
+                currencyCost[currencyType] = checked(existingCost + cost);
             else
                 currencyCost.Add(currencyType, cost);
         }
@@ -30,8 +30,8 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void AddAccountCurrencyCost(AccountCurrencyType currencyType, ulong cost)
         {
-            if (accountCurrencyCost.ContainsKey(currencyType))
-                accountCurrencyCost[currencyType] += cost;
+            if (accountCurrencyCost.TryGetValue(currencyType, out ulong existingCost))
+                accountCurrencyCost[currencyType] = checked(existingCost + cost);
             else
                 accountCurrencyCost.Add(currencyType, cost);
         }
@@ -41,8 +41,8 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void AddItemCost(uint itemId, uint cost)
         {
-            if (itemCost.ContainsKey(itemId))
-                itemCost[itemId] += cost;
+            if (itemCost.TryGetValue(itemId, out uint existingCost))
+                itemCost[itemId] = checked(existingCost + cost);
             else
                 itemCost.Add(itemId, cost);
         }
