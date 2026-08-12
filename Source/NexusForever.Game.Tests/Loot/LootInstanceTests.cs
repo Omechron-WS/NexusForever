@@ -226,6 +226,67 @@ namespace NexusForever.Game.Tests.Loot
                 && message.LootItems[0].Explosion)), Times.Once);
         }
 
+        [Fact]
+        public void SendLootNotify_EagerDeliveryFailureStillAttemptsLaterItemWithoutReplay()
+        {
+            var instance = new LootInstance(1u, LootEntityType.Item, LooterType.Player, System.Numerics.Vector3.Zero)
+            {
+                Explosion = true
+            };
+            instance.AddLootItem(100u, LootItemType.StaticItem, 1u);
+            instance.AddLootItem(200u, LootItemType.StaticItem, 1u);
+            instance.AddLooter(1ul, 1u);
+            (IPlayer player, Mock<IGameSession> session, Mock<IInventory> inventory) = CreateMockPlayerState();
+            var attempts = new List<uint>();
+            LootInstanceItem[] items = instance.Cast<LootInstanceItem>().ToArray();
+            inventory.Setup(i => i.TryItemCreate(
+                    InventoryLocation.Inventory,
+                    100u,
+                    1u,
+                    out It.Ref<uint>.IsAny,
+                    ItemUpdateReason.Loot,
+                    0u))
+                .Callback(() => attempts.Add(100u))
+                .Throws(new InvalidOperationException("first reward failed"));
+            inventory.Setup(i => i.TryItemCreate(
+                    InventoryLocation.Inventory,
+                    200u,
+                    1u,
+                    out It.Ref<uint>.IsAny,
+                    ItemUpdateReason.Loot,
+                    0u))
+                .Callback(() => attempts.Add(200u))
+                .Returns(true);
+
+            Exception exception = Record.Exception(() => instance.SendLootNotify(player));
+
+            Assert.Null(exception);
+            Assert.Equal(new uint[] { 100u, 200u }, attempts);
+            Assert.True(instance.HasExpired);
+            Assert.All(items, item => Assert.True(item.Delivered));
+            session.Verify(s => s.EnqueueMessageEncrypted(It.Is<ServerLootNotify>(message =>
+                message.OwnerUnitId == 1u
+                && message.Explosion
+                && message.LootItems.Count == 2
+                && message.LootItems[0].LootUnitId == items[0].Id
+                && !message.LootItems[0].CanLoot
+                && message.LootItems[0].Explosion
+                && message.LootItems[1].LootUnitId == items[1].Id
+                && !message.LootItems[1].CanLoot
+                && message.LootItems[1].Explosion)), Times.Once);
+
+            instance.SendLootNotify(player);
+
+            Assert.Equal(new uint[] { 100u, 200u }, attempts);
+            inventory.Verify(i => i.TryItemCreate(
+                InventoryLocation.Inventory,
+                It.IsAny<uint>(),
+                It.IsAny<uint>(),
+                out It.Ref<uint>.IsAny,
+                ItemUpdateReason.Loot,
+                0u), Times.Exactly(2));
+        }
+
         private static IPlayer CreateMockPlayer(ulong characterId = 1, uint guid = 1)
         {
             return CreateMockPlayerState(characterId: characterId, guid: guid).Player;

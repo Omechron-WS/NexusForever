@@ -5,6 +5,7 @@ using System.Numerics;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Loot;
 using NexusForever.Game.Static.Loot;
+using NLog;
 using NetworkLootItem = NexusForever.Network.World.Message.Model.Loot.LootItem;
 using ServerLootNotify = NexusForever.Network.World.Message.Model.Loot.ServerLootNotify;
 
@@ -12,6 +13,8 @@ namespace NexusForever.Game.Loot
 {
     public class LootInstance : ILootInstance
     {
+        private static readonly ILogger log = LogManager.GetCurrentClassLogger();
+
         private const double ExpiryDuration = 1800d;
 
         public uint Guid { get; }
@@ -112,12 +115,12 @@ namespace NexusForever.Game.Loot
                 item.SetWinner(player.CharacterId, player.Guid);
 
                 if (deliverImmediately)
-                    item.DeliverItem(player, false);
+                    TryDeliverItem(item);
 
                 if (item.Type == LootItemType.AccountCurrency)
                 {
                     if (!item.Delivered)
-                        item.DeliverItem(player, false);
+                        TryDeliverItem(item);
 
                     if (item.Delivered)
                         lootItemList.AddRange(item.BuildForAccountCurrency());
@@ -142,6 +145,20 @@ namespace NexusForever.Game.Loot
                 Explosion    = Explosion,
                 LootItems    = lootItemList
             });
+
+            void TryDeliverItem(LootInstanceItem item)
+            {
+                try
+                {
+                    item.DeliverItem(player, false);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(
+                        exception,
+                        $"Failed to deliver loot item {item.Id} while notifying character {player.CharacterId}; later loot items will still be attempted.");
+                }
+            }
         }
 
         /// <summary>

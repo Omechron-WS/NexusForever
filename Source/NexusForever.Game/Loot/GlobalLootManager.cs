@@ -346,8 +346,21 @@ namespace NexusForever.Game.Loot
                     continue;
 
                 foreach (ILootInstanceItem lootItem in instance.ToList())
-                    if (!lootItem.Delivered)
+                {
+                    if (lootItem.Delivered)
+                        continue;
+
+                    try
+                    {
                         GiveLoot(looter, instance.Guid, lootItem.Id);
+                    }
+                    catch (Exception exception)
+                    {
+                        log.Error(
+                            exception,
+                            $"Failed to vacuum loot item {lootItem.Id} from source {instance.Guid} for character {looter.CharacterId}; later loot items will still be attempted.");
+                    }
+                }
             }
         }
 

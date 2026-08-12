@@ -509,6 +509,56 @@ namespace NexusForever.Game.Tests.Loot
         }
 
         [Fact]
+        public void GiveAllLootInRange_DeliveryFailureStillAttemptsLaterItemAndFinalisesOnce()
+        {
+            GlobalLootManager manager = CreateManager(
+                CreateLootTableData(
+                    [CreateEntityMapping(100u, 1ul), CreateEntityMapping(100u, 2ul)],
+                    [CreateLootGroup(1ul, staticItemId: 1001u), CreateLootGroup(2ul, staticItemId: 2001u)]),
+                () => 1d,
+                (_, _) => 0);
+            var inventory = new Mock<IInventory>();
+            var attempts = new List<uint>();
+            inventory.Setup(i => i.TryItemCreate(
+                    InventoryLocation.Inventory,
+                    1001u,
+                    1u,
+                    out It.Ref<uint>.IsAny,
+                    ItemUpdateReason.Loot,
+                    0u))
+                .Callback(() => attempts.Add(1001u))
+                .Throws(new InvalidOperationException("first reward failed"));
+            inventory.Setup(i => i.TryItemCreate(
+                    InventoryLocation.Inventory,
+                    2001u,
+                    1u,
+                    out It.Ref<uint>.IsAny,
+                    ItemUpdateReason.Loot,
+                    0u))
+                .Callback(() => attempts.Add(2001u))
+                .Returns(true);
+            IPlayer player = CreatePlayer(inventory, configureInventory: false);
+            Mock<IWorldEntity> entity = CreateEntityMock(100u);
+            manager.Initialise();
+            var instance = Assert.IsType<LootInstance>(manager.DropLoot(player, entity.Object));
+            uint[] lootItemIds = instance.Select(item => item.Id).ToArray();
+
+            Exception exception = Record.Exception(() => manager.GiveAllLootInRange(player));
+
+            Assert.Null(exception);
+            Assert.Equal(new uint[] { 1001u, 2001u }, attempts);
+            Assert.True(instance.HasExpired);
+            Assert.All(instance, item => Assert.True(item.Delivered));
+            Assert.All(lootItemIds, itemId => Assert.False(IsLootItemIndexed(manager, itemId)));
+            entity.Verify(owner => owner.RemoveLoot(instance), Times.Once);
+
+            manager.GiveAllLootInRange(player);
+
+            Assert.Equal(new uint[] { 1001u, 2001u }, attempts);
+            entity.Verify(owner => owner.RemoveLoot(instance), Times.Once);
+        }
+
+        [Fact]
         public void Update_ExpiredLoot_DetachesLootFromOwner()
         {
             GlobalLootManager manager = CreateManager(CreateLootTableData(
