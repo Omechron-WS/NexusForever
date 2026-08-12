@@ -857,33 +857,79 @@ namespace NexusForever.Game.Entity
 
         protected override void OnZoneUpdate()
         {
-            if (Zone != null)
-            {
-                TextTable tt = GameTableManager.Instance.GetTextTable(Language.English);
-                if (tt != null)
-                {
-                    GlobalChatManager.Instance.SendMessage(Session, $"New Zone: ({Zone.Id}){tt.GetEntry(Zone.LocalizedTextIdName)}");
-                }
+            ZoneTransition transition = CurrentZoneTransition;
+            if (transition == null)
+                return;
 
-                uint tutorialId = AssetManager.Instance.GetTutorialIdForZone(Zone.Id);
-                if (tutorialId > 0)
+            WorldZoneEntry zone = transition.Zone;
+            DispatchZoneObservers(
+                () => IsCurrentZoneTransition(transition),
+                () => QuestManager.ObjectiveUpdate(QuestObjectiveType.EnterZone, zone.Id, 1),
+                ZoneMapManager.OnZoneUpdate,
+                () =>
                 {
-                    Session.EnqueueMessageEncrypted(new ServerTutorial
+                    TextTable tt = GameTableManager.Instance.GetTextTable(Language.English);
+                    if (tt != null)
+                        GlobalChatManager.Instance.SendMessage(Session, $"New Zone: ({zone.Id}){tt.GetEntry(zone.LocalizedTextIdName)}");
+                },
+                () =>
+                {
+                    uint tutorialId = AssetManager.Instance.GetTutorialIdForZone(zone.Id);
+                    if (tutorialId > 0)
                     {
-                        TutorialId = tutorialId
-                    });
+                        Session.EnqueueMessageEncrypted(new ServerTutorial
+                        {
+                            TutorialId = tutorialId
+                        });
+                    }
+                },
+                () =>
+                {
+                    messagePublisher.PublishAsync(new PlayerWorldZoneUpdatedMessage
+                    {
+                        Identity    = Identity.ToInternalIdentity(),
+                        WorldZoneId = (ushort)zone.Id,
+                    }).FireAndForgetAsync();
+                },
+                (observer, exception) =>
+                    log.Error(exception, $"Failed to notify {observer} observer for player {Guid} zone {zone.Id} transition."));
+        }
+
+        internal static void DispatchZoneObservers(
+            Func<bool> isCurrent,
+            Action quest,
+            Action zoneMap,
+            Action chat,
+            Action tutorial,
+            Action presence,
+            Action<string, Exception> onFailure)
+        {
+            (string Name, Action Action)[] observers =
+            [
+                ("quest", quest),
+                ("zone map", zoneMap),
+                ("chat", chat),
+                ("tutorial", tutorial),
+                ("presence", presence)
+            ];
+
+            foreach ((string name, Action action) in observers)
+            {
+                if (!isCurrent())
+                    return;
+
+                try
+                {
+                    action();
+                }
+                catch (Exception exception)
+                {
+                    onFailure(name, exception);
                 }
 
-                QuestManager.ObjectiveUpdate(QuestObjectiveType.EnterZone, Zone.Id, 1);
+                if (!isCurrent())
+                    return;
             }
-
-            ZoneMapManager.OnZoneUpdate();
-
-            messagePublisher.PublishAsync(new PlayerWorldZoneUpdatedMessage
-            {
-                Identity    = Identity.ToInternalIdentity(),
-                WorldZoneId = (ushort)Zone?.Id,
-            }).FireAndForgetAsync();
         }
 
         private void SendPacketsAfterAddToMap()

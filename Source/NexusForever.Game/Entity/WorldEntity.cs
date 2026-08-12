@@ -40,7 +40,24 @@ namespace NexusForever.Game.Entity
             set => MovementManager.SetRotation(value, false);
         }
 
+        protected sealed class ZoneTransition
+        {
+            public IBaseMap Map { get; }
+            public WorldZoneEntry Zone { get; }
+
+            public ZoneTransition(IBaseMap map, WorldZoneEntry zone)
+            {
+                Map  = map;
+                Zone = zone;
+            }
+        }
+
         public WorldZoneEntry Zone { get; private set; }
+        protected ZoneTransition CurrentZoneTransition => zoneTransition;
+
+        private ZoneTransition zoneTransition;
+        private bool zoneTransitionsEnabled;
+
         public uint EntityId { get; protected set; }
 
         public uint CreatureId
@@ -260,7 +277,8 @@ namespace NexusForever.Game.Entity
 
             base.OnAddToMap(map, guid, vector);
 
-            UpdateZone(vector);
+            zoneTransitionsEnabled = true;
+            UpdateZone(Position);
         }
 
         /// <summary>
@@ -268,6 +286,10 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public override void OnRemoveFromMap()
         {
+            // Invalidate any synchronous observers still publishing the previous zone transition.
+            zoneTransitionsEnabled = false;
+            zoneTransition         = null;
+
             foreach (uint platformPassengerGuid in platformPassengerGuids.ToList())
             {
                 IWorldEntity worldEntity = Map.GetEntity<IWorldEntity>(platformPassengerGuid);
@@ -280,6 +302,7 @@ namespace NexusForever.Game.Entity
             }
 
             base.OnRemoveFromMap();
+            Zone = null;
         }
 
         public override void OnRelocate(Vector3 vector)
@@ -290,16 +313,62 @@ namespace NexusForever.Game.Entity
 
         private void UpdateZone(Vector3 vector)
         {
-            uint? worldAreaId = Map.File.GetWorldAreaId(vector);
-            if (worldAreaId.HasValue && Zone?.Id != worldAreaId)
+            if (!zoneTransitionsEnabled)
+                return;
+
+            IBaseMap map = Map;
+            if (map == null)
+                return;
+
+            uint? worldAreaId = map.File.GetWorldAreaId(vector);
+            if (!worldAreaId.HasValue)
+                return;
+
+            if (ReferenceEquals(zoneTransition?.Map, map) && zoneTransition.Zone.Id == worldAreaId.Value)
+                return;
+
+            WorldZoneEntry zone = GameTableManager.Instance.WorldZone.GetEntry(worldAreaId.Value);
+            if (zone == null)
+                return;
+
+            var transition = new ZoneTransition(map, zone);
+            Zone           = zone;
+            zoneTransition = transition;
+
+            try
             {
-                Zone = GameTableManager.Instance.WorldZone.GetEntry(worldAreaId.Value);
-                if (Zone != null)
-                {
-                    OnZoneUpdate();
-                    scriptCollection?.Invoke<IWorldEntityScript>(s => s.OnEnterZone(this, Zone.Id));
-                }
+                OnZoneUpdate();
             }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to notify entity {Guid} of zone {zone.Id} transition.");
+            }
+
+            if (!IsCurrentZoneTransition(transition))
+                return;
+
+            try
+            {
+                scriptCollection?.Invoke<IWorldEntityScript>(script =>
+                {
+                    if (IsCurrentZoneTransition(transition))
+                        script.OnEnterZone(this, zone.Id);
+                });
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to publish entity {Guid} zone {zone.Id} transition to scripts.");
+            }
+        }
+
+        /// <summary>
+        /// Returns whether the supplied zone transition remains authoritative.
+        /// </summary>
+        protected bool IsCurrentZoneTransition(ZoneTransition transition)
+        {
+            return ReferenceEquals(zoneTransition, transition)
+                && ReferenceEquals(Map, transition.Map)
+                && ReferenceEquals(Zone, transition.Zone);
         }
 
         /// <summary>
