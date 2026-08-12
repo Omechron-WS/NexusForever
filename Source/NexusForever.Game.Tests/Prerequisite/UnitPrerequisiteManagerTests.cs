@@ -558,6 +558,166 @@ namespace NexusForever.Game.Tests.Prerequisite
         }
 
         [Fact]
+        public void ShieldBuildRowsReevaluatePercentageAbsoluteAndIgnoredObjects()
+        {
+            PrerequisiteEntry highShield = CreateEntry(
+                35982u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Shield215, PrerequisiteComparison.GreaterThanOrEqual, 25u, 3u));
+            PrerequisiteEntry lowOrEmptyShield = CreateEntry(
+                40239u,
+                EvaluationMode.EvaluateOR,
+                (PrerequisiteType.Shield215, PrerequisiteComparison.LessThan, 25u, 3u),
+                (PrerequisiteType.Shield216, PrerequisiteComparison.LessThanOrEqual, 0u, 0u));
+            PrerequisiteEntry positiveLowShield = CreateEntry(
+                38497u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Shield215, PrerequisiteComparison.LessThan, 25u, 0u),
+                (PrerequisiteType.Shield216, PrerequisiteComparison.GreaterThan, 0u, 0u));
+            PrerequisiteEntry middleShieldBand = CreateEntry(
+                38498u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Shield215, PrerequisiteComparison.LessThan, 50u, 0u),
+                (PrerequisiteType.Shield215, PrerequisiteComparison.GreaterThanOrEqual, 25u, 0u));
+            PrerequisiteEntry creatureAtCriticalShield = CreateEntry(
+                36015u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.Equal, 67_575u, 0u),
+                (PrerequisiteType.Shield215, PrerequisiteComparison.LessThanOrEqual, 5u, 0u));
+            PrerequisiteEntry[] entries =
+            [
+                highShield,
+                lowOrEmptyShield,
+                positiveLowShield,
+                middleShieldBand,
+                creatureAtCriticalShield
+            ];
+            using var context = new ManagerContext(entries);
+            uint shield = 25u;
+            uint maximumShield = 100u;
+            uint creatureId = 67_575u;
+            Mock<IUnitEntity> unit = CreateUnit(
+                creatureId: () => creatureId,
+                shield: () => shield,
+                maximumShield: () => maximumShield);
+
+            foreach (PrerequisiteEntry entry in entries)
+                Assert.True(context.Manager.CanEvaluateForUnit(entry.Id));
+
+            Assert.True(context.Manager.TryMeets(unit.Object, highShield.Id, out bool meets));
+            Assert.True(meets);
+            Assert.True(context.Manager.TryMeets(unit.Object, lowOrEmptyShield.Id, out meets));
+            Assert.False(meets);
+            Assert.True(context.Manager.TryMeets(unit.Object, middleShieldBand.Id, out meets));
+            Assert.True(meets);
+
+            shield = 24u;
+
+            Assert.True(context.Manager.TryMeets(unit.Object, highShield.Id, out meets));
+            Assert.False(meets);
+            Assert.True(context.Manager.TryMeets(unit.Object, lowOrEmptyShield.Id, out meets));
+            Assert.True(meets);
+            Assert.True(context.Manager.TryMeets(unit.Object, positiveLowShield.Id, out meets));
+            Assert.True(meets);
+            Assert.True(context.Manager.TryMeets(unit.Object, middleShieldBand.Id, out meets));
+            Assert.False(meets);
+
+            shield = 5u;
+
+            Assert.True(context.Manager.TryMeets(unit.Object, creatureAtCriticalShield.Id, out meets));
+            Assert.True(meets);
+
+            creatureId = 67_576u;
+
+            Assert.True(context.Manager.TryMeets(unit.Object, creatureAtCriticalShield.Id, out meets));
+            Assert.False(meets);
+
+            shield = 0u;
+
+            Assert.True(context.Manager.TryMeets(unit.Object, positiveLowShield.Id, out meets));
+            Assert.False(meets);
+            Assert.True(context.Manager.TryMeets(unit.Object, lowOrEmptyShield.Id, out meets));
+            Assert.True(meets);
+            unit.VerifyGet(entity => entity.Shield, Times.AtLeastOnce);
+            unit.VerifyGet(entity => entity.MaxShieldCapacity, Times.AtLeastOnce);
+        }
+
+        [Fact]
+        public void UnsupportedAndMalformedShieldRowsRemainWhollyGated()
+        {
+            PrerequisiteEntry underSpell = CreateEntry(
+                36634u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.UnderSpell, PrerequisiteComparison.Equal, 78_221u, 0u),
+                (PrerequisiteType.Shield215, PrerequisiteComparison.LessThan, 50u, 0u));
+            PrerequisiteEntry unknownAbsoluteCompanion = CreateEntry(
+                24572u,
+                EvaluationMode.EvaluateOR,
+                (PrerequisiteType.Unknown71, PrerequisiteComparison.LessThanOrEqual, 30u, 3u),
+                (PrerequisiteType.Shield216, PrerequisiteComparison.Equal, 0u, 0u));
+            PrerequisiteEntry malformedInactive = CreateEntry(
+                38500u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Shield215, PrerequisiteComparison.GreaterThanOrEqual, 75u, 0u));
+            malformedInactive.PrerequisiteComparisonId[1] = PrerequisiteComparison.Equal;
+            PrerequisiteEntry invalidComparison = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Shield216, (PrerequisiteComparison)999, 0u, uint.MaxValue));
+            PrerequisiteEntry[] entries =
+            [
+                underSpell,
+                unknownAbsoluteCompanion,
+                malformedInactive,
+                invalidComparison
+            ];
+            using var context = new ManagerContext(entries);
+            var unit = new Mock<IUnitEntity>(MockBehavior.Strict);
+
+            foreach (PrerequisiteEntry entry in entries)
+            {
+                Assert.False(context.Manager.CanEvaluateForUnit(entry.Id));
+                Assert.False(context.Manager.TryMeets(unit.Object, entry.Id, out bool meets));
+                Assert.False(meets);
+            }
+
+            unit.VerifyNoOtherCalls();
+        }
+
+        [Theory]
+        [InlineData(PrerequisiteType.Shield215)]
+        [InlineData(PrerequisiteType.Shield216)]
+        public void ShieldReadExceptionIsContainedAsEvaluationFailure(PrerequisiteType type)
+        {
+            PrerequisiteEntry entry = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (type, PrerequisiteComparison.GreaterThanOrEqual, 1u, uint.MaxValue));
+            using var context = new ManagerContext(entry);
+            var unit = new Mock<IUnitEntity>();
+            unit.SetupGet(entity => entity.Shield).Returns(50u);
+            if (type == PrerequisiteType.Shield215)
+            {
+                unit.SetupGet(entity => entity.MaxShieldCapacity)
+                    .Throws(new InvalidOperationException("Test max-shield read failure."));
+            }
+            else
+            {
+                unit.SetupGet(entity => entity.Shield)
+                    .Throws(new InvalidOperationException("Test current-shield read failure."));
+            }
+
+            Exception exception = Record.Exception(() =>
+            {
+                Assert.True(context.Manager.CanEvaluateForUnit(entry.Id));
+                Assert.False(context.Manager.TryMeets(unit.Object, entry.Id, out bool meets));
+                Assert.False(meets);
+            });
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
         public void HealthRequirementBuildRows_EvaluateCurrentAbsoluteHealthDynamically()
         {
             PrerequisiteEntry greaterThanOne = CreateEntry(
@@ -982,7 +1142,9 @@ namespace NexusForever.Game.Tests.Prerequisite
             Func<bool> inCombat = null,
             Func<uint> health = null,
             Func<uint> maximumHealth = null,
-            Func<uint> creatureId = null)
+            Func<uint> creatureId = null,
+            Func<uint> shield = null,
+            Func<uint> maximumShield = null)
         {
             var unit = new Mock<IUnitEntity>();
             unit.SetupGet(entity => entity.Level).Returns(level);
@@ -992,6 +1154,8 @@ namespace NexusForever.Game.Tests.Prerequisite
             unit.SetupGet(entity => entity.InCombat).Returns(() => inCombat?.Invoke() ?? false);
             unit.SetupGet(entity => entity.Health).Returns(() => health?.Invoke() ?? 1u);
             unit.SetupGet(entity => entity.MaxHealth).Returns(() => maximumHealth?.Invoke() ?? 1u);
+            unit.SetupGet(entity => entity.Shield).Returns(() => shield?.Invoke() ?? 0u);
+            unit.SetupGet(entity => entity.MaxShieldCapacity).Returns(() => maximumShield?.Invoke() ?? 0u);
             unit.Setup(entity => entity.TryGetVitalValue(
                     It.IsAny<Vital>(),
                     out It.Ref<float>.IsAny))
@@ -1113,6 +1277,8 @@ namespace NexusForever.Game.Tests.Prerequisite
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckIsCreature>(PrerequisiteType.IsCreature)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealth>(PrerequisiteType.Health)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealthRequirement>(PrerequisiteType.HealthRequirement)
+                    .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckShield>(PrerequisiteType.Shield215)
+                    .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckShieldRequirement>(PrerequisiteType.Shield216)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDifficulty>(PrerequisiteType.Difficulty)
                     .BuildServiceProvider();
 

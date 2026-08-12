@@ -600,6 +600,143 @@ namespace NexusForever.Game.Tests.Spell
             target.VerifyGet(unit => unit.MaxHealth, Times.Once);
         }
 
+        [Theory]
+        [InlineData(23053u, 0u, true)]
+        [InlineData(23408u, 75u, false)]
+        [InlineData(23408u, 76u, true)]
+        public void LegacyCasterCast_ShieldBuildRowsUseCurrentPlayerShield(
+            uint prerequisiteId,
+            uint casterShield,
+            bool expectedInvocation)
+        {
+            PrerequisiteEntry prerequisite = prerequisiteId switch
+            {
+                23053u => CreateEntry(
+                    prerequisiteId,
+                    EvaluationMode.EvaluateAND,
+                    (PrerequisiteType.Shield215, PrerequisiteComparison.GreaterThanOrEqual, 0u, 0u)),
+                23408u => CreateEntry(
+                    prerequisiteId,
+                    EvaluationMode.EvaluateAND,
+                    (PrerequisiteType.Shield215, PrerequisiteComparison.GreaterThan, 75u, 0u)),
+                _ => throw new ArgumentOutOfRangeException(nameof(prerequisiteId))
+            };
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterShield = casterShield,
+                CasterMaxShieldCapacity = 100u
+            };
+            Mock<IUnitEntity> target = context.CreateTarget(42u);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(200_854u, cost: 10u),
+                casterCastPrerequisite: prerequisite,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            if (expectedInvocation)
+                spell.Update(0d);
+
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Invocations.Count);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Packets.OfType<ServerSpellGo>().Count());
+            if (!expectedInvocation)
+            {
+                Assert.True(spell.IsFinishing);
+                Assert.Empty(context.CostMutations);
+                Assert.Empty(context.Packets.OfType<ServerSpellStart>());
+                ServerSpellCastResult result = Assert.Single(
+                    context.SessionPackets.OfType<ServerSpellCastResult>());
+                Assert.Equal(CastResult.PrereqCasterCast, result.CastResult);
+            }
+
+            Assert.Equal(1, context.CasterShieldReads);
+            Assert.Equal(1, context.CasterMaxShieldCapacityReads);
+            target.VerifyGet(unit => unit.Shield, Times.Never);
+            target.VerifyGet(unit => unit.MaxShieldCapacity, Times.Never);
+        }
+
+        [Fact]
+        public void LegacyCasterCast_ShieldFailurePrecedesTargetCastStartAndCost()
+        {
+            PrerequisiteEntry casterPrerequisite = CreateEntry(
+                23408u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Shield215, PrerequisiteComparison.GreaterThan, 75u, 0u));
+            PrerequisiteEntry targetPrerequisite = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Level, PrerequisiteComparison.GreaterThanOrEqual, 1u, 0u));
+            using var context = new SpellPrerequisiteContext(
+                casterPrerequisite,
+                targetPrerequisite)
+            {
+                CasterShield = 75u,
+                CasterMaxShieldCapacity = 100u
+            };
+            Mock<IUnitEntity> target = context.CreateTarget(
+                42u,
+                level: () => throw new InvalidOperationException("Target level must not be read."),
+                shield: () => throw new InvalidOperationException("Target shield must not be read."),
+                maximumShield: () => throw new InvalidOperationException("Target max shield must not be read."));
+            context.Caster.Setup(unit => unit.GetVisible<IWorldEntity>(42u))
+                .Returns(target.Object);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(200_854u, cost: 10u),
+                casterCastPrerequisite: casterPrerequisite,
+                targetCastPrerequisite: targetPrerequisite,
+                primaryTargetId: 42u,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+
+            Assert.True(spell.IsFinishing);
+            ServerSpellCastResult result = Assert.Single(
+                context.SessionPackets.OfType<ServerSpellCastResult>());
+            Assert.Equal(CastResult.PrereqCasterCast, result.CastResult);
+            Assert.Empty(context.CostMutations);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<ServerSpellStart>());
+            Assert.Empty(context.Packets.OfType<ServerSpellGo>());
+            Assert.Equal(1, context.CasterShieldReads);
+            Assert.Equal(1, context.CasterMaxShieldCapacityReads);
+            context.Caster.Verify(unit => unit.GetVisible<IWorldEntity>(42u), Times.Never);
+            target.VerifyGet(unit => unit.Level, Times.Never);
+            target.VerifyGet(unit => unit.Shield, Times.Never);
+            target.VerifyGet(unit => unit.MaxShieldCapacity, Times.Never);
+        }
+
+        [Fact]
+        public void LegacyCasterCast_ShieldBuildRowPreservesNpcBypass()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                23408u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Shield215, PrerequisiteComparison.GreaterThan, 75u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            Mock<IUnitEntity> npc = context.CreateTarget(
+                50u,
+                shield: () => throw new InvalidOperationException("NPC caster shield must not be read."),
+                maximumShield: () => throw new InvalidOperationException("NPC caster max shield must not be read."));
+            Mock<IUnitEntity> target = context.CreateTarget(42u);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(200_854u),
+                casterCastPrerequisite: prerequisite,
+                caster: npc.Object,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            spell.Update(0d);
+
+            Assert.False(spell.IsFinishing);
+            Assert.Single(context.Invocations);
+            Assert.Single(context.Packets.OfType<ServerSpellStart>());
+            Assert.Single(context.Packets.OfType<ServerSpellGo>());
+            Assert.Empty(context.SessionPackets.OfType<ServerSpellCastResult>());
+            npc.VerifyGet(unit => unit.Shield, Times.Never);
+            npc.VerifyGet(unit => unit.MaxShieldCapacity, Times.Never);
+            target.VerifyGet(unit => unit.Shield, Times.Never);
+            target.VerifyGet(unit => unit.MaxShieldCapacity, Times.Never);
+        }
+
         [Fact]
         public void TargetCast_UnmetVisibleTargetFailsBeforeStart()
         {
@@ -1116,6 +1253,187 @@ namespace NexusForever.Game.Tests.Spell
         }
 
         [Theory]
+        [InlineData(35982u, 25u, true)]
+        [InlineData(35982u, 24u, false)]
+        [InlineData(40239u, 25u, false)]
+        [InlineData(40239u, 24u, true)]
+        [InlineData(40239u, 0u, true)]
+        public void UnitApply_ShieldBurstBuildRowsAreComplementaryBeforeCostAndHandler(
+            uint prerequisiteId,
+            uint shield,
+            bool expectedInvocation)
+        {
+            PrerequisiteEntry highShield = CreateEntry(
+                35982u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Shield215, PrerequisiteComparison.GreaterThanOrEqual, 25u, 3u));
+            PrerequisiteEntry lowOrEmptyShield = CreateEntry(
+                40239u,
+                EvaluationMode.EvaluateOR,
+                (PrerequisiteType.Shield215, PrerequisiteComparison.LessThan, 25u, 3u),
+                (PrerequisiteType.Shield216, PrerequisiteComparison.LessThanOrEqual, 0u, 0u));
+            using var context = new SpellPrerequisiteContext(highShield, lowOrEmptyShield)
+            {
+                CasterShield = shield,
+                CasterMaxShieldCapacity = 100u
+            };
+            float? resourceAtHandler = null;
+            context.Handler = (_, _, _) => resourceAtHandler = context.CasterResource1;
+            Mock<IUnitEntity> target = context.CreateTarget(10u);
+            Spell4EffectsEntry effect = CreateEffect(
+                prerequisiteId == highShield.Id ? 200_854u : 138_039u,
+                casterPrerequisite: prerequisiteId,
+                cost: 10u);
+            TestApplyPrerequisiteSpell spell = context.CreateSpell(
+                effect,
+                (SpellEffectTargetFlags.Target, target.Object));
+
+            spell.ExecuteForTest();
+
+            Assert.Equal(expectedInvocation ? 90f : 100f, context.CasterResource1);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.CostMutations.Count);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.InvocationAttempts);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Invocations.Count);
+            Assert.Equal(expectedInvocation ? (float?)90f : null, resourceAtHandler);
+            Assert.Equal(
+                expectedInvocation ? 1 : 0,
+                Assert.Single(context.Packets.OfType<ServerSpellGo>()).TargetInfoData.Count);
+            Assert.Equal(prerequisiteId == 35982u ? 1 : 2, context.CasterShieldReads);
+            Assert.Equal(1, context.CasterMaxShieldCapacityReads);
+            target.VerifyGet(unit => unit.Shield, Times.Never);
+            target.VerifyGet(unit => unit.MaxShieldCapacity, Times.Never);
+        }
+
+        [Theory]
+        [InlineData(67_575u, 5u, true)]
+        [InlineData(67_575u, 6u, false)]
+        [InlineData(67_576u, 5u, false)]
+        public void UnitApply_IsCreatureAndShieldBuildRowUsesExactTarget(
+            uint creatureId,
+            uint shield,
+            bool expectedInvocation)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                36015u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.Equal, 67_575u, 0u),
+                (PrerequisiteType.Shield215, PrerequisiteComparison.LessThanOrEqual, 5u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            float? resourceAtHandler = null;
+            context.Handler = (_, _, _) => resourceAtHandler = context.CasterResource1;
+            Mock<IUnitEntity> target = context.CreateTarget(
+                10u,
+                creatureId: () => creatureId,
+                shield: () => shield,
+                maximumShield: () => 100u);
+            Spell4EffectsEntry effect = CreateEffect(
+                201_698u,
+                targetPrerequisite: prerequisite.Id,
+                cost: 10u);
+            TestApplyPrerequisiteSpell spell = context.CreateSpell(
+                effect,
+                (SpellEffectTargetFlags.Target, target.Object));
+
+            spell.ExecuteForTest();
+
+            Assert.Equal(expectedInvocation ? 90f : 100f, context.CasterResource1);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.CostMutations.Count);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.InvocationAttempts);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Invocations.Count);
+            Assert.Equal(expectedInvocation ? (float?)90f : null, resourceAtHandler);
+            Assert.Equal(
+                expectedInvocation ? 1 : 0,
+                Assert.Single(context.Packets.OfType<ServerSpellGo>()).TargetInfoData.Count);
+            target.VerifyGet(unit => unit.CreatureId, Times.Once);
+            target.VerifyGet(unit => unit.Shield, Times.Once);
+            target.VerifyGet(unit => unit.MaxShieldCapacity, Times.Once);
+        }
+
+        [Fact]
+        public void UnsupportedUnderSpellAndShieldBuildRowNeverRegistersOrReadsState()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                36634u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.UnderSpell, PrerequisiteComparison.Equal, 78_221u, 0u),
+                (PrerequisiteType.Shield215, PrerequisiteComparison.LessThan, 50u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterShield = 49u,
+                CasterMaxShieldCapacity = 100u
+            };
+            Mock<IUnitEntity> target = context.CreateTarget(10u);
+            Spell4EffectsEntry effect = CreateEffect(
+                205_089u,
+                casterPrerequisite: prerequisite.Id,
+                delayTime: 100u,
+                cost: 10u);
+            TestApplyPrerequisiteSpell spell = context.CreateSpell(
+                effect,
+                (SpellEffectTargetFlags.Target, target.Object));
+
+            spell.ExecuteForTest();
+            spell.Update(1d);
+
+            Assert.Equal(100f, context.CasterResource1);
+            Assert.Empty(context.CostMutations);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<Server07F8>());
+            Assert.Empty(Assert.Single(context.Packets.OfType<ServerSpellGo>()).TargetInfoData);
+            Assert.Equal(0, context.CasterShieldReads);
+            Assert.Equal(0, context.CasterMaxShieldCapacityReads);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void EffectShieldPersistenceBuildRowsRemainGatedWithoutStateReads(
+            bool targetPersistence)
+        {
+            PrerequisiteEntry casterPrerequisite = CreateEntry(
+                23408u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Shield215, PrerequisiteComparison.GreaterThan, 75u, 0u));
+            PrerequisiteEntry targetPrerequisite = CreateEntry(
+                38497u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Shield215, PrerequisiteComparison.LessThan, 25u, 0u),
+                (PrerequisiteType.Shield216, PrerequisiteComparison.GreaterThan, 0u, 0u));
+            using var context = new SpellPrerequisiteContext(
+                casterPrerequisite,
+                targetPrerequisite)
+            {
+                CasterShield = 100u,
+                CasterMaxShieldCapacity = 100u
+            };
+            Mock<IUnitEntity> target = context.CreateTarget(
+                10u,
+                shield: () => throw new InvalidOperationException("Gated target-shield read."),
+                maximumShield: () => throw new InvalidOperationException("Gated target max-shield read."));
+            Spell4EffectsEntry effect = CreateEffect(1u, delayTime: 100u, cost: 10u);
+            if (targetPersistence)
+                effect.PrerequisiteIdTargetPersistence = targetPrerequisite.Id;
+            else
+                effect.PrerequisiteIdCasterPersistence = casterPrerequisite.Id;
+            TestApplyPrerequisiteSpell spell = context.CreateSpell(
+                effect,
+                (SpellEffectTargetFlags.Target, target.Object));
+
+            spell.ExecuteForTest();
+            spell.Update(1d);
+
+            Assert.Equal(100f, context.CasterResource1);
+            Assert.Empty(context.CostMutations);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<Server07F8>());
+            Assert.Empty(Assert.Single(context.Packets.OfType<ServerSpellGo>()).TargetInfoData);
+            Assert.Equal(0, context.CasterShieldReads);
+            Assert.Equal(0, context.CasterMaxShieldCapacityReads);
+            target.VerifyGet(unit => unit.Shield, Times.Never);
+            target.VerifyGet(unit => unit.MaxShieldCapacity, Times.Never);
+        }
+
+        [Theory]
         [InlineData(WorldDifficulty.Normal, WorldDifficulty.Normal, WorldDifficulty.Normal, true)]
         [InlineData(WorldDifficulty.Veteran, WorldDifficulty.Veteran, WorldDifficulty.Veteran, true)]
         [InlineData(WorldDifficulty.Normal, WorldDifficulty.Normal, WorldDifficulty.Veteran, false)]
@@ -1379,6 +1697,79 @@ namespace NexusForever.Game.Tests.Spell
         }
 
         [Fact]
+        public void SpellCasterPersistence_ShieldBuildRowReevaluatesCurrentCaster()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                37078u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Shield215, PrerequisiteComparison.GreaterThanOrEqual, 50u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterShield = 60u,
+                CasterMaxShieldCapacity = 100u
+            };
+            Mock<IUnitEntity> target = context.CreateTarget(
+                42u,
+                shield: () => throw new InvalidOperationException("Target shield must not be read."),
+                maximumShield: () => throw new InvalidOperationException("Target max shield must not be read."));
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                CreateEffect(1u, delayTime: 100u),
+                casterPersistencePrerequisite: prerequisite.Id,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            Assert.True(spell.IsCasting);
+
+            context.CasterShield = 49u;
+            spell.Update(0.1d);
+
+            Assert.True(spell.IsFinishing);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<ServerSpellGo>());
+            Assert.Equal(2, context.CasterShieldReads);
+            Assert.Equal(2, context.CasterMaxShieldCapacityReads);
+            target.VerifyGet(unit => unit.Shield, Times.Never);
+            target.VerifyGet(unit => unit.MaxShieldCapacity, Times.Never);
+        }
+
+        [Fact]
+        public void SpellCasterPersistence_ShieldReadFailureFailsBeforeStart()
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                37078u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Shield215, PrerequisiteComparison.GreaterThanOrEqual, 50u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterShield = 60u
+            };
+            context.Caster.SetupGet(unit => unit.MaxShieldCapacity)
+                .Throws(new InvalidOperationException(
+                    "Test caster persistence max-shield read failure."));
+            Mock<IUnitEntity> target = context.CreateTarget(42u);
+            TestApplyPrerequisiteSpell spell = context.CreatePersistenceSpell(
+                CreateEffect(1u, cost: 10u),
+                casterPersistencePrerequisite: prerequisite.Id,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            Exception exception = Record.Exception(spell.Cast);
+
+            Assert.Null(exception);
+            Assert.True(spell.IsFinishing);
+            ServerSpellCastResult result = Assert.Single(
+                context.SessionPackets.OfType<ServerSpellCastResult>());
+            Assert.Equal(CastResult.PrereqCasterPersistence, result.CastResult);
+            Assert.Empty(context.CostMutations);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<ServerSpellStart>());
+            Assert.Empty(context.Packets.OfType<ServerSpellGo>());
+            Assert.Equal(1, context.CasterShieldReads);
+            context.Caster.VerifyGet(unit => unit.MaxShieldCapacity, Times.Once);
+            target.VerifyGet(unit => unit.Shield, Times.Never);
+            target.VerifyGet(unit => unit.MaxShieldCapacity, Times.Never);
+        }
+
+        [Fact]
         public void CasterAndTargetGates_FilterBeforeEffectCostAndHandler()
         {
             PrerequisiteEntry casterPrerequisite = CreateEntry(
@@ -1615,6 +2006,12 @@ namespace NexusForever.Game.Tests.Spell
         [InlineData(PrerequisiteType.Health, 0)]
         [InlineData(PrerequisiteType.Health, 1)]
         [InlineData(PrerequisiteType.Health, 2)]
+        [InlineData(PrerequisiteType.Shield215, 0)]
+        [InlineData(PrerequisiteType.Shield215, 1)]
+        [InlineData(PrerequisiteType.Shield215, 2)]
+        [InlineData(PrerequisiteType.Shield216, 0)]
+        [InlineData(PrerequisiteType.Shield216, 1)]
+        [InlineData(PrerequisiteType.Shield216, 2)]
         public void UnitSafeEffectPersistenceOrSuspendPrerequisite_RemainsGated(
             PrerequisiteType type,
             int field)
@@ -2369,6 +2766,10 @@ namespace NexusForever.Game.Tests.Spell
             public uint CasterCreatureId { get; set; }
             public uint CasterHealth { get; set; } = 100u;
             public uint CasterMaxHealth { get; set; } = 100u;
+            public uint CasterShield { get; set; }
+            public uint CasterMaxShieldCapacity { get; set; } = 100u;
+            public int CasterShieldReads { get; private set; }
+            public int CasterMaxShieldCapacityReads { get; private set; }
             public Faction CasterFaction { get; set; } = Faction.Exile;
             public bool CasterAlive { get; set; } = true;
             public bool CasterInCombat { get; set; }
@@ -2425,6 +2826,8 @@ namespace NexusForever.Game.Tests.Spell
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckIsCreature>(PrerequisiteType.IsCreature);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealth>(PrerequisiteType.Health);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealthRequirement>(PrerequisiteType.HealthRequirement);
+                services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckShield>(PrerequisiteType.Shield215);
+                services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckShieldRequirement>(PrerequisiteType.Shield216);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDifficulty>(PrerequisiteType.Difficulty);
                 services.AddSingleton<PrerequisiteManager>();
                 services.AddSingleton<IPrerequisiteManager>(provider => provider.GetRequiredService<PrerequisiteManager>());
@@ -2449,6 +2852,16 @@ namespace NexusForever.Game.Tests.Spell
                 Caster.SetupGet(entity => entity.InCombat).Returns(() => CasterInCombat);
                 Caster.SetupGet(entity => entity.Health).Returns(() => CasterHealth);
                 Caster.SetupGet(entity => entity.MaxHealth).Returns(() => CasterMaxHealth);
+                Caster.SetupGet(entity => entity.Shield).Returns(() =>
+                {
+                    CasterShieldReads++;
+                    return CasterShield;
+                });
+                Caster.SetupGet(entity => entity.MaxShieldCapacity).Returns(() =>
+                {
+                    CasterMaxShieldCapacityReads++;
+                    return CasterMaxShieldCapacity;
+                });
                 Caster.Setup(entity => entity.TryGetVitalValue(
                         It.IsAny<Vital>(),
                         out It.Ref<float>.IsAny))
@@ -2515,7 +2928,9 @@ namespace NexusForever.Game.Tests.Spell
                 Func<bool> inCombat = null,
                 Func<uint> health = null,
                 Func<uint> maximumHealth = null,
-                Func<uint> creatureId = null)
+                Func<uint> creatureId = null,
+                Func<uint> shield = null,
+                Func<uint> maximumShield = null)
             {
                 var target = new Mock<IUnitEntity>();
                 ConfigureTarget(
@@ -2530,7 +2945,9 @@ namespace NexusForever.Game.Tests.Spell
                     inCombat,
                     health,
                     maximumHealth,
-                    creatureId);
+                    creatureId,
+                    shield,
+                    maximumShield);
                 return target;
             }
 
@@ -2539,7 +2956,9 @@ namespace NexusForever.Game.Tests.Spell
                 Func<bool> alive = null,
                 Func<bool> inWorld = null,
                 Func<IBaseMap> map = null,
-                Func<uint> creatureId = null)
+                Func<uint> creatureId = null,
+                Func<uint> shield = null,
+                Func<uint> maximumShield = null)
             {
                 var target = new Mock<IPlayer>();
                 ConfigureTarget(
@@ -2548,7 +2967,9 @@ namespace NexusForever.Game.Tests.Spell
                     alive: alive,
                     inWorld: inWorld,
                     map: map,
-                    creatureId: creatureId);
+                    creatureId: creatureId,
+                    shield: shield,
+                    maximumShield: maximumShield);
                 return target;
             }
 
@@ -2564,7 +2985,9 @@ namespace NexusForever.Game.Tests.Spell
                 Func<bool> inCombat = null,
                 Func<uint> health = null,
                 Func<uint> maximumHealth = null,
-                Func<uint> creatureId = null)
+                Func<uint> creatureId = null,
+                Func<uint> shield = null,
+                Func<uint> maximumShield = null)
                 where T : class, IUnitEntity
             {
                 target.SetupGet(entity => entity.Guid).Returns(guid);
@@ -2577,6 +3000,8 @@ namespace NexusForever.Game.Tests.Spell
                 target.SetupGet(entity => entity.InCombat).Returns(() => inCombat?.Invoke() ?? false);
                 target.SetupGet(entity => entity.Health).Returns(() => health?.Invoke() ?? 1u);
                 target.SetupGet(entity => entity.MaxHealth).Returns(() => maximumHealth?.Invoke() ?? 1u);
+                target.SetupGet(entity => entity.Shield).Returns(() => shield?.Invoke() ?? 0u);
+                target.SetupGet(entity => entity.MaxShieldCapacity).Returns(() => maximumShield?.Invoke() ?? 0u);
                 target.Setup(entity => entity.TryGetVitalValue(
                         It.IsAny<Vital>(),
                         out It.Ref<float>.IsAny))

@@ -42,6 +42,8 @@ namespace NexusForever.Game.Tests.Prerequisite
             player.SetupGet(unit => unit.Level).Returns(current);
             player.SetupGet(unit => unit.Health).Returns(current);
             player.SetupGet(unit => unit.MaxHealth).Returns(100u);
+            player.SetupGet(unit => unit.Shield).Returns(current);
+            player.SetupGet(unit => unit.MaxShieldCapacity).Returns(100u);
             player.Setup(unit => unit.TryGetVitalValue(
                     Vital.Resource1,
                     out It.Ref<float>.IsAny))
@@ -58,6 +60,10 @@ namespace NexusForever.Game.Tests.Prerequisite
                 Mock.Of<ILogger<PrerequisiteCheckHealth>>());
             var health = new PrerequisiteCheckHealthRequirement(
                 Mock.Of<ILogger<PrerequisiteCheckHealthRequirement>>());
+            var shieldPercentage = new PrerequisiteCheckShield(
+                Mock.Of<ILogger<PrerequisiteCheckShield>>());
+            var shield = new PrerequisiteCheckShieldRequirement(
+                Mock.Of<ILogger<PrerequisiteCheckShieldRequirement>>());
 
             Assert.Equal(expected, level.Meets(player.Object, comparison, threshold, 0u, null));
             Assert.True(level.TryMeets(
@@ -104,6 +110,34 @@ namespace NexusForever.Game.Tests.Prerequisite
                 0u,
                 out bool healthMeets));
             Assert.Equal(expected, healthMeets);
+
+            Assert.Equal(expected, shieldPercentage.Meets(
+                player.Object,
+                comparison,
+                threshold,
+                uint.MaxValue,
+                null));
+            Assert.True(shieldPercentage.TryMeets(
+                player.Object,
+                comparison,
+                threshold,
+                uint.MaxValue,
+                out bool shieldPercentageMeets));
+            Assert.Equal(expected, shieldPercentageMeets);
+
+            Assert.Equal(expected, shield.Meets(
+                player.Object,
+                comparison,
+                threshold,
+                uint.MaxValue,
+                null));
+            Assert.True(shield.TryMeets(
+                player.Object,
+                comparison,
+                threshold,
+                uint.MaxValue,
+                out bool shieldMeets));
+            Assert.Equal(expected, shieldMeets);
         }
 
         private delegate bool TryGetVitalValue(Vital vital, out float value);
