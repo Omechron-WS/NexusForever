@@ -151,6 +151,190 @@ namespace NexusForever.Game.Tests.Combat
             threatManager.Verify(t => t.Update(0.1d), Times.Once);
         }
 
+        [Theory]
+        [InlineData(PendingSpellFailureStage.Update)]
+        [InlineData(PendingSpellFailureStage.LateUpdate)]
+        [InlineData(PendingSpellFailureStage.IsFinished)]
+        public void Update_PendingSpellStageFailureRetriesWithoutBlockingSiblingOrCoreTick(
+            PendingSpellFailureStage failureStage)
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            var operations = new List<string>();
+            var threatManager = new Mock<IThreatManager>();
+            threatManager
+                .Setup(value => value.Update(It.IsAny<double>()))
+                .Callback<double>(_ => operations.Add("threat"));
+            SetThreatManager(entity, threatManager.Object);
+
+            bool hasThrown = false;
+            void ThrowOnce(PendingSpellFailureStage stage)
+            {
+                if (hasThrown || failureStage != stage)
+                    return;
+
+                hasThrown = true;
+                throw new InvalidOperationException("Test pending spell failure.");
+            }
+
+            var failedSpell = new Mock<ISpell>();
+            failedSpell
+                .Setup(value => value.Update(It.IsAny<double>()))
+                .Callback<double>(_ =>
+                {
+                    operations.Add("failed-update");
+                    ThrowOnce(PendingSpellFailureStage.Update);
+                });
+            failedSpell
+                .Setup(value => value.LateUpdate(It.IsAny<double>()))
+                .Callback<double>(_ =>
+                {
+                    operations.Add("failed-late");
+                    ThrowOnce(PendingSpellFailureStage.LateUpdate);
+                });
+            failedSpell
+                .SetupGet(value => value.IsFinished)
+                .Returns(() =>
+                {
+                    operations.Add("failed-finished");
+                    ThrowOnce(PendingSpellFailureStage.IsFinished);
+                    return true;
+                });
+            failedSpell
+                .Setup(value => value.Dispose())
+                .Callback(() => operations.Add("failed-dispose"));
+
+            var healthySpell = new Mock<ISpell>();
+            healthySpell
+                .Setup(value => value.Update(It.IsAny<double>()))
+                .Callback<double>(_ => operations.Add("healthy-update"));
+            healthySpell
+                .Setup(value => value.LateUpdate(It.IsAny<double>()))
+                .Callback<double>(_ => operations.Add("healthy-late"));
+            healthySpell
+                .SetupGet(value => value.IsFinished)
+                .Returns(() =>
+                {
+                    operations.Add("healthy-finished");
+                    return true;
+                });
+            healthySpell
+                .Setup(value => value.Dispose())
+                .Callback(() => operations.Add("healthy-dispose"));
+
+            Mock<IProcInfo> proc = CreateProc(entity, ProcType.BeginMoving, 789u, 123u);
+            proc
+                .Setup(value => value.Update(It.IsAny<double>()))
+                .Callback<double>(_ => operations.Add("proc"));
+            AddPendingSpell(entity, failedSpell.Object);
+            AddPendingSpell(entity, healthySpell.Object);
+            entity.ApplyProc(proc.Object);
+
+            Exception firstException = Record.Exception(() => entity.Update(0.01d));
+            Exception secondException = Record.Exception(() => entity.Update(0.02d));
+            Exception thirdException = Record.Exception(() => entity.Update(0.03d));
+
+            Assert.Null(firstException);
+            Assert.Null(secondException);
+            Assert.Null(thirdException);
+            string[] failedPrefix = failureStage switch
+            {
+                PendingSpellFailureStage.Update => ["failed-update"],
+                PendingSpellFailureStage.LateUpdate => ["failed-update", "failed-late"],
+                PendingSpellFailureStage.IsFinished => ["failed-update", "failed-late", "failed-finished"],
+                _ => throw new ArgumentOutOfRangeException(nameof(failureStage))
+            };
+            Assert.Equal(
+                failedPrefix
+                    .Concat([
+                        "healthy-update", "healthy-late", "healthy-finished", "healthy-dispose", "proc", "threat",
+                        "failed-update", "failed-late", "failed-finished", "failed-dispose", "proc", "threat",
+                        "proc", "threat"
+                    ]),
+                operations);
+            failedSpell.Verify(value => value.Finish(), Times.Never);
+            failedSpell.Verify(value => value.Dispose(), Times.Once);
+            healthySpell.Verify(value => value.Dispose(), Times.Once);
+            proc.Verify(value => value.Update(It.IsAny<double>()), Times.Exactly(3));
+            threatManager.Verify(value => value.Update(It.IsAny<double>()), Times.Exactly(3));
+        }
+
+        [Fact]
+        public void Update_PendingSpellDisposeFailureRemainsOwnedAndRetriesWithoutBlockingCoreTick()
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            var threatManager = new Mock<IThreatManager>();
+            SetThreatManager(entity, threatManager.Object);
+            int disposeAttempts = 0;
+            var failedSpell = new Mock<ISpell>();
+            failedSpell.SetupGet(value => value.IsFinished).Returns(true);
+            failedSpell
+                .Setup(value => value.Dispose())
+                .Callback(() =>
+                {
+                    if (disposeAttempts++ == 0)
+                        throw new InvalidOperationException("Test pending spell disposal failure.");
+                });
+            var healthySpell = new Mock<ISpell>();
+            healthySpell.SetupGet(value => value.IsFinished).Returns(false);
+            Mock<IProcInfo> proc = CreateProc(entity, ProcType.BeginMoving, 789u, 123u);
+            AddPendingSpell(entity, failedSpell.Object);
+            AddPendingSpell(entity, healthySpell.Object);
+            entity.ApplyProc(proc.Object);
+
+            Exception firstException = Record.Exception(() => entity.Update(0.01d));
+            Exception secondException = Record.Exception(() => entity.Update(0.02d));
+            Exception thirdException = Record.Exception(() => entity.Update(0.03d));
+
+            Assert.Null(firstException);
+            Assert.Null(secondException);
+            Assert.Null(thirdException);
+            failedSpell.Verify(value => value.Update(It.IsAny<double>()), Times.Exactly(2));
+            failedSpell.Verify(value => value.LateUpdate(It.IsAny<double>()), Times.Exactly(2));
+            failedSpell.VerifyGet(value => value.IsFinished, Times.Exactly(2));
+            failedSpell.Verify(value => value.Dispose(), Times.Exactly(2));
+            failedSpell.Verify(value => value.Finish(), Times.Never);
+            healthySpell.Verify(value => value.Update(It.IsAny<double>()), Times.Exactly(3));
+            proc.Verify(value => value.Update(It.IsAny<double>()), Times.Exactly(3));
+            threatManager.Verify(value => value.Update(It.IsAny<double>()), Times.Exactly(3));
+        }
+
+        [Fact]
+        public void Update_PendingSpellReentrantRemovalSkipsStaleSnapshotAndDefersAddition()
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            var threatManager = new Mock<IThreatManager>();
+            SetThreatManager(entity, threatManager.Object);
+            var firstSpell = new Mock<ISpell>();
+            var removedSpell = new Mock<ISpell>();
+            var addedSpell = new Mock<ISpell>();
+            firstSpell
+                .Setup(value => value.Update(0.1d))
+                .Callback(() =>
+                {
+                    RemovePendingSpell(entity, firstSpell.Object);
+                    RemovePendingSpell(entity, removedSpell.Object);
+                    AddPendingSpell(entity, addedSpell.Object);
+                });
+            addedSpell.SetupGet(value => value.IsFinished).Returns(false);
+            AddPendingSpell(entity, firstSpell.Object);
+            AddPendingSpell(entity, removedSpell.Object);
+
+            entity.Update(0.1d);
+
+            firstSpell.Verify(value => value.Update(0.1d), Times.Once);
+            firstSpell.Verify(value => value.LateUpdate(It.IsAny<double>()), Times.Never);
+            firstSpell.VerifyGet(value => value.IsFinished, Times.Never);
+            removedSpell.Verify(value => value.Update(It.IsAny<double>()), Times.Never);
+            addedSpell.Verify(value => value.Update(It.IsAny<double>()), Times.Never);
+
+            entity.Update(0.2d);
+
+            addedSpell.Verify(value => value.Update(0.2d), Times.Once);
+            addedSpell.Verify(value => value.LateUpdate(0.2d), Times.Once);
+            addedSpell.VerifyGet(value => value.IsFinished, Times.Once);
+            threatManager.Verify(value => value.Update(It.IsAny<double>()), Times.Exactly(2));
+        }
+
         [Fact]
         public void RemoveProc_CancelsOnlyExactProcAndPreservesOtherRegistrations()
         {
@@ -644,10 +828,28 @@ namespace NexusForever.Game.Tests.Combat
             spells.Add(spell);
         }
 
+        private static void RemovePendingSpell(TestUnitEntity entity, ISpell spell)
+        {
+            FieldInfo field = typeof(UnitEntity).GetField(
+                "pendingSpells",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            var spells = (List<ISpell>)field.GetValue(entity);
+            int index = spells.FindIndex(candidate => ReferenceEquals(candidate, spell));
+            if (index >= 0)
+                spells.RemoveAt(index);
+        }
+
         private static void SetThreatManager(TestUnitEntity entity, IThreatManager threatManager)
         {
             PropertyInfo property = typeof(UnitEntity).GetProperty(nameof(UnitEntity.ThreatManager));
             property.SetValue(entity, threatManager);
+        }
+
+        public enum PendingSpellFailureStage
+        {
+            Update,
+            LateUpdate,
+            IsFinished
         }
 
         private sealed class TestUnitEntity : UnitEntity

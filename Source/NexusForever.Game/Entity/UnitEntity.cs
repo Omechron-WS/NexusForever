@@ -290,13 +290,31 @@ namespace NexusForever.Game.Entity
 
                 foreach (ISpell spell in pendingSpells.ToArray())
                 {
-                    spell.Update(lastTick);
-                    spell.LateUpdate(lastTick);
+                    if (!IsPendingSpell(spell))
+                        continue;
 
-                    if (spell.IsFinished)
+                    try
                     {
+                        spell.Update(lastTick);
+                        if (!IsPendingSpell(spell))
+                            continue;
+
+                        spell.LateUpdate(lastTick);
+                        if (!IsPendingSpell(spell))
+                            continue;
+
+                        bool isFinished = spell.IsFinished;
+                        if (!IsPendingSpell(spell) || !isFinished)
+                            continue;
+
                         spell.Dispose();
-                        pendingSpells.Remove(spell);
+                        TryRemovePendingSpell(spell);
+                    }
+                    catch (Exception exception)
+                    {
+                        // Keep the exact spell owned and retryable. Threshold and proc owners can retain
+                        // references which require the normal spell lifecycle to reach Finished.
+                        log.Error(exception, $"Failed to advance or retire a pending spell for entity {Guid}.");
                     }
                 }
 
@@ -857,6 +875,21 @@ namespace NexusForever.Game.Entity
 
                 throw;
             }
+        }
+
+        private bool IsPendingSpell(ISpell spell)
+        {
+            return pendingSpells.Any(candidate => ReferenceEquals(candidate, spell));
+        }
+
+        private bool TryRemovePendingSpell(ISpell spell)
+        {
+            int trackedIndex = pendingSpells.FindIndex(candidate => ReferenceEquals(candidate, spell));
+            if (trackedIndex < 0)
+                return false;
+
+            pendingSpells.RemoveAt(trackedIndex);
+            return true;
         }
 
         /// <summary>
