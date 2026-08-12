@@ -1,4 +1,5 @@
 ﻿using NexusForever.Game.Spell;
+using NexusForever.Game.Static.Reputation;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
 using NexusForever.Network;
@@ -31,7 +32,18 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Entity.Player
             if (taxiNode == null)
                 throw new InvalidPacketValueException();
 
-            if (session.Player.Level < taxiNode.AutoUnlockLevel)
+            var player = session.Player;
+            if (player.Level < taxiNode.AutoUnlockLevel)
+                throw new InvalidPacketValueException();
+
+            bool factionAllowed = taxiNode.TaxiNodeFactionEnum switch
+            {
+                0u => true,
+                1u => player.Faction1 == Faction.Exile,
+                2u => player.Faction1 == Faction.Dominion,
+                _  => false
+            };
+            if (!factionAllowed)
                 throw new InvalidPacketValueException();
 
             WorldLocation2Entry worldLocation = gameTableManager.WorldLocation2.GetEntry(taxiNode.WorldLocation2Id);
@@ -39,7 +51,7 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Entity.Player
                 throw new InvalidPacketValueException();
 
             GameFormulaEntry entry = gameTableManager.GameFormula.GetEntry(1307);
-            session.Player.CastSpell(entry.Dataint0, new SpellParameters
+            player.CastSpell(entry.Dataint0, new SpellParameters
             {
                 TaxiNode = rapidTransport.TaxiNode
             });
