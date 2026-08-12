@@ -63,6 +63,10 @@ namespace NexusForever.Game.Tests.Mail
                 Datafloat0 = 5f
             }, new GameFormulaEntry
             {
+                Id = 860u,
+                Dataint0 = 7u
+            }, new GameFormulaEntry
+            {
                 Id = 861u
             }));
         }
@@ -615,6 +619,68 @@ namespace NexusForever.Game.Tests.Mail
             yield return new object[] { SendAttachmentState.ZeroStack };
             yield return new object[] { SendAttachmentState.MissingInfo };
             yield return new object[] { SendAttachmentState.MissingEntry };
+        }
+
+        [Fact]
+        public void SendMail_ReservedDeliverySpeedRejectsBeforeDependenciesOrMutation()
+        {
+            MailFixture fixture = CreateFixture(null);
+            ClientMailSend request = CreateSendRequest();
+            SetProperty(request, nameof(ClientMailSend.Name), "Missing Recipient");
+            SetProperty(request, nameof(ClientMailSend.DeliverySpeed), (DeliverySpeed)3);
+            var blockedProvider = new Mock<IServiceProvider>(MockBehavior.Strict);
+            IServiceProvider currentProvider = LegacyServiceProvider.Provider;
+
+            try
+            {
+                LegacyServiceProvider.Provider = blockedProvider.Object;
+                fixture.Manager.SendMail(request);
+            }
+            finally
+            {
+                LegacyServiceProvider.Provider = currentProvider;
+            }
+
+            ServerMailResult result = GetSingleMessage<ServerMailResult>(fixture);
+            Assert.Equal(1u, result.Action);
+            Assert.Equal(0ul, result.MailId);
+            Assert.Equal(GenericError.MailInvalidDeliverySpeed, result.Result);
+            Assert.Empty(GetOutgoingMail(fixture.Manager));
+            blockedProvider.Verify(value => value.GetService(It.IsAny<Type>()), Times.Never);
+            fixture.Session.Verify(value => value.EnqueueMessageEncrypted(result), Times.Once);
+            fixture.Player.VerifyGet(value => value.Session, Times.Once);
+            fixture.Player.VerifyNoOtherCalls();
+            fixture.Session.VerifyNoOtherCalls();
+            fixture.CurrencyManager.VerifyNoOtherCalls();
+            fixture.Inventory.VerifyNoOtherCalls();
+        }
+
+        [Theory]
+        [InlineData(DeliverySpeed.Instant)]
+        [InlineData(DeliverySpeed.Hour)]
+        [InlineData(DeliverySpeed.Day)]
+        public void SendMail_DefinedDeliverySpeedPreservesExistingForwarding(DeliverySpeed deliverySpeed)
+        {
+            MailFixture fixture = CreateSendFixture();
+            ClientMailSend request = CreateSendRequest();
+            SetProperty(request, nameof(ClientMailSend.DeliverySpeed), deliverySpeed);
+
+            fixture.Manager.SendMail(request);
+
+            Assert.Equal(GenericError.Ok, GetSingleMessage<ServerMailResult>(fixture).Result);
+            IMailItem outgoing = Assert.Single(GetOutgoingMail(fixture.Manager));
+            Assert.Equal(TargetId, outgoing.RecipientId);
+            Assert.Equal(PlayerId, outgoing.SenderId);
+            Assert.Equal(deliverySpeed, outgoing.DeliverySpeed);
+            Assert.Empty(outgoing);
+            fixture.CurrencyManager.Verify(value => value.CanAfford(
+                CurrencyType.Credits, 7ul), Times.Once);
+            fixture.CurrencyManager.Verify(value => value.CanAfford(
+                CurrencyType.Credits, 0ul), Times.Once);
+            fixture.CurrencyManager.Verify(value => value.CurrencySubtractAmount(
+                CurrencyType.Credits, 7ul, false), Times.Once);
+            fixture.CurrencyManager.VerifyNoOtherCalls();
+            fixture.Inventory.VerifyNoOtherCalls();
         }
 
         [Theory]

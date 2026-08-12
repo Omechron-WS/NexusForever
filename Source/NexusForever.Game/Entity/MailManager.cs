@@ -245,6 +245,17 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void SendMail(ClientMailSend mailSend)
         {
+            if (mailSend.DeliverySpeed is not DeliverySpeed.Instant and not DeliverySpeed.Hour and not DeliverySpeed.Day)
+            {
+                player.Session.EnqueueMessageEncrypted(new ServerMailResult
+                {
+                    Action = 1,
+                    MailId = 0,
+                    Result = GenericError.MailInvalidDeliverySpeed
+                });
+                return;
+            }
+
             ICharacter targetCharacter = CharacterManager.Instance.GetCharacter(mailSend.Name);
 
             var items = new List<IItem>();
