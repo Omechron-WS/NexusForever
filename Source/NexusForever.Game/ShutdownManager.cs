@@ -34,6 +34,9 @@ namespace NexusForever.Game
         /// </summary>
         public void StartShutdown(TimeSpan span)
         {
+            if (span <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(span), "Shutdown delay must be positive.");
+
             if (shutdownSpan.HasValue)
                 throw new InvalidOperationException();
 

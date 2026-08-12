@@ -22,6 +22,12 @@ namespace NexusForever.WorldServer.Command.Handler
                 [Parameter("Time till shutdown. (Format: dd:hh:mm:ss)")]
                 TimeSpan span)
             {
+                if (span <= TimeSpan.Zero)
+                {
+                    context.SendError("Time till shutdown must be positive!");
+                    return;
+                }
+
                 if (ShutdownManager.Instance.IsShutdownPending)
                 {
                     context.SendError("Realm already has a pending shutdown!");
