@@ -219,12 +219,17 @@ namespace NexusForever.Game.Entity
 
             uint spellId = owner.Class switch
             {
-                Class.Medic    => 30330,
-                Class.Engineer => 42838,
-                Class.Warrior  => 42839,
-                Class.Stalker  => 42840,
-                _              => 30330, // Esper and Spellslinger don't have a resurrection spell, default to Medic
+                Class.Warrior      => 42839u,
+                Class.Engineer     => 42838u,
+                Class.Esper        => 32935u,
+                Class.Medic        => 30330u,
+                Class.Stalker      => 42840u,
+                Class.Spellslinger => 39079u,
+                _                  => 0u,
             };
+
+            if (spellId == 0u)
+                return;
 
             owner.CastSpell(spellId, new SpellParameters
             {

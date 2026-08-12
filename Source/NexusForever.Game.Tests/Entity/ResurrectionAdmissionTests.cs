@@ -1,6 +1,7 @@
 using Moq;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Map;
+using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Entity;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Spell;
@@ -11,6 +12,111 @@ namespace NexusForever.Game.Tests.Entity
     public sealed class ResurrectionAdmissionTests
     {
         private const uint MaximumHealth = 101u;
+        private const uint ResurrectionTargetUnitId = 77u;
+        private const uint ResurrectionTargetGuid = 88u;
+
+        public static IEnumerable<object[]> PlayableClassResurrectionAbilities()
+        {
+            yield return new object[] { Class.Warrior, 42839u };
+            yield return new object[] { Class.Engineer, 42838u };
+            yield return new object[] { Class.Esper, 32935u };
+            yield return new object[] { Class.Medic, 30330u };
+            yield return new object[] { Class.Stalker, 42840u };
+            yield return new object[] { Class.Spellslinger, 39079u };
+        }
+
+        [Theory]
+        [MemberData(nameof(PlayableClassResurrectionAbilities))]
+        public void ResurrectOtherPlayer_PlayableClassUsesBuild16042ResurrectionAbility(
+            Class playerClass,
+            uint expectedSpellId)
+        {
+            OtherPlayerResurrectionFixture fixture = CreateOtherPlayerResurrectionFixture(playerClass);
+
+            fixture.Manager.Resurrect(ResurrectionTargetUnitId);
+
+            fixture.Owner.Verify(value => value.GetVisible<IPlayer>(ResurrectionTargetUnitId), Times.Once);
+            fixture.Target.VerifyGet(value => value.IsAlive, Times.Once);
+            fixture.Owner.VerifyGet(value => value.Class, Times.Once);
+            fixture.Owner.Verify(value => value.CastSpell(
+                expectedSpellId,
+                It.Is<ISpellParameters>(parameters => parameters.PrimaryTargetId == ResurrectionTargetGuid)), Times.Once);
+            fixture.Owner.Verify(value => value.CastSpell(
+                It.IsAny<uint>(), It.IsAny<ISpellParameters>()), Times.Once);
+        }
+
+        public static IEnumerable<object[]> InvalidResurrectionClasses()
+        {
+            yield return new object[] { Class.None };
+            yield return new object[] { Class.PvpTeam };
+            yield return new object[] { (Class)6 };
+            yield return new object[] { (Class)byte.MaxValue };
+        }
+
+        [Theory]
+        [MemberData(nameof(InvalidResurrectionClasses))]
+        public void ResurrectOtherPlayer_InvalidClassRejectsBeforeCast(Class playerClass)
+        {
+            OtherPlayerResurrectionFixture fixture = CreateOtherPlayerResurrectionFixture(playerClass);
+
+            fixture.Manager.Resurrect(ResurrectionTargetUnitId);
+
+            fixture.Owner.Verify(value => value.GetVisible<IPlayer>(ResurrectionTargetUnitId), Times.Once);
+            fixture.Target.VerifyGet(value => value.IsAlive, Times.Once);
+            fixture.Owner.VerifyGet(value => value.Class, Times.Once);
+            fixture.Owner.Verify(value => value.CastSpell(
+                It.IsAny<uint>(), It.IsAny<ISpellParameters>()), Times.Never);
+        }
+
+        [Fact]
+        public void ResurrectOtherPlayer_MissingTargetRejectsBeforeClass()
+        {
+            OtherPlayerResurrectionFixture fixture = CreateOtherPlayerResurrectionFixture(
+                Class.Medic,
+                targetVisible: false);
+
+            fixture.Manager.Resurrect(ResurrectionTargetUnitId);
+
+            fixture.Owner.Verify(value => value.GetVisible<IPlayer>(ResurrectionTargetUnitId), Times.Once);
+            fixture.Target.VerifyGet(value => value.IsAlive, Times.Never);
+            fixture.Owner.VerifyGet(value => value.Class, Times.Never);
+            fixture.Owner.Verify(value => value.CastSpell(
+                It.IsAny<uint>(), It.IsAny<ISpellParameters>()), Times.Never);
+        }
+
+        [Fact]
+        public void ResurrectOtherPlayer_AliveTargetRejectsBeforeClass()
+        {
+            OtherPlayerResurrectionFixture fixture = CreateOtherPlayerResurrectionFixture(
+                Class.Medic,
+                targetIsAlive: true);
+
+            fixture.Manager.Resurrect(ResurrectionTargetUnitId);
+
+            fixture.Owner.Verify(value => value.GetVisible<IPlayer>(ResurrectionTargetUnitId), Times.Once);
+            fixture.Target.VerifyGet(value => value.IsAlive, Times.Once);
+            fixture.Owner.VerifyGet(value => value.Class, Times.Never);
+            fixture.Owner.Verify(value => value.CastSpell(
+                It.IsAny<uint>(), It.IsAny<ISpellParameters>()), Times.Never);
+        }
+
+        [Fact]
+        public void ResurrectOtherPlayer_DisabledCapabilityRejectsAfterVisibleDeadTargetBeforeClass()
+        {
+            OtherPlayerResurrectionFixture fixture = CreateOtherPlayerResurrectionFixture(Class.Medic);
+            fixture.Manager.CanResurrectOtherPlayer = false;
+            fixture.Owner.Invocations.Clear();
+            fixture.Target.Invocations.Clear();
+            fixture.Session.Invocations.Clear();
+
+            fixture.Manager.Resurrect(ResurrectionTargetUnitId);
+
+            fixture.Owner.Verify(value => value.GetVisible<IPlayer>(ResurrectionTargetUnitId), Times.Once);
+            fixture.Target.VerifyGet(value => value.IsAlive, Times.Once);
+            fixture.Owner.VerifyGet(value => value.Class, Times.Never);
+            fixture.Owner.Verify(value => value.CastSpell(
+                It.IsAny<uint>(), It.IsAny<ISpellParameters>()), Times.Never);
+        }
 
         [Fact]
         public void Resurrect_UnshownChoiceRejectsBeforeCostOrVitals()
@@ -144,6 +250,29 @@ namespace NexusForever.Game.Tests.Entity
                 currencyManager);
         }
 
+        private static OtherPlayerResurrectionFixture CreateOtherPlayerResurrectionFixture(
+            Class playerClass,
+            bool targetIsAlive = false,
+            bool targetVisible = true)
+        {
+            var session = new Mock<IGameSession>();
+            var target = new Mock<IPlayer>();
+            target.SetupGet(value => value.Guid).Returns(ResurrectionTargetGuid);
+            target.SetupGet(value => value.IsAlive).Returns(targetIsAlive);
+
+            var owner = new Mock<IPlayer>();
+            owner.SetupGet(value => value.Class).Returns(playerClass);
+            owner.SetupGet(value => value.Session).Returns(session.Object);
+            owner.Setup(value => value.GetVisible<IPlayer>(ResurrectionTargetUnitId))
+                .Returns(targetVisible ? target.Object : null);
+
+            return new OtherPlayerResurrectionFixture(
+                new ResurrectionManager(owner.Object),
+                owner,
+                target,
+                session);
+        }
+
         private static void AssertNoResurrectionMutation(ResurrectionFixture fixture)
         {
             fixture.CurrencyManager.Verify(value => value.CanAfford(
@@ -167,5 +296,11 @@ namespace NexusForever.Game.Tests.Entity
             Mock<IPlayer> Owner,
             Mock<IGameSession> Session,
             Mock<ICurrencyManager> CurrencyManager);
+
+        private sealed record OtherPlayerResurrectionFixture(
+            ResurrectionManager Manager,
+            Mock<IPlayer> Owner,
+            Mock<IPlayer> Target,
+            Mock<IGameSession> Session);
     }
 }
