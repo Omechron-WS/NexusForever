@@ -120,6 +120,48 @@ namespace NexusForever.Game.Tests.Entity.Movement
                 Times.Never);
         }
 
+        [Fact]
+        public void ExactWireBoundary_ProducesMaximumLinearSourceNodes()
+        {
+            var map = new Mock<IBaseMap>();
+            map
+                .Setup(instance => instance.GetTerrainHeight(It.IsAny<float>(), It.IsAny<float>()))
+                .Returns(0f);
+            var generator = new DirectMovementGenerator
+            {
+                Begin = Vector3.Zero,
+                Final = new Vector3(2_040f, 0f, 0f),
+                Map = map.Object
+            };
+
+            List<Vector3> nodes = generator.CalculatePath();
+
+            Assert.Equal(SplinePathLimits.MaximumLinearSourceNodeCount, nodes.Count);
+            Assert.Equal(generator.Final, nodes[^1]);
+            map.Verify(
+                instance => instance.GetTerrainHeight(It.IsAny<float>(), It.IsAny<float>()),
+                Times.Exactly(SplinePathLimits.MaximumGeneratedIntermediateNodeCount));
+        }
+
+        [Fact]
+        public void FirstPathAboveWireBoundary_FallsBackToEndpointsWithoutTerrainSampling()
+        {
+            var map = new Mock<IBaseMap>();
+            var generator = new DirectMovementGenerator
+            {
+                Begin = Vector3.Zero,
+                Final = new Vector3(2_041f, 0f, 0f),
+                Map = map.Object
+            };
+
+            List<Vector3> nodes = generator.CalculatePath();
+
+            Assert.Equal([generator.Begin, generator.Final], nodes);
+            map.Verify(
+                instance => instance.GetTerrainHeight(It.IsAny<float>(), It.IsAny<float>()),
+                Times.Never);
+        }
+
         private static Vector3 FinaliseLinearSpline(List<Vector3> nodes, double elapsedSeconds)
         {
             var typeFactory = new Mock<ISplineTypeFactory>();

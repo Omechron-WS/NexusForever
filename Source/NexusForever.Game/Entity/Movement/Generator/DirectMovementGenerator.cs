@@ -1,13 +1,13 @@
 ﻿using System.Numerics;
 using NexusForever.Game.Abstract.Entity.Movement.Generator;
 using NexusForever.Game.Abstract.Map;
+using NexusForever.Game.Static.Entity.Movement.Spline;
 
 namespace NexusForever.Game.Entity.Movement.Generator
 {
     public class DirectMovementGenerator : IDirectMovementGenerator
     {
         private const float StepSize = 2f;
-        private const int MaximumIntermediatePointCount = 4096;
 
         public Vector3 Begin { get; set; }
         public Vector3 Final { get; set; }
@@ -22,7 +22,7 @@ namespace NexusForever.Game.Entity.Movement.Generator
             double horizontalDistance = Math.Sqrt((deltaX * deltaX) + (deltaZ * deltaZ));
             double segmentCount = Math.Ceiling(horizontalDistance / StepSize);
             int intermediatePointCount = double.IsFinite(segmentCount)
-                && segmentCount <= MaximumIntermediatePointCount + 1
+                && segmentCount <= SplinePathLimits.MaximumGeneratedIntermediateNodeCount + 1
                 ? Math.Max(0, (int)segmentCount - 1)
                 : 0;
             float angle = (float)Math.Atan2(deltaZ, deltaX);

@@ -185,11 +185,15 @@ namespace NexusForever.Game.Entity.Movement.Command.Position
         /// </summary>
         public void SetPositionPath(List<Vector3> nodes, SplineType type, SplineMode mode, float speed)
         {
-            Finalise();
+            SplinePathLimits.ValidateSourcePath(nodes, type, mode, speed);
 
-            var command = factory.Resolve<PositionPathCommand>();
-            command.Initialise(nodes, type, mode, speed);
-            Command = command;
+            var replacement = factory.Resolve<PositionPathCommand>();
+            if (replacement == null)
+                throw new InvalidOperationException("Unable to resolve a position path command.");
+            replacement.Initialise(nodes, type, mode, speed);
+
+            Finalise();
+            Command = replacement;
 
             IsDirty = true;
         }

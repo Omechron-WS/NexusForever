@@ -389,6 +389,7 @@ namespace NexusForever.Game.Entity.Movement
             if (!ServerControl)
                 return;
 
+            SplinePathLimits.ValidateSourcePath(nodes, type, mode, speed);
             positionCommandGroup.SetPositionPath(nodes, type, mode, speed);
         }
 
@@ -715,6 +716,9 @@ namespace NexusForever.Game.Entity.Movement
             if (!ServerControl)
                 return;
 
+            // Validate every deterministic failure before changing state, move, or rotation.
+            SplinePathLimits.ValidateSourcePath(nodes, type, mode, speed);
+
             SetState(StateFlags.Move);
             SetMoveDefaults(false);
             SetRotationDefaults();
@@ -765,9 +769,7 @@ namespace NexusForever.Game.Entity.Movement
             if (!ServerControl)
                 return;
 
-            SetState(StateFlags.Move);
-            SetMoveDefaults(false);
-            SetRotationFaceUnit(entity.Guid);
+            ArgumentNullException.ThrowIfNull(entity);
 
             // angle is directly behind entity being followed
             float angle = -entity.Rotation.X;
@@ -782,6 +784,11 @@ namespace NexusForever.Game.Entity.Movement
 
             // TODO: calculate speed based on entity being followed.
             List<Vector3> nodes = generator.CalculatePath();
+            SplinePathLimits.ValidateSourcePath(nodes, SplineType.Linear, SplineMode.OneShot, 8f);
+
+            SetState(StateFlags.Move);
+            SetMoveDefaults(false);
+            SetRotationFaceUnit(entity.Guid);
             SetPositionPath(nodes, SplineType.Linear, SplineMode.OneShot, 8f);
         }
     }

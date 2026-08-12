@@ -29,6 +29,9 @@ namespace NexusForever.Network.World.Entity.Command
 
         public void Write(GamePacketWriter writer)
         {
+            ArgumentNullException.ThrowIfNull(writer);
+            SplinePathLimits.ValidateEncodedPath(Positions, Type, Mode, Speed);
+
             writer.Write(Positions.Count, 10u);
             Positions.ForEach(writer.WriteVector3);
 

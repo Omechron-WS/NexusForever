@@ -14,6 +14,12 @@ namespace NexusForever.Game.Entity.Movement.Spline.Template
         /// </summary>
         public void Initialise(SplineType type, List<Vector3> points)
         {
+            ArgumentNullException.ThrowIfNull(points);
+            if (Points.Count != 0)
+                throw new InvalidOperationException("Spline template is already initialised.");
+
+            SplinePathLimits.ValidateSourcePath(points, type, SplineMode.OneShot, 1f);
+
             Type = type;
 
             // to keep things consistent and to match the client, add fake "amplitude" points for linear paths
