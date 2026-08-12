@@ -675,10 +675,86 @@ namespace NexusForever.Game.Tests.Mail
             Assert.Empty(outgoing);
             fixture.CurrencyManager.Verify(value => value.CanAfford(
                 CurrencyType.Credits, 7ul), Times.Once);
-            fixture.CurrencyManager.Verify(value => value.CanAfford(
-                CurrencyType.Credits, 0ul), Times.Once);
             fixture.CurrencyManager.Verify(value => value.CurrencySubtractAmount(
                 CurrencyType.Credits, 7ul, false), Times.Once);
+            fixture.CurrencyManager.VerifyNoOtherCalls();
+            fixture.Inventory.VerifyNoOtherCalls();
+        }
+
+        [Fact]
+        public void SendMail_IndividuallyAffordablePostageAndGiftRejectWhenAggregateIsUnaffordable()
+        {
+            const ulong itemGuid = 1_001ul;
+
+            SetGameFormula(CreateGameTable(new GameFormulaEntry
+            {
+                Id = 237u,
+                Datafloat0 = 5f
+            }, new GameFormulaEntry
+            {
+                Id = 861u,
+                Dataint0 = 7u
+            }));
+
+            MailFixture fixture = CreateSendFixture();
+            Mock<IItem> item = CreateSendItem(itemGuid);
+            fixture.Inventory
+                .Setup(value => value.GetItem(itemGuid))
+                .Returns(item.Object);
+            fixture.CurrencyManager
+                .Setup(value => value.CanAfford(CurrencyType.Credits, It.IsAny<ulong>()))
+                .Returns((CurrencyType _, ulong amount) => amount <= 7ul);
+
+            ClientMailSend request = CreateSendRequest(itemGuid);
+            SetProperty(request, nameof(ClientMailSend.CreditsSent), 7ul);
+
+            fixture.Manager.SendMail(request);
+
+            Assert.Equal(GenericError.MailInsufficientFunds, GetSingleMessage<ServerMailResult>(fixture).Result);
+            fixture.CurrencyManager.Verify(value => value.CanAfford(
+                CurrencyType.Credits, 14ul), Times.Once);
+            fixture.CurrencyManager.Verify(value => value.CurrencySubtractAmount(
+                It.IsAny<CurrencyType>(), It.IsAny<ulong>(), It.IsAny<bool>()), Times.Never);
+            fixture.Inventory.Verify(value => value.ItemRemove(
+                It.IsAny<IItem>(), It.IsAny<ItemUpdateReason>()), Times.Never);
+            Assert.Empty(GetOutgoingMail(fixture.Manager));
+        }
+
+        [Fact]
+        public void SendMail_PostageAndGiftOverflowRejectsBeforeAffordabilityOrMutation()
+        {
+            MailFixture fixture = CreateSendFixture();
+            ClientMailSend request = CreateSendRequest();
+            SetProperty(request, nameof(ClientMailSend.CreditsSent), ulong.MaxValue);
+
+            fixture.Manager.SendMail(request);
+
+            Assert.Equal(GenericError.MailInsufficientFunds, GetSingleMessage<ServerMailResult>(fixture).Result);
+            fixture.CurrencyManager.Verify(value => value.CanAfford(
+                It.IsAny<CurrencyType>(), It.IsAny<ulong>()), Times.Never);
+            fixture.CurrencyManager.Verify(value => value.CurrencySubtractAmount(
+                It.IsAny<CurrencyType>(), It.IsAny<ulong>(), It.IsAny<bool>()), Times.Never);
+            fixture.Inventory.Verify(value => value.ItemRemove(
+                It.IsAny<IItem>(), It.IsAny<ItemUpdateReason>()), Times.Never);
+            Assert.Empty(GetOutgoingMail(fixture.Manager));
+        }
+
+        [Fact]
+        public void SendMail_ExactAggregateDebitCreatesGiftAndSubtractsOnce()
+        {
+            MailFixture fixture = CreateSendFixture();
+            ClientMailSend request = CreateSendRequest();
+            SetProperty(request, nameof(ClientMailSend.CreditsSent), 13ul);
+
+            fixture.Manager.SendMail(request);
+
+            Assert.Equal(GenericError.Ok, GetSingleMessage<ServerMailResult>(fixture).Result);
+            IMailItem outgoing = Assert.Single(GetOutgoingMail(fixture.Manager));
+            Assert.Equal(13ul, outgoing.CurrencyAmount);
+            fixture.CurrencyManager.Verify(value => value.CanAfford(
+                CurrencyType.Credits, 20ul), Times.Once);
+            fixture.CurrencyManager.Verify(value => value.CurrencySubtractAmount(
+                CurrencyType.Credits, 20ul, false), Times.Once);
             fixture.CurrencyManager.VerifyNoOtherCalls();
             fixture.Inventory.VerifyNoOtherCalls();
         }
@@ -746,7 +822,7 @@ namespace NexusForever.Game.Tests.Mail
             fixture.Inventory.Verify(value => value.GetItem(firstGuid), Times.Once);
             fixture.Inventory.Verify(value => value.GetItem(secondGuid), Times.Once);
             fixture.CurrencyManager.Verify(value => value.CanAfford(
-                CurrencyType.Credits, 0ul), Times.Exactly(2));
+                CurrencyType.Credits, 0ul), Times.Once);
             fixture.CurrencyManager.Verify(value => value.CurrencySubtractAmount(
                 CurrencyType.Credits, 0ul, false), Times.Once);
 

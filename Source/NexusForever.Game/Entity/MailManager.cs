@@ -259,6 +259,7 @@ namespace NexusForever.Game.Entity
             ICharacter targetCharacter = CharacterManager.Instance.GetCharacter(mailSend.Name);
 
             var items = new List<IItem>();
+            ulong totalDebit = 0ul;
             GenericError GetResult()
             {
                 if (targetCharacter == null)
@@ -301,11 +302,12 @@ namespace NexusForever.Game.Entity
                     }
                 }
 
-                uint cost = CalculateMailCost(mailSend.DeliverySpeed, items);
-                if (!player.CurrencyManager.CanAfford(CurrencyType.Credits, cost))
+                uint postage = CalculateMailCost(mailSend.DeliverySpeed, items);
+                if (mailSend.CreditsSent > ulong.MaxValue - postage)
                     return GenericError.MailInsufficientFunds;
 
-                if (!player.CurrencyManager.CanAfford(CurrencyType.Credits, mailSend.CreditsSent))
+                totalDebit = (ulong)postage + mailSend.CreditsSent;
+                if (!player.CurrencyManager.CanAfford(CurrencyType.Credits, totalDebit))
                     return GenericError.MailInsufficientFunds;
 
                 return GenericError.Ok;
@@ -330,12 +332,7 @@ namespace NexusForever.Game.Entity
                     player.Inventory.ItemRemove(item);
 
                 SendMail(parameters, items);
-
-                uint cost = CalculateMailCost(mailSend.DeliverySpeed, items);
-                player.CurrencyManager.CurrencySubtractAmount(CurrencyType.Credits, cost);
-
-                if (mailSend.CreditsSent > 0ul)
-                    player.CurrencyManager.CurrencySubtractAmount(CurrencyType.Credits, mailSend.CreditsSent);
+                player.CurrencyManager.CurrencySubtractAmount(CurrencyType.Credits, totalDebit);
             }
 
             player.Session.EnqueueMessageEncrypted(new ServerMailResult
