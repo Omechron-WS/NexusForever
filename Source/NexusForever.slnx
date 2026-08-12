@@ -66,6 +66,7 @@
     <Project Path="NexusForever.Aspire.Database.Migrations.Tests/NexusForever.Aspire.Database.Migrations.Tests.csproj" />
     <Project Path="NexusForever.Game.Tests/NexusForever.Game.Tests.csproj" />
     <Project Path="NexusForever.Network.Tests/NexusForever.Network.Tests.csproj" />
+    <Project Path="NexusForever.Server.Friendship.Tests/NexusForever.Server.Friendship.Tests.csproj" />
     <Project Path="NexusForever.Server.GroupServer.Tests/NexusForever.Server.GroupServer.Tests.csproj" />
     <Project Path="NexusForever.WorldServer.Tests/NexusForever.WorldServer.Tests.csproj" />
   </Folder>

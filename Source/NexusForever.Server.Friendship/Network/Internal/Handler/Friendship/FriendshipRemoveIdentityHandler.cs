@@ -37,23 +37,28 @@ namespace NexusForever.Server.Friendship.Network.Internal.Handler.Friendship
             if (friend == null)
                 return;
 
-            if (friend.Type == FriendshipType.FriendAndRival)
+            switch (friend.Type, message.Type)
             {
-                if (message.Type == FriendshipType.Friend)
+                case (FriendshipType.FriendAndRival, FriendshipType.Friend):
                     await friend.UpdateType(FriendshipType.Rival);
-                else if (message.Type == FriendshipType.Rival)
+                    break;
+                case (FriendshipType.FriendAndRival, FriendshipType.Rival):
                     await friend.UpdateType(FriendshipType.Friend);
-            }
-            else
-            {
-                Character inviteeCharacter = await friend.GetInviteeCharacterAsync();
-                if (inviteeCharacter == null)
+                    break;
+                case (FriendshipType.Friend, FriendshipType.Friend):
+                case (FriendshipType.Ignore, FriendshipType.Ignore):
+                case (FriendshipType.Rival, FriendshipType.Rival):
+                    Character inviteeCharacter = await friend.GetInviteeCharacterAsync();
+                    if (inviteeCharacter == null)
+                        return;
+
+                    await inviterCharacter.RemoveFriendAsync(friend);
+                    inviteeCharacter.RemoveFriendInverse(friend);
+
+                    _friendManager.RemoveFriend(friend);
+                    break;
+                default:
                     return;
-
-                await inviterCharacter.RemoveFriendAsync(friend);
-                inviteeCharacter.RemoveFriendInverse(friend);
-
-                _friendManager.RemoveFriend(friend);
             }
 
             await _context.SaveChangesAsync();
