@@ -134,6 +134,14 @@ namespace NexusForever.Game.Entity
             if (owner.IsAlive)
                 return;
 
+            if (type != ResurrectionType.WakeHere
+                && type != ResurrectionType.WakeHereServiceToken
+                && type != ResurrectionType.SpellCasterLocation)
+                return;
+
+            if ((ResurrectionType & type) != type)
+                return;
+
             switch (type)
             {
                 case ResurrectionType.WakeHere:
