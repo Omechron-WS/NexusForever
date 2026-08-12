@@ -1,4 +1,6 @@
 ﻿using NexusForever.Game;
+using NexusForever.Game.Static.Friendship;
+using NexusForever.Network;
 using NexusForever.Network.Internal;
 using NexusForever.Network.Internal.Message.Friendship;
 using NexusForever.Network.Message;
@@ -23,6 +25,12 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Friendship
 
         public void HandleMessage(IWorldSession session, ClientFriendshipInviteResponse message)
         {
+            if (message.Response is not (FriendshipResponse.Mutual
+                or FriendshipResponse.Accept
+                or FriendshipResponse.Decline
+                or FriendshipResponse.Ignore))
+                throw new InvalidPacketValueException();
+
             messagePublisher.PublishAsync(
                 new FriendshipInviteResponseMessage
                 {
