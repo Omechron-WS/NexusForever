@@ -269,54 +269,60 @@ namespace NexusForever.Game.Entity
 
         public override void Update(double lastTick)
         {
-            base.Update(lastTick);
-
-            foreach (ISpell spell in pendingSpells.ToArray())
+            try
             {
-                spell.Update(lastTick);
-                spell.LateUpdate(lastTick);
+                base.Update(lastTick);
 
-                if (spell.IsFinished)
+                foreach (ISpell spell in pendingSpells.ToArray())
                 {
-                    spell.Dispose();
-                    pendingSpells.Remove(spell);
+                    spell.Update(lastTick);
+                    spell.LateUpdate(lastTick);
+
+                    if (spell.IsFinished)
+                    {
+                        spell.Dispose();
+                        pendingSpells.Remove(spell);
+                    }
                 }
-            }
 
-            KeyValuePair<ProcType, IProcInfo>[] procSnapshot = procs
-                .SelectMany(pair => pair.Value.Select(proc => new KeyValuePair<ProcType, IProcInfo>(pair.Key, proc)))
-                .ToArray();
-            foreach (KeyValuePair<ProcType, IProcInfo> entry in procSnapshot)
-            {
-                if (!IsProcRegistered(entry.Key, entry.Value))
-                    continue;
-
-                try
+                KeyValuePair<ProcType, IProcInfo>[] procSnapshot = procs
+                    .SelectMany(pair => pair.Value.Select(proc => new KeyValuePair<ProcType, IProcInfo>(pair.Key, proc)))
+                    .ToArray();
+                foreach (KeyValuePair<ProcType, IProcInfo> entry in procSnapshot)
                 {
-                    entry.Value.Update(lastTick);
-                }
-                catch (Exception exception)
-                {
-                    log.Error(exception, $"Failed to update {entry.Key} proc for entity {Guid}.");
-
-                    if (!TryDetachProc(entry.Key, entry.Value))
+                    if (!IsProcRegistered(entry.Key, entry.Value))
                         continue;
 
                     try
                     {
-                        entry.Value.Cancel();
+                        entry.Value.Update(lastTick);
                     }
-                    catch (Exception cancelException)
+                    catch (Exception exception)
                     {
-                        log.Error(cancelException, $"Failed to cancel rejected {entry.Key} proc for entity {Guid}.");
+                        log.Error(exception, $"Failed to update {entry.Key} proc for entity {Guid}.");
+
+                        if (!TryDetachProc(entry.Key, entry.Value))
+                            continue;
+
+                        try
+                        {
+                            entry.Value.Cancel();
+                        }
+                        catch (Exception cancelException)
+                        {
+                            log.Error(cancelException, $"Failed to cancel rejected {entry.Key} proc for entity {Guid}.");
+                        }
                     }
                 }
-            }
 
-            ThreatManager.Update(lastTick);
-            CombatStateTick();
-            UpdateRegeneration(lastTick);
-            UpdateDeathLifecycle(lastTick);
+                ThreatManager.Update(lastTick);
+                CombatStateTick();
+                UpdateRegeneration(lastTick);
+            }
+            finally
+            {
+                UpdateDeathLifecycle(lastTick);
+            }
         }
 
         /// <summary>

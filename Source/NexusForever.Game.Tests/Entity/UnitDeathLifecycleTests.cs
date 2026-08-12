@@ -171,6 +171,50 @@ namespace NexusForever.Game.Tests.Entity
         }
 
         [Theory]
+        [InlineData(false, false, 5d)]
+        [InlineData(true, true, 5d)]
+        [InlineData(true, false, 1800d)]
+        public void Update_UpstreamFailureStillAdvancesCorpseCleanupOnce(
+            bool hasLoot,
+            bool removeLoot,
+            double cleanupDelay)
+        {
+            var updateFailure = new InvalidOperationException("movement update failure");
+            var movementManager = new Mock<IMovementManager>();
+            movementManager
+                .Setup(manager => manager.Update(It.IsAny<double>()))
+                .Throws(updateFailure);
+            var map = new Mock<IBaseMap>();
+            map.Setup(world => world.ScheduleRespawn(It.IsAny<IWorldEntity>())).Returns(true);
+            ILootInstance loot = hasLoot ? Mock.Of<ILootInstance>() : null;
+            TestUnitEntity entity = CreateEntity(map.Object, 42u, loot, movementManager.Object);
+            entity.ModifyHealth(100u, DamageType.Physical, null);
+            if (removeLoot)
+                entity.RemoveLoot(loot);
+
+            EntityDeathState expectedCorpseState = hasLoot && !removeLoot
+                ? EntityDeathState.Corpse
+                : EntityDeathState.CorpseLooted;
+            Assert.Equal(expectedCorpseState, entity.CurrentDeathState);
+
+            InvalidOperationException firstException = Assert.Throws<InvalidOperationException>(
+                () => entity.Update(cleanupDelay));
+
+            Assert.Same(updateFailure, firstException);
+            Assert.Equal(EntityDeathState.Dead, entity.CurrentDeathState);
+            map.Verify(world => world.EnqueueRemove(entity), Times.Once);
+
+            InvalidOperationException secondException = Assert.Throws<InvalidOperationException>(
+                () => entity.Update(cleanupDelay));
+
+            Assert.Same(updateFailure, secondException);
+            map.Verify(world => world.EnqueueRemove(entity), Times.Once);
+            movementManager.Verify(
+                manager => manager.Update(cleanupDelay),
+                Times.Exactly(2));
+        }
+
+        [Theory]
         [InlineData(double.NaN)]
         [InlineData(double.PositiveInfinity)]
         [InlineData(double.NegativeInfinity)]
@@ -500,12 +544,55 @@ namespace NexusForever.Game.Tests.Entity
             Assert.Equal(2, removalAttempts);
         }
 
+        [Fact]
+        public void Update_UpstreamAndRemovalFailuresLeaveCorpseCleanupRetryable()
+        {
+            var updateFailure = new InvalidOperationException("movement update failure");
+            var movementManager = new Mock<IMovementManager>();
+            movementManager
+                .Setup(manager => manager.Update(It.IsAny<double>()))
+                .Throws(updateFailure);
+            var map = new Mock<IBaseMap>();
+            map.Setup(world => world.ScheduleRespawn(It.IsAny<IWorldEntity>())).Returns(true);
+            int removalAttempts = 0;
+            map.Setup(world => world.EnqueueRemove(It.IsAny<IGridEntity>())).Callback(() =>
+            {
+                removalAttempts++;
+                if (removalAttempts == 1)
+                    throw new InvalidOperationException("removal failure");
+            });
+            TestUnitEntity entity = CreateEntity(map.Object, 42u, null, movementManager.Object);
+            entity.ModifyHealth(100u, DamageType.Physical, null);
+
+            InvalidOperationException firstException = Assert.Throws<InvalidOperationException>(
+                () => entity.Update(5d));
+
+            Assert.Same(updateFailure, firstException);
+            Assert.Equal(EntityDeathState.CorpseLooted, entity.CurrentDeathState);
+            Assert.Equal(1, removalAttempts);
+
+            InvalidOperationException secondException = Assert.Throws<InvalidOperationException>(
+                () => entity.Update(0.5d));
+
+            Assert.Same(updateFailure, secondException);
+            Assert.Equal(EntityDeathState.Dead, entity.CurrentDeathState);
+            Assert.Equal(2, removalAttempts);
+
+            InvalidOperationException thirdException = Assert.Throws<InvalidOperationException>(
+                () => entity.Update(0.5d));
+
+            Assert.Same(updateFailure, thirdException);
+            Assert.Equal(2, removalAttempts);
+            map.Verify(world => world.EnqueueRemove(entity), Times.Exactly(2));
+        }
+
         private static TestUnitEntity CreateEntity(
             IBaseMap map,
             uint entityId,
-            ILootInstance generatedLoot = null)
+            ILootInstance generatedLoot = null,
+            IMovementManager movementManager = null)
         {
-            var entity = new TestUnitEntity(new Mock<IMovementManager>().Object);
+            var entity = new TestUnitEntity(movementManager ?? Mock.Of<IMovementManager>());
             entity.AttachToMap(map, entityId);
             entity.MaxHealth = 100u;
             entity.SetHealth(100u);

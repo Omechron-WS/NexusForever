@@ -811,6 +811,9 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void ItemSplit(ulong itemGuid, ItemLocation newItemLocation, uint count)
         {
+            if (count == 0u)
+                throw new InvalidPacketValueException();
+
             IItem item = GetItem(itemGuid);
             if (item == null)
                 throw new InvalidPacketValueException();

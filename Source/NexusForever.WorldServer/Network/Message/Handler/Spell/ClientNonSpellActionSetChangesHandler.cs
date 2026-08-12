@@ -1,5 +1,6 @@
 ﻿using System;
 using NexusForever.Game.Abstract.Spell;
+using NexusForever.Game.Spell;
 using NexusForever.Game.Static.Spell;
 using NexusForever.GameTable;
 using NexusForever.Network;
@@ -24,6 +25,10 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Spell
 
         public void HandleMessage(IWorldSession session, ClientNonSpellActionSetChanges requestActionSetChanges)
         {
+            if ((uint)requestActionSetChanges.ActionBarIndex >= ActionSet.MaxActionCount
+                || requestActionSetChanges.SpecIndex >= ActionSet.MaxActionSets)
+                throw new InvalidPacketValueException();
+
             // TODO: validate the rest of the shortcut types when known
 
             switch (requestActionSetChanges.ShortcutType)

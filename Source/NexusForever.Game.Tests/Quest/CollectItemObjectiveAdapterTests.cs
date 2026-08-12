@@ -10,6 +10,8 @@ using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Quest;
 using NexusForever.Game.Tests.Persistence;
 using NexusForever.GameTable.Model;
+using NexusForever.Network;
+using NexusForever.Network.Message;
 using NexusForever.Network.Session;
 using NexusForever.Network.World.Message.Model;
 using NexusForever.Network.World.Message.Model.Shared;
@@ -133,6 +135,76 @@ namespace NexusForever.Game.Tests.Quest
                     It.IsAny<uint>(),
                     It.IsAny<uint>()),
                 Times.Never);
+        }
+
+        [Fact]
+        public void ItemSplit_ZeroCountIsRejectedWithoutMutationOrPublication()
+        {
+            Inventory inventory = CreateInventory(
+                2u,
+                out Mock<IGameSession> session,
+                out _,
+                CreateItemModel(603ul, StackableItemId, 0u, 6u));
+            IItem source = Assert.Single(GetItems(inventory));
+            session.Invocations.Clear();
+
+            Assert.Throws<InvalidPacketValueException>(() => inventory.ItemSplit(
+                source.Guid,
+                new ItemLocation
+                {
+                    Location = InventoryLocation.Inventory,
+                    BagIndex = 1u
+                },
+                0u));
+
+            Assert.Same(source, Assert.Single(GetItems(inventory)));
+            Assert.Equal(6u, source.StackCount);
+            Assert.Equal(0u, source.BagIndex);
+            session.Verify(
+                gameSession => gameSession.EnqueueMessageEncrypted(It.IsAny<IWritable>()),
+                Times.Never);
+        }
+
+        [Fact]
+        public void ItemSplit_PositiveSubsetPreservesCountsAndPublication()
+        {
+            Inventory inventory = CreateInventory(
+                2u,
+                out Mock<IGameSession> session,
+                out _,
+                CreateItemModel(604ul, StackableItemId, 0u, 6u));
+            IItem source = Assert.Single(GetItems(inventory));
+            session.Invocations.Clear();
+
+            inventory.ItemSplit(
+                source.Guid,
+                new ItemLocation
+                {
+                    Location = InventoryLocation.Inventory,
+                    BagIndex = 1u
+                },
+                2u);
+
+            IItem split = Assert.Single(GetItems(inventory), item => item.Guid != source.Guid);
+            Assert.Equal(4u, source.StackCount);
+            Assert.Equal(0u, source.BagIndex);
+            Assert.Equal(2u, split.StackCount);
+            Assert.Equal(1u, split.BagIndex);
+            session.Verify(gameSession => gameSession.EnqueueMessageEncrypted(
+                It.Is<ServerItemAdd>(message =>
+                    message.InventoryItem.Item.Guid == split.Guid
+                    && message.InventoryItem.Item.StackCount == 2u
+                    && message.InventoryItem.Item.LocationData.Location == InventoryLocation.Inventory
+                    && message.InventoryItem.Item.LocationData.BagIndex == 1u
+                    && message.InventoryItem.Reason == ItemUpdateReason.NoReason)), Times.Once);
+            session.Verify(gameSession => gameSession.EnqueueMessageEncrypted(
+                It.Is<ServerItemStackCountUpdate>(message =>
+                    message.Guid == source.Guid
+                    && message.StackCount == 4u
+                    && message.Reason == ItemUpdateReason.NoReason)), Times.Once);
+            session.Verify(
+                gameSession => gameSession.EnqueueMessageEncrypted(It.IsAny<IWritable>()),
+                Times.Exactly(2));
         }
 
         [Fact]
