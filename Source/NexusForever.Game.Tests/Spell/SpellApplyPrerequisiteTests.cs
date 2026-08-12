@@ -211,6 +211,46 @@ namespace NexusForever.Game.Tests.Spell
             }
         }
 
+        [Theory]
+        [InlineData(0u, true)]
+        [InlineData(31_965u, false)]
+        public void LegacyCasterCast_IsCreatureBuildRowUsesCasterCreatureId(
+            uint creatureId,
+            bool expectedInvocation)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                11630u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.NotEqual, 31_965u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite)
+            {
+                CasterCreatureId = creatureId
+            };
+            Mock<IUnitEntity> target = context.CreateTarget(10u);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u),
+                casterCastPrerequisite: prerequisite,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            if (expectedInvocation)
+                spell.Update(0d);
+
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Invocations.Count);
+            Assert.Equal(
+                expectedInvocation ? 0 : 1,
+                context.SessionPackets.OfType<ServerSpellCastResult>().Count());
+            if (!expectedInvocation)
+            {
+                ServerSpellCastResult result = Assert.Single(
+                    context.SessionPackets.OfType<ServerSpellCastResult>());
+                Assert.Equal(CastResult.PrereqCasterCast, result.CastResult);
+                Assert.Empty(context.Packets.OfType<ServerSpellStart>());
+            }
+
+            context.Caster.VerifyGet(unit => unit.CreatureId, Times.Once);
+        }
+
         [Fact]
         public void CasterRunner_IsPlayerCanOverrideCasterCastPrerequisite()
         {
@@ -320,6 +360,41 @@ namespace NexusForever.Game.Tests.Spell
             Assert.Single(context.Packets.OfType<ServerSpellGo>());
             Assert.Equal(0, context.CasterLevelReads);
             target.VerifyGet(unit => unit.Level, Times.Once);
+        }
+
+        [Theory]
+        [InlineData(28_559u, false)]
+        [InlineData(28_560u, true)]
+        public void TargetCast_IsCreatureBuildRowUsesExactVisibleTargetBeforeCost(
+            uint creatureId,
+            bool expectedInvocation)
+        {
+            PrerequisiteEntry prerequisite = CreateEntry(
+                13215u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.NotEqual, 28_559u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            Mock<IUnitEntity> target = context.CreateTarget(
+                42u,
+                creatureId: () => creatureId);
+            context.Caster.Setup(unit => unit.GetVisible<IWorldEntity>(42u))
+                .Returns(target.Object);
+            TestApplyPrerequisiteSpell spell = context.CreateCastSpell(
+                CreateEffect(1u, cost: 10u),
+                targetCastPrerequisite: prerequisite,
+                primaryTargetId: 42u,
+                targets: [(SpellEffectTargetFlags.Target, target.Object)]);
+
+            spell.Cast();
+            if (expectedInvocation)
+                spell.Update(0d);
+
+            Assert.Equal(expectedInvocation ? 90f : 100f, context.CasterResource1);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.CostMutations.Count);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Invocations.Count);
+            if (!expectedInvocation)
+                AssertTargetCastFailure(context, spell);
+            target.VerifyGet(unit => unit.CreatureId, Times.Once);
         }
 
         [Theory]
@@ -995,6 +1070,52 @@ namespace NexusForever.Game.Tests.Spell
         }
 
         [Theory]
+        [InlineData(590u, 6_540u, true)]
+        [InlineData(590u, 6_541u, false)]
+        [InlineData(3208u, 0u, true)]
+        [InlineData(3208u, 6_540u, false)]
+        public void UnitApply_IsCreatureBuildRowsFilterBeforeCostAndHandler(
+            uint prerequisiteId,
+            uint creatureId,
+            bool expectedInvocation)
+        {
+            PrerequisiteEntry prerequisite = prerequisiteId switch
+            {
+                590u => CreateEntry(
+                    prerequisiteId,
+                    EvaluationMode.EvaluateAND,
+                    (PrerequisiteType.IsCreature, PrerequisiteComparison.Equal, 6_540u, 2_446u)),
+                3208u => CreateEntry(
+                    prerequisiteId,
+                    EvaluationMode.EvaluateAND,
+                    (PrerequisiteType.IsCreature, PrerequisiteComparison.Equal, 0u, 0u)),
+                _ => throw new ArgumentOutOfRangeException(nameof(prerequisiteId))
+            };
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            Mock<IUnitEntity> target = context.CreateTarget(
+                10u,
+                creatureId: () => creatureId);
+            Spell4EffectsEntry effect = CreateEffect(
+                1u,
+                targetPrerequisite: prerequisite.Id,
+                cost: 10u);
+            TestApplyPrerequisiteSpell spell = context.CreateSpell(
+                effect,
+                (SpellEffectTargetFlags.Target, target.Object));
+
+            spell.ExecuteForTest();
+
+            Assert.Equal(expectedInvocation ? 90f : 100f, context.CasterResource1);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.CostMutations.Count);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.InvocationAttempts);
+            Assert.Equal(expectedInvocation ? 1 : 0, context.Invocations.Count);
+            Assert.Equal(
+                expectedInvocation ? 1 : 0,
+                Assert.Single(context.Packets.OfType<ServerSpellGo>()).TargetInfoData.Count);
+            target.VerifyGet(unit => unit.CreatureId, Times.Once);
+        }
+
+        [Theory]
         [InlineData(WorldDifficulty.Normal, WorldDifficulty.Normal, WorldDifficulty.Normal, true)]
         [InlineData(WorldDifficulty.Veteran, WorldDifficulty.Veteran, WorldDifficulty.Veteran, true)]
         [InlineData(WorldDifficulty.Normal, WorldDifficulty.Normal, WorldDifficulty.Veteran, false)]
@@ -1351,6 +1472,47 @@ namespace NexusForever.Game.Tests.Spell
         }
 
         [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void InvalidOrMixedUnsupportedIsCreatureRowNeverRegistersOrReadsCreatureId(
+            bool mixedUnsupported)
+        {
+            PrerequisiteEntry prerequisite = mixedUnsupported
+                ? CreateEntry(
+                    3659u,
+                    EvaluationMode.EvaluateAND,
+                    (PrerequisiteType.Unknown47, PrerequisiteComparison.Equal, 0u, 0u),
+                    (PrerequisiteType.IsCreature, PrerequisiteComparison.Equal, 0u, 0u))
+                : CreateEntry(
+                    1u,
+                    EvaluationMode.EvaluateAND,
+                    (PrerequisiteType.IsCreature, PrerequisiteComparison.GreaterThan, 5_991u, 0u));
+            using var context = new SpellPrerequisiteContext(prerequisite);
+            Mock<IUnitEntity> target = context.CreateTarget(
+                10u,
+                creatureId: () => throw new InvalidOperationException(
+                    "Gated creature-id read."));
+            Spell4EffectsEntry effect = CreateEffect(
+                1u,
+                targetPrerequisite: prerequisite.Id,
+                delayTime: 100u,
+                cost: 10u);
+            TestApplyPrerequisiteSpell spell = context.CreateSpell(
+                effect,
+                (SpellEffectTargetFlags.Target, target.Object));
+
+            spell.ExecuteForTest();
+            spell.Update(1d);
+
+            Assert.Equal(100f, context.CasterResource1);
+            Assert.Empty(context.CostMutations);
+            Assert.Empty(context.Invocations);
+            Assert.Empty(context.Packets.OfType<Server07F8>());
+            Assert.Empty(Assert.Single(context.Packets.OfType<ServerSpellGo>()).TargetInfoData);
+            target.VerifyGet(unit => unit.CreatureId, Times.Never);
+        }
+
+        [Theory]
         [InlineData(22677u, 6_000u, 10_000u, true)]
         [InlineData(22677u, 6_000u, 100_000u, false)]
         [InlineData(22677u, 5_000u, 20_000u, true)]
@@ -1444,6 +1606,9 @@ namespace NexusForever.Game.Tests.Spell
         [InlineData(PrerequisiteType.IsPlayer, 0)]
         [InlineData(PrerequisiteType.IsPlayer, 1)]
         [InlineData(PrerequisiteType.IsPlayer, 2)]
+        [InlineData(PrerequisiteType.IsCreature, 0)]
+        [InlineData(PrerequisiteType.IsCreature, 1)]
+        [InlineData(PrerequisiteType.IsCreature, 2)]
         [InlineData(PrerequisiteType.HealthRequirement, 0)]
         [InlineData(PrerequisiteType.HealthRequirement, 1)]
         [InlineData(PrerequisiteType.HealthRequirement, 2)]
@@ -2201,6 +2366,7 @@ namespace NexusForever.Game.Tests.Spell
             public uint CasterLevel { get; set; } = 50u;
             public int CasterLevelReads { get; private set; }
             public int CasterVitalReads { get; private set; }
+            public uint CasterCreatureId { get; set; }
             public uint CasterHealth { get; set; } = 100u;
             public uint CasterMaxHealth { get; set; } = 100u;
             public Faction CasterFaction { get; set; } = Faction.Exile;
@@ -2256,6 +2422,7 @@ namespace NexusForever.Game.Tests.Spell
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckInCombat>(PrerequisiteType.InCombat);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDeadState>(PrerequisiteType.DeadState);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckIsPlayer>(PrerequisiteType.IsPlayer);
+                services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckIsCreature>(PrerequisiteType.IsCreature);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealth>(PrerequisiteType.Health);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealthRequirement>(PrerequisiteType.HealthRequirement);
                 services.AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDifficulty>(PrerequisiteType.Difficulty);
@@ -2272,6 +2439,7 @@ namespace NexusForever.Game.Tests.Spell
                 Caster.SetupGet(entity => entity.IsLoading).Returns(false);
                 Caster.SetupGet(entity => entity.Session).Returns(Session.Object);
                 Caster.SetupGet(entity => entity.SpellManager).Returns(spellManager.Object);
+                Caster.SetupGet(entity => entity.CreatureId).Returns(() => CasterCreatureId);
                 Caster.SetupGet(entity => entity.Level).Returns(() =>
                 {
                     CasterLevelReads++;
@@ -2346,7 +2514,8 @@ namespace NexusForever.Game.Tests.Spell
                 Func<IBaseMap> map = null,
                 Func<bool> inCombat = null,
                 Func<uint> health = null,
-                Func<uint> maximumHealth = null)
+                Func<uint> maximumHealth = null,
+                Func<uint> creatureId = null)
             {
                 var target = new Mock<IUnitEntity>();
                 ConfigureTarget(
@@ -2360,7 +2529,8 @@ namespace NexusForever.Game.Tests.Spell
                     map,
                     inCombat,
                     health,
-                    maximumHealth);
+                    maximumHealth,
+                    creatureId);
                 return target;
             }
 
@@ -2368,7 +2538,8 @@ namespace NexusForever.Game.Tests.Spell
                 uint guid,
                 Func<bool> alive = null,
                 Func<bool> inWorld = null,
-                Func<IBaseMap> map = null)
+                Func<IBaseMap> map = null,
+                Func<uint> creatureId = null)
             {
                 var target = new Mock<IPlayer>();
                 ConfigureTarget(
@@ -2376,7 +2547,8 @@ namespace NexusForever.Game.Tests.Spell
                     guid,
                     alive: alive,
                     inWorld: inWorld,
-                    map: map);
+                    map: map,
+                    creatureId: creatureId);
                 return target;
             }
 
@@ -2391,10 +2563,12 @@ namespace NexusForever.Game.Tests.Spell
                 Func<IBaseMap> map = null,
                 Func<bool> inCombat = null,
                 Func<uint> health = null,
-                Func<uint> maximumHealth = null)
+                Func<uint> maximumHealth = null,
+                Func<uint> creatureId = null)
                 where T : class, IUnitEntity
             {
                 target.SetupGet(entity => entity.Guid).Returns(guid);
+                target.SetupGet(entity => entity.CreatureId).Returns(() => creatureId?.Invoke() ?? 0u);
                 target.SetupGet(entity => entity.IsAlive).Returns(() => alive?.Invoke() ?? true);
                 target.SetupGet(entity => entity.InWorld).Returns(() => inWorld?.Invoke() ?? true);
                 target.SetupGet(entity => entity.Map).Returns(() => map?.Invoke() ?? Map.Object);

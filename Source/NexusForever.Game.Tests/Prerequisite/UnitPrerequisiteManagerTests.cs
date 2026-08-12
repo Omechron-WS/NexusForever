@@ -389,6 +389,175 @@ namespace NexusForever.Game.Tests.Prerequisite
         }
 
         [Fact]
+        public void IsCreatureBuildRowsEvaluateExactIdZeroAndIgnoredObjectDynamically()
+        {
+            PrerequisiteEntry equal = CreateEntry(
+                345u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.Equal, 5_991u, 0u));
+            PrerequisiteEntry notEqual = CreateEntry(
+                905u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.NotEqual, 7_471u, 0u));
+            PrerequisiteEntry ignoredObject = CreateEntry(
+                590u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.Equal, 6_540u, 2_446u));
+            PrerequisiteEntry missingCreatureEntry = CreateEntry(
+                3208u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.Equal, 0u, 0u));
+            PrerequisiteEntry anyOfThree = CreateEntry(
+                363u,
+                EvaluationMode.EvaluateOR,
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.Equal, 6_204u, 0u),
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.Equal, 6_205u, 0u),
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.Equal, 6_206u, 0u));
+            PrerequisiteEntry[] entries =
+            [
+                equal,
+                notEqual,
+                ignoredObject,
+                missingCreatureEntry,
+                anyOfThree
+            ];
+            using var context = new ManagerContext(entries);
+            uint creatureId = 5_991u;
+            Mock<IUnitEntity> unit = CreateUnit(creatureId: () => creatureId);
+
+            foreach (PrerequisiteEntry entry in entries)
+                Assert.True(context.Manager.CanEvaluateForUnit(entry.Id));
+
+            Assert.True(context.Manager.TryMeets(unit.Object, equal.Id, out bool meets));
+            Assert.True(meets);
+            Assert.True(context.Manager.TryMeets(unit.Object, notEqual.Id, out meets));
+            Assert.True(meets);
+
+            creatureId = 7_471u;
+            Assert.True(context.Manager.TryMeets(unit.Object, notEqual.Id, out meets));
+            Assert.False(meets);
+
+            creatureId = 6_540u;
+            Assert.True(context.Manager.TryMeets(unit.Object, ignoredObject.Id, out meets));
+            Assert.True(meets);
+
+            creatureId = 0u;
+            Assert.True(context.Manager.TryMeets(
+                unit.Object,
+                missingCreatureEntry.Id,
+                out meets));
+            Assert.True(meets);
+
+            creatureId = 6_205u;
+            Assert.True(context.Manager.TryMeets(unit.Object, anyOfThree.Id, out meets));
+            Assert.True(meets);
+
+            creatureId = 6_207u;
+            Assert.True(context.Manager.TryMeets(unit.Object, anyOfThree.Id, out meets));
+            Assert.False(meets);
+        }
+
+        [Fact]
+        public void MixedIsPlayerAndIsCreatureBuildRowEvaluatesEveryComponent()
+        {
+            PrerequisiteEntry entry = CreateEntry(
+                6216u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsPlayer, PrerequisiteComparison.NotEqual, 0u, 0u),
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.NotEqual, 12_664u, 0u));
+            using var context = new ManagerContext(entry);
+            uint creatureId = 5_991u;
+            Mock<IUnitEntity> creature = CreateUnit(creatureId: () => creatureId);
+            var player = new Mock<IPlayer>(MockBehavior.Strict);
+            player.SetupGet(unit => unit.CreatureId).Returns(0u);
+
+            Assert.True(context.Manager.CanEvaluateForUnit(entry.Id));
+            Assert.True(context.Manager.TryMeets(
+                creature.Object,
+                entry.Id,
+                out bool creatureMeets));
+            Assert.True(creatureMeets);
+
+            creatureId = 12_664u;
+            Assert.True(context.Manager.TryMeets(
+                creature.Object,
+                entry.Id,
+                out creatureMeets));
+            Assert.False(creatureMeets);
+
+            Assert.True(context.Manager.TryMeets(
+                player.Object,
+                entry.Id,
+                out bool playerMeets));
+            Assert.False(playerMeets);
+            player.VerifyGet(unit => unit.CreatureId, Times.Once);
+            player.VerifyNoOtherCalls();
+        }
+
+        [Fact]
+        public void IsCreatureInvalidMalformedAndMixedUnsupportedRowsRemainWhollyGated()
+        {
+            PrerequisiteEntry invalidComparison = CreateEntry(
+                1u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.GreaterThan, 5_991u, 0u));
+            PrerequisiteEntry mixedUnsupported = CreateEntry(
+                3659u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.Unknown47, PrerequisiteComparison.Equal, 0u, 0u),
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.Equal, 0u, 0u));
+            PrerequisiteEntry malformedInactive = CreateEntry(
+                2u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.Equal, 5_991u, 0u));
+            malformedInactive.Value[1] = 1u;
+            using var context = new ManagerContext(
+                invalidComparison,
+                mixedUnsupported,
+                malformedInactive);
+            var unit = new Mock<IUnitEntity>(MockBehavior.Strict);
+
+            foreach (PrerequisiteEntry entry in new[]
+            {
+                invalidComparison,
+                mixedUnsupported,
+                malformedInactive
+            })
+            {
+                Assert.False(context.Manager.CanEvaluateForUnit(entry.Id));
+                Assert.False(context.Manager.TryMeets(
+                    unit.Object,
+                    entry.Id,
+                    out bool meets));
+                Assert.False(meets);
+            }
+
+            unit.VerifyNoOtherCalls();
+        }
+
+        [Fact]
+        public void IsCreatureReadExceptionIsContainedAsEvaluationFailure()
+        {
+            PrerequisiteEntry entry = CreateEntry(
+                345u,
+                EvaluationMode.EvaluateAND,
+                (PrerequisiteType.IsCreature, PrerequisiteComparison.Equal, 5_991u, 0u));
+            using var context = new ManagerContext(entry);
+            var unit = new Mock<IUnitEntity>();
+            unit.SetupGet(entity => entity.CreatureId)
+                .Throws(new InvalidOperationException("Test creature-id read failure."));
+
+            Exception exception = Record.Exception(() =>
+            {
+                Assert.True(context.Manager.CanEvaluateForUnit(entry.Id));
+                Assert.False(context.Manager.TryMeets(unit.Object, entry.Id, out bool meets));
+                Assert.False(meets);
+            });
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
         public void HealthRequirementBuildRows_EvaluateCurrentAbsoluteHealthDynamically()
         {
             PrerequisiteEntry greaterThanOne = CreateEntry(
@@ -812,11 +981,13 @@ namespace NexusForever.Game.Tests.Prerequisite
             Func<bool> alive = null,
             Func<bool> inCombat = null,
             Func<uint> health = null,
-            Func<uint> maximumHealth = null)
+            Func<uint> maximumHealth = null,
+            Func<uint> creatureId = null)
         {
             var unit = new Mock<IUnitEntity>();
             unit.SetupGet(entity => entity.Level).Returns(level);
             unit.SetupGet(entity => entity.Faction1).Returns(faction);
+            unit.SetupGet(entity => entity.CreatureId).Returns(() => creatureId?.Invoke() ?? 0u);
             unit.SetupGet(entity => entity.IsAlive).Returns(() => alive?.Invoke() ?? true);
             unit.SetupGet(entity => entity.InCombat).Returns(() => inCombat?.Invoke() ?? false);
             unit.SetupGet(entity => entity.Health).Returns(() => health?.Invoke() ?? 1u);
@@ -939,6 +1110,7 @@ namespace NexusForever.Game.Tests.Prerequisite
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckInCombat>(PrerequisiteType.InCombat)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDeadState>(PrerequisiteType.DeadState)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckIsPlayer>(PrerequisiteType.IsPlayer)
+                    .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckIsCreature>(PrerequisiteType.IsCreature)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealth>(PrerequisiteType.Health)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckHealthRequirement>(PrerequisiteType.HealthRequirement)
                     .AddKeyedTransient<IPrerequisiteCheck, PrerequisiteCheckDifficulty>(PrerequisiteType.Difficulty)
