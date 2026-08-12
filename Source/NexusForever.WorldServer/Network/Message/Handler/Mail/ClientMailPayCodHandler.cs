@@ -11,7 +11,7 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Mail
         /// </summary>
         public void HandleMessage(IWorldSession session, ClientMailPayCod mailPayCod)
         {
-            session.Player.MailManager.MailPayCod(mailPayCod.MailId);
+            session.Player.MailManager.MailPayCod(mailPayCod.MailId, mailPayCod.MailboxUnitId);
         }
     }
 }

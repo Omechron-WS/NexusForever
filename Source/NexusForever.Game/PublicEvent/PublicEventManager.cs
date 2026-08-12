@@ -77,21 +77,55 @@ namespace NexusForever.Game.PublicEvent
             if (publicEvents.Count == 0)
                 return;
 
-            var toRemove = new List<IPublicEvent>();
+            KeyValuePair<uint, IPublicEvent>[] eventSnapshot = publicEvents.ToArray();
+            var toRemove = new List<KeyValuePair<uint, IPublicEvent>>();
 
-            foreach (IPublicEvent @event in publicEvents.Values)
+            foreach (KeyValuePair<uint, IPublicEvent> eventEntry in eventSnapshot)
             {
-                @event.Update(lastTick);
-                if (@event.IsFinalised)
-                    toRemove.Add(@event);
+                if (!publicEvents.TryGetValue(eventEntry.Key, out IPublicEvent currentEvent)
+                    || !ReferenceEquals(currentEvent, eventEntry.Value))
+                    continue;
+
+                try
+                {
+                    currentEvent.Update(lastTick);
+                }
+                catch (Exception exception)
+                {
+                    log.LogError(
+                        exception,
+                        $"Failed to update public event {eventEntry.Key} for map {map.Entry.Id}.");
+                }
+
+                if (!publicEvents.TryGetValue(eventEntry.Key, out currentEvent)
+                    || !ReferenceEquals(currentEvent, eventEntry.Value)
+                    || !currentEvent.IsFinalised)
+                    continue;
+
+                toRemove.Add(eventEntry);
             }
 
-            foreach (IPublicEvent @event in toRemove)
+            foreach (KeyValuePair<uint, IPublicEvent> eventEntry in toRemove)
             {
-                publicEvents.Remove(@event.Id);
-                @event.Dispose();
+                if (!publicEvents.TryGetValue(eventEntry.Key, out IPublicEvent currentEvent)
+                    || !ReferenceEquals(currentEvent, eventEntry.Value)
+                    || !currentEvent.IsFinalised)
+                    continue;
 
-                log.LogTrace($"Removed public event {@event.Id} for map {map.Entry.Id} from store.");
+                publicEvents.Remove(eventEntry.Key);
+
+                try
+                {
+                    currentEvent.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    log.LogError(
+                        exception,
+                        $"Failed to dispose finalised public event {eventEntry.Key} for map {map.Entry.Id}.");
+                }
+
+                log.LogTrace($"Removed public event {eventEntry.Key} for map {map.Entry.Id} from store.");
             }
         }
 

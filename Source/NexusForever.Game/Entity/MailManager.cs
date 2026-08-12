@@ -462,7 +462,7 @@ namespace NexusForever.Game.Entity
         /// <summary>
         /// Pay cash on delivery for a <see cref="IMailItem"/> with supplied id.
         /// </summary>
-        public void MailPayCod(ulong mailId)
+        public void MailPayCod(ulong mailId, uint unitId)
         {
             IMailItem mail;
             GenericError GetResult()
@@ -470,11 +470,23 @@ namespace NexusForever.Game.Entity
                 if (!availableMail.TryGetValue(mailId, out mail))
                     return GenericError.MailDoesNotExist;
 
+                if (mail.PendingDelete || mail.RecipientId != player.CharacterId)
+                    return GenericError.MailDoesNotExist;
+
+                if (!mail.IsCashOnDelivery
+                    || mail.HasPaidOrCollectedCurrency
+                    || mail.CurrencyType != CurrencyType.Credits
+                    || mail.CurrencyAmount == 0ul)
+                    return GenericError.MailBusy;
+
+                if (!mail.Any())
+                    return GenericError.MailNoAttachment;
+
+                if (unitId == 0u || !IsTargetMailBoxInRange(unitId))
+                    return GenericError.MailMailBoxOutOfRange;
+
                 if (!player.CurrencyManager.CanAfford(CurrencyType.Credits, mail.CurrencyAmount))
                     return GenericError.MailInsufficientFunds;
-
-                if (mail.HasPaidOrCollectedCurrency)
-                    return GenericError.MailBusy;
 
                 return GenericError.Ok;
             }
@@ -559,6 +571,12 @@ namespace NexusForever.Game.Entity
                 if (!availableMail.TryGetValue(mailId, out mailItem))
                     return GenericError.MailDoesNotExist;
 
+                if (mailItem.PendingDelete || mailItem.RecipientId != player.CharacterId)
+                    return GenericError.MailDoesNotExist;
+
+                if (mailItem.IsCashOnDelivery && !mailItem.HasPaidOrCollectedCurrency)
+                    return GenericError.MailBusy;
+
                 mailAttachment = mailItem.GetAttachment(attachmentIndex);
                 if (mailAttachment == null)
                     return GenericError.MailNoAttachment;
@@ -601,8 +619,13 @@ namespace NexusForever.Game.Entity
                 if (!availableMail.TryGetValue(mailId, out mailItem))
                     return GenericError.MailDoesNotExist;
 
-                // probably not the correct error
-                if (mailItem.HasPaidOrCollectedCurrency)
+                if (mailItem.PendingDelete || mailItem.RecipientId != player.CharacterId)
+                    return GenericError.MailDoesNotExist;
+
+                if (mailItem.IsCashOnDelivery
+                    || mailItem.HasPaidOrCollectedCurrency
+                    || mailItem.CurrencyType != CurrencyType.Credits
+                    || mailItem.CurrencyAmount == 0ul)
                     return GenericError.MailNoAttachment;
 
                 if (unitId == 0u || !IsTargetMailBoxInRange(unitId))

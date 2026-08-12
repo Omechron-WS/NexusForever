@@ -371,6 +371,12 @@ namespace NexusForever.Game.Spell
         [SpellEffectHandler(SpellEffectType.Heal)]
         public static void HandleEffectHeal(ISpell spell, IUnitEntity target, ISpellTargetEffectInfo info)
         {
+            if (!target.IsAlive)
+            {
+                info.DropEffect = true;
+                return;
+            }
+
             if (target.CanAttack(spell.Caster))
                 return;
 
@@ -391,6 +397,12 @@ namespace NexusForever.Game.Spell
         [SpellEffectHandler(SpellEffectType.HealShields)]
         public static void HandleEffectHealShields(ISpell spell, IUnitEntity target, ISpellTargetEffectInfo info)
         {
+            if (!target.IsAlive)
+            {
+                info.DropEffect = true;
+                return;
+            }
+
             if (target.CanAttack(spell.Caster))
                 return;
 

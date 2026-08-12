@@ -43,7 +43,7 @@ namespace NexusForever.Game.Abstract.Entity
         /// <summary>
         /// Pay cash on delivery for a <see cref="IMailItem"/> with supplied id.
         /// </summary>
-        void MailPayCod(ulong mailId);
+        void MailPayCod(ulong mailId, uint unitId);
 
         // <summary>
         /// Return <see cref="IMailItem"/> to original sender with supplied id.

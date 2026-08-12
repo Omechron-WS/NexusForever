@@ -914,6 +914,106 @@ namespace NexusForever.Game.Tests.Combat
             }
         }
 
+        [Theory]
+        [InlineData(SpellEffectType.Heal)]
+        [InlineData(SpellEffectType.HealShields)]
+        public void HandleHealingEffect_DeadTargetDropsBeforeCalculationOrMutation(
+            SpellEffectType effectType)
+        {
+            var calculator = new Mock<IDamageCalculator>();
+            var factory = new Mock<IFactory<IDamageCalculator>>();
+            factory.Setup(f => f.Resolve()).Returns(calculator.Object);
+            using ServiceProvider provider = new ServiceCollection()
+                .AddSingleton(factory.Object)
+                .BuildServiceProvider();
+            IServiceProvider previousProvider = LegacyServiceProvider.Provider;
+            LegacyServiceProvider.Provider = provider;
+
+            try
+            {
+                var caster = new Mock<IUnitEntity>();
+                var target = new Mock<IUnitEntity>();
+                target.SetupGet(entity => entity.IsAlive).Returns(false);
+                var spell = new Mock<ISpell>();
+                spell.SetupGet(value => value.Caster).Returns(caster.Object);
+                var info = new SpellTargetInfo.SpellTargetEffectInfo(
+                    1u,
+                    new Spell4EffectsEntry
+                    {
+                        EffectType = effectType
+                    });
+
+                if (effectType == SpellEffectType.Heal)
+                    SpellHandler.HandleEffectHeal(spell.Object, target.Object, info);
+                else
+                    SpellHandler.HandleEffectHealShields(spell.Object, target.Object, info);
+
+                Assert.True(info.DropEffect);
+                Assert.Null(info.Damage);
+                factory.Verify(value => value.Resolve(), Times.Never);
+                target.Verify(value => value.CanAttack(It.IsAny<IUnitEntity>()), Times.Never);
+                target.Verify(value => value.ModifyHealth(
+                    It.IsAny<uint>(),
+                    It.IsAny<DamageType>(),
+                    It.IsAny<IUnitEntity>()), Times.Never);
+                target.VerifyGet(value => value.Shield, Times.Never);
+                target.VerifySet(value => value.Shield = It.IsAny<uint>(), Times.Never);
+            }
+            finally
+            {
+                LegacyServiceProvider.Provider = previousProvider;
+            }
+        }
+
+        [Fact]
+        public void HandleEffectHeal_LivingFriendlyTargetUsesCalculatedAmount()
+        {
+            var calculator = new Mock<IDamageCalculator>();
+            calculator.Setup(value => value.CalculateBaseAmount(
+                    It.IsAny<IUnitEntity>(),
+                    It.IsAny<IUnitEntity>(),
+                    It.IsAny<ISpellTargetEffectInfo>()))
+                .Returns(10u);
+            var factory = new Mock<IFactory<IDamageCalculator>>();
+            factory.Setup(value => value.Resolve()).Returns(calculator.Object);
+            using ServiceProvider provider = new ServiceCollection()
+                .AddSingleton(factory.Object)
+                .BuildServiceProvider();
+            IServiceProvider previousProvider = LegacyServiceProvider.Provider;
+            LegacyServiceProvider.Provider = provider;
+
+            try
+            {
+                var caster = new Mock<IUnitEntity>();
+                var target = new Mock<IUnitEntity>();
+                target.SetupGet(entity => entity.IsAlive).Returns(true);
+                target.Setup(value => value.CanAttack(caster.Object)).Returns(false);
+                var spell = new Mock<ISpell>();
+                spell.SetupGet(value => value.Caster).Returns(caster.Object);
+                var info = new SpellTargetInfo.SpellTargetEffectInfo(
+                    1u,
+                    new Spell4EffectsEntry
+                    {
+                        EffectType = SpellEffectType.Heal
+                    });
+
+                SpellHandler.HandleEffectHeal(spell.Object, target.Object, info);
+
+                Assert.False(info.DropEffect);
+                Assert.Equal(DamageType.Heal, info.Damage.DamageType);
+                Assert.Equal(10u, info.Damage.RawDamage);
+                Assert.Equal(10u, info.Damage.AdjustedDamage);
+                target.Verify(value => value.ModifyHealth(
+                    10u,
+                    DamageType.Heal,
+                    caster.Object), Times.Once);
+            }
+            finally
+            {
+                LegacyServiceProvider.Provider = previousProvider;
+            }
+        }
+
         [Fact]
         public void HandleEffectHealShields_OverflowClampsToMaximumCapacity()
         {
@@ -935,6 +1035,7 @@ namespace NexusForever.Game.Tests.Combat
             {
                 var caster = new Mock<IUnitEntity>();
                 var target = new Mock<IUnitEntity>();
+                target.SetupGet(entity => entity.IsAlive).Returns(true);
                 target.Setup(t => t.Shield).Returns(uint.MaxValue - 5u);
                 target.Setup(t => t.MaxShieldCapacity).Returns(uint.MaxValue);
                 var spell = new Mock<ISpell>();
