@@ -748,6 +748,12 @@ namespace NexusForever.Server.GroupServer.Group
             if (member.Identity != Leader)
                 return GroupActionResult.ChangeSettingsFailed;
 
+            if (!IsValid(normalRule)
+                || !IsValid(thresholdRule)
+                || !IsValid(thresholdQuality)
+                || !IsValid(harvestRule))
+                return GroupActionResult.ChangeSettingsFailed;
+
             if (LootRule != normalRule
                 || LootRuleThreshold != thresholdRule
                 || LootThreshold != thresholdQuality
@@ -766,6 +772,31 @@ namespace NexusForever.Server.GroupServer.Group
             });
 
             return GroupActionResult.ChangeSettingsSuccess;
+        }
+
+        private static bool IsValid(LootRule rule)
+        {
+            return rule is LootRule.FreeForAll
+                or LootRule.RoundRobin
+                or LootRule.NeedBeforeGreed
+                or LootRule.Master;
+        }
+
+        private static bool IsValid(LootThreshold threshold)
+        {
+            return threshold is LootThreshold.Inferior
+                or LootThreshold.Average
+                or LootThreshold.Good
+                or LootThreshold.Excellent
+                or LootThreshold.Superb
+                or LootThreshold.Legendary
+                or LootThreshold.Artifact;
+        }
+
+        private static bool IsValid(HarvestLootRule rule)
+        {
+            return rule is HarvestLootRule.RoundRobin
+                or HarvestLootRule.FirstTagger;
         }
 
         /// <summary>

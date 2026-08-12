@@ -29,6 +29,29 @@ namespace NexusForever.Server.GroupServer.Tests.Group
         private const ulong MemberId = 202ul;
         private const ulong CandidateId = 303ul;
 
+        public static TheoryData<LootRule, LootRule, LootThreshold, HarvestLootRule> InvalidLootRuleTuples => new()
+        {
+            { (LootRule)4, LootRule.NeedBeforeGreed, LootThreshold.Good, HarvestLootRule.FirstTagger },
+            { (LootRule)5, LootRule.NeedBeforeGreed, LootThreshold.Good, HarvestLootRule.FirstTagger },
+            { (LootRule)6, LootRule.NeedBeforeGreed, LootThreshold.Good, HarvestLootRule.FirstTagger },
+            { (LootRule)7, LootRule.NeedBeforeGreed, LootThreshold.Good, HarvestLootRule.FirstTagger },
+            { LootRule.NeedBeforeGreed, (LootRule)4, LootThreshold.Good, HarvestLootRule.FirstTagger },
+            { LootRule.NeedBeforeGreed, (LootRule)5, LootThreshold.Good, HarvestLootRule.FirstTagger },
+            { LootRule.NeedBeforeGreed, (LootRule)6, LootThreshold.Good, HarvestLootRule.FirstTagger },
+            { LootRule.NeedBeforeGreed, (LootRule)7, LootThreshold.Good, HarvestLootRule.FirstTagger },
+            { LootRule.NeedBeforeGreed, LootRule.NeedBeforeGreed, (LootThreshold)0, HarvestLootRule.FirstTagger },
+            { LootRule.NeedBeforeGreed, LootRule.NeedBeforeGreed, (LootThreshold)8, HarvestLootRule.FirstTagger },
+            { LootRule.NeedBeforeGreed, LootRule.NeedBeforeGreed, (LootThreshold)9, HarvestLootRule.FirstTagger },
+            { LootRule.NeedBeforeGreed, LootRule.NeedBeforeGreed, (LootThreshold)10, HarvestLootRule.FirstTagger },
+            { LootRule.NeedBeforeGreed, LootRule.NeedBeforeGreed, (LootThreshold)11, HarvestLootRule.FirstTagger },
+            { LootRule.NeedBeforeGreed, LootRule.NeedBeforeGreed, (LootThreshold)12, HarvestLootRule.FirstTagger },
+            { LootRule.NeedBeforeGreed, LootRule.NeedBeforeGreed, (LootThreshold)13, HarvestLootRule.FirstTagger },
+            { LootRule.NeedBeforeGreed, LootRule.NeedBeforeGreed, (LootThreshold)14, HarvestLootRule.FirstTagger },
+            { LootRule.NeedBeforeGreed, LootRule.NeedBeforeGreed, (LootThreshold)15, HarvestLootRule.FirstTagger },
+            { LootRule.NeedBeforeGreed, LootRule.NeedBeforeGreed, LootThreshold.Good, (HarvestLootRule)2 },
+            { LootRule.NeedBeforeGreed, LootRule.NeedBeforeGreed, LootThreshold.Good, (HarvestLootRule)3 },
+        };
+
         [Fact]
         public async Task AddMember_AdvancesOnceAndPublishesTheAdvancedRevision()
         {
@@ -199,6 +222,100 @@ namespace NexusForever.Server.GroupServer.Tests.Group
             Assert.Single(unchangedFixture.PendingMessages);
         }
 
+        [Theory]
+        [MemberData(nameof(InvalidLootRuleTuples))]
+        public async Task LootRules_InvalidLeaderTupleDoesNotMutateRevisionOrPublish(
+            LootRule normalRule,
+            LootRule thresholdRule,
+            LootThreshold thresholdQuality,
+            HarvestLootRule harvestRule)
+        {
+            using var fixture = new ProducerFixture();
+            GroupEntity group = fixture.CreateGroup();
+
+            GroupActionResult result = await group.SetLootRulesAsync(
+                Identity(LeaderId),
+                normalRule,
+                thresholdRule,
+                thresholdQuality,
+                harvestRule);
+
+            Assert.Equal(GroupActionResult.ChangeSettingsFailed, result);
+            Assert.Equal(InitialRevision, group.Revision);
+            AssertLootRules(
+                group,
+                LootRule.NeedBeforeGreed,
+                LootRule.NeedBeforeGreed,
+                LootThreshold.Good,
+                HarvestLootRule.FirstTagger);
+            Assert.Empty(fixture.PendingMessages);
+        }
+
+        [Fact]
+        public async Task LootRules_InvalidTuplePreservesMemberAndLeaderResultOrdering()
+        {
+            using var fixture = new ProducerFixture();
+            GroupEntity group = fixture.CreateGroup();
+
+            GroupActionResult missingMemberResult = await group.SetLootRulesAsync(
+                Identity(CandidateId),
+                (LootRule)byte.MaxValue,
+                (LootRule)byte.MaxValue,
+                (LootThreshold)byte.MaxValue,
+                (HarvestLootRule)byte.MaxValue);
+            GroupActionResult nonLeaderResult = await group.SetLootRulesAsync(
+                Identity(MemberId),
+                (LootRule)byte.MaxValue,
+                (LootRule)byte.MaxValue,
+                (LootThreshold)byte.MaxValue,
+                (HarvestLootRule)byte.MaxValue);
+
+            Assert.Equal(GroupActionResult.InvalidGroup, missingMemberResult);
+            Assert.Equal(GroupActionResult.ChangeSettingsFailed, nonLeaderResult);
+            Assert.Equal(InitialRevision, group.Revision);
+            AssertLootRules(
+                group,
+                LootRule.NeedBeforeGreed,
+                LootRule.NeedBeforeGreed,
+                LootThreshold.Good,
+                HarvestLootRule.FirstTagger);
+            Assert.Empty(fixture.PendingMessages);
+        }
+
+        [Fact]
+        public async Task LootRules_ValidLeaderTupleCanReplaceExistingInvalidState()
+        {
+            using var fixture = new ProducerFixture();
+            GroupEntity group = fixture.CreateGroup();
+            group.LootRule = (LootRule)byte.MaxValue;
+            group.LootRuleThreshold = (LootRule)byte.MaxValue;
+            group.LootThreshold = (LootThreshold)byte.MaxValue;
+            group.LootRuleHarvest = (HarvestLootRule)byte.MaxValue;
+
+            GroupActionResult result = await group.SetLootRulesAsync(
+                Identity(LeaderId),
+                LootRule.RoundRobin,
+                LootRule.Master,
+                LootThreshold.Excellent,
+                HarvestLootRule.RoundRobin);
+
+            Assert.Equal(GroupActionResult.ChangeSettingsSuccess, result);
+            Assert.Equal(InitialRevision + 1ul, group.Revision);
+            AssertLootRules(
+                group,
+                LootRule.RoundRobin,
+                LootRule.Master,
+                LootThreshold.Excellent,
+                HarvestLootRule.RoundRobin);
+            GroupLootRulesUpdatedMessage message = fixture.SingleMessage<GroupLootRulesUpdatedMessage>();
+            Assert.Equal(InitialRevision + 1ul, message.Group.Revision);
+            Assert.Equal(LootRule.RoundRobin, message.Group.NormalRule);
+            Assert.Equal(LootRule.Master, message.Group.ThresholdRule);
+            Assert.Equal(LootThreshold.Excellent, message.Group.ThresholdQuality);
+            Assert.Equal(HarvestLootRule.RoundRobin, message.Group.HarvestRule);
+            Assert.Single(fixture.PendingMessages);
+        }
+
         [Fact]
         public async Task MemberFlags_ChangedAndUnchangedValuesPublishAuthoritativeRevisions()
         {
@@ -344,6 +461,23 @@ namespace NexusForever.Server.GroupServer.Tests.Group
                 Id      = id,
                 RealmId = RealmId,
             };
+        }
+
+        private static void AssertLootRules(
+            GroupEntity group,
+            LootRule normalRule,
+            LootRule thresholdRule,
+            LootThreshold thresholdQuality,
+            HarvestLootRule harvestRule)
+        {
+            Assert.Equal(normalRule, group.LootRule);
+            Assert.Equal(thresholdRule, group.LootRuleThreshold);
+            Assert.Equal(thresholdQuality, group.LootThreshold);
+            Assert.Equal(harvestRule, group.LootRuleHarvest);
+            Assert.Equal(normalRule, group.Model.LootRule);
+            Assert.Equal(thresholdRule, group.Model.LootRuleThreshold);
+            Assert.Equal(thresholdQuality, group.Model.LootThreshold);
+            Assert.Equal(harvestRule, group.Model.LootRuleHarvest);
         }
 
         private sealed class ProducerFixture : IDisposable
