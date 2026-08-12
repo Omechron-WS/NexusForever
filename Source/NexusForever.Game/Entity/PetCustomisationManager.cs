@@ -18,6 +18,12 @@ namespace NexusForever.Game.Entity
     {
         public const byte MaxCustomisationFlairs = 4;
 
+        private static void ValidatePetType(PetType type)
+        {
+            if (type is not PetType.ScanBot and not PetType.GroundMount and not PetType.HoverBoard)
+                throw new InvalidPacketValueException();
+        }
+
         private static ulong PetCustomisationHash(PetType type, uint objectId)
         {
             return (ulong)objectId << 32 | (byte)type;
@@ -99,6 +105,8 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void RenamePet(PetType type, uint objectId, String name)
         {
+            ValidatePetType(type);
+
             if (!TextFilterManager.Instance.IsTextValid(name, UserText.ScientistScanbotName))
                 throw new InvalidPacketValueException();
 
@@ -125,6 +133,8 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void AddCustomisation(PetType type, uint objectId, ushort index, ushort flairId)
         {
+            ValidatePetType(type);
+
             if (index >= MaxCustomisationFlairs)
                 throw new ArgumentOutOfRangeException();
 
