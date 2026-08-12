@@ -9,6 +9,7 @@ using NexusForever.Game.Abstract.Map;
 using NexusForever.Game.Abstract.Spell;
 using NexusForever.Game.Entity;
 using NexusForever.Game.Static.Entity;
+using NexusForever.Game.Static.Quest;
 using NexusForever.Game.Static.Spell;
 using NexusForever.Network.Session;
 using NexusForever.Network.World.Entity;
@@ -292,6 +293,159 @@ namespace NexusForever.Game.Tests.Entity
         }
 
         [Fact]
+        public void DispatchKillRewards_PublishesEveryKillFamilyThenLootInStableOrder()
+        {
+            var operations = new List<string>();
+
+            IReadOnlyList<(string Operation, Exception Exception)> failures = UnitEntity.DispatchKillRewards(
+                42u,
+                () =>
+                {
+                    operations.Add("resolve difficulty");
+                    return 7u;
+                },
+                () =>
+                {
+                    operations.Add("resolve groups");
+                    return [11u, 12u];
+                },
+                (type, data, progress) =>
+                {
+                    Assert.Equal(1u, progress);
+                    operations.Add($"{type}:{data}");
+                },
+                () => operations.Add("loot"));
+
+            Assert.Empty(failures);
+            Assert.Equal(
+            [
+                "resolve difficulty",
+                "resolve groups",
+                $"{QuestObjectiveType.KillCreature}:42",
+                $"{QuestObjectiveType.KillCreature2}:7",
+                $"{QuestObjectiveType.KillTargetGroup}:11",
+                $"{QuestObjectiveType.KillTargetGroups}:11",
+                $"{QuestObjectiveType.KillTargetGroup}:12",
+                $"{QuestObjectiveType.KillTargetGroups}:12",
+                "loot"
+            ], operations);
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1)]
+        [InlineData(2)]
+        [InlineData(3)]
+        [InlineData(4)]
+        public void DispatchKillRewards_ObserverFailureStillAttemptsEveryLaterObserver(int failingIndex)
+        {
+            var operations = new List<string>();
+            string[] operationDescriptions =
+            [
+                "publish direct creature kill credit",
+                "publish creature difficulty kill credit",
+                "publish target-group 11 kill credit",
+                "publish target-groups 11 kill credit",
+                "drop loot"
+            ];
+            int operationIndex = 0;
+
+            IReadOnlyList<(string Operation, Exception Exception)> failures = UnitEntity.DispatchKillRewards(
+                42u,
+                () => 7u,
+                () => [11u],
+                (type, data, progress) => Execute($"{type}:{data}:{progress}"),
+                () => Execute("loot"));
+
+            Assert.Equal(
+            [
+                $"{QuestObjectiveType.KillCreature}:42:1",
+                $"{QuestObjectiveType.KillCreature2}:7:1",
+                $"{QuestObjectiveType.KillTargetGroup}:11:1",
+                $"{QuestObjectiveType.KillTargetGroups}:11:1",
+                "loot"
+            ], operations);
+            Assert.Single(failures);
+            Assert.Equal(operationDescriptions[failingIndex], failures[0].Operation);
+            Assert.IsType<InvalidOperationException>(failures[0].Exception);
+
+            void Execute(string operation)
+            {
+                operations.Add(operation);
+                if (operationIndex++ == failingIndex)
+                    throw new InvalidOperationException("observer failure");
+            }
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void DispatchKillRewards_ResolverFailureDoesNotSuppressIndependentFactsOrObservers(
+            bool failDifficultyResolution)
+        {
+            var operations = new List<string>();
+
+            IReadOnlyList<(string Operation, Exception Exception)> failures = UnitEntity.DispatchKillRewards(
+                42u,
+                () => failDifficultyResolution
+                    ? throw new InvalidOperationException("difficulty resolution failure")
+                    : 7u,
+                () => !failDifficultyResolution
+                    ? throw new InvalidOperationException("target-group resolution failure")
+                    : [11u],
+                (type, data, _) => operations.Add($"{type}:{data}"),
+                () => operations.Add("loot"));
+
+            Assert.Single(failures);
+            Assert.Equal(
+                failDifficultyResolution ? "resolve creature difficulty" : "resolve target groups",
+                failures[0].Operation);
+            string[] expectedOperations = failDifficultyResolution
+                ?
+                [
+                    $"{QuestObjectiveType.KillCreature}:42",
+                    $"{QuestObjectiveType.KillTargetGroup}:11",
+                    $"{QuestObjectiveType.KillTargetGroups}:11",
+                    "loot"
+                ]
+                :
+                [
+                    $"{QuestObjectiveType.KillCreature}:42",
+                    $"{QuestObjectiveType.KillCreature2}:7",
+                    "loot"
+                ];
+            Assert.Equal(expectedOperations, operations);
+        }
+
+        [Fact]
+        public void ModifyHealth_DuplicateLethalHitsRunDefaultRewardFanoutOnce()
+        {
+            var map = new Mock<IBaseMap>();
+            map.Setup(world => world.ScheduleRespawn(It.IsAny<IWorldEntity>())).Returns(true);
+            TestUnitEntity entity = CreateEntity(map.Object, 42u);
+            entity.UseParticipantRewards = true;
+            entity.UseDefaultRewardKiller = true;
+            entity.RewardCreatureId = 42u;
+            int directCreditCount = 0;
+            int lootCount = 0;
+            var questManager = new Mock<IQuestManager>();
+            questManager
+                .Setup(manager => manager.ObjectiveUpdate(QuestObjectiveType.KillCreature, 42u, 1u))
+                .Callback(() => directCreditCount++);
+            entity.LootCallback = _ => lootCount++;
+            Mock<IPlayer> player = CreateRewardParticipant(10u, 100ul, questManager.Object);
+            entity.AddRewardParticipant(player.Object);
+
+            entity.ModifyHealth(100u, DamageType.Physical, null);
+            entity.ModifyHealth(100u, DamageType.Physical, null);
+
+            Assert.Equal(1, directCreditCount);
+            Assert.Equal(1, lootCount);
+            Assert.Equal(1, entity.GetParticipantRewardCount(player.Object.CharacterId));
+            Assert.Empty(entity.RewardDispatchFailures);
+        }
+
+        [Fact]
         public void OnDeath_NotificationFailureDoesNotBlockRewardsOrFinalisation()
         {
             var map = new Mock<IBaseMap>();
@@ -359,13 +513,17 @@ namespace NexusForever.Game.Tests.Entity
             return entity;
         }
 
-        private static Mock<IPlayer> CreateRewardParticipant(uint guid, ulong characterId)
+        private static Mock<IPlayer> CreateRewardParticipant(
+            uint guid,
+            ulong characterId,
+            IQuestManager questManager = null)
         {
             var player = new Mock<IPlayer>();
             player.SetupGet(value => value.Guid).Returns(guid);
             player.SetupGet(value => value.CharacterId).Returns(characterId);
             player.SetupGet(value => value.ThreatManager).Returns(new Mock<IThreatManager>().Object);
             player.SetupGet(value => value.Session).Returns(new Mock<IGameSession>().Object);
+            player.SetupGet(value => value.QuestManager).Returns(questManager ?? Mock.Of<IQuestManager>());
             return player;
         }
 
@@ -380,8 +538,14 @@ namespace NexusForever.Game.Tests.Entity
             public bool ThrowDuringDeathNotification { get; set; }
             public bool ThrowDuringThreatCleanup { get; set; }
             public bool UseParticipantRewards { get; set; }
+            public bool UseDefaultRewardKiller { get; set; }
             public ulong? FailingParticipantCharacterId { get; set; }
             public ILootInstance GeneratedLoot { get; set; }
+            public uint RewardCreatureId { get; set; }
+            public uint? RewardDifficultyId { get; set; }
+            public IReadOnlyList<uint> RewardTargetGroupIds { get; set; } = [];
+            public Action<IPlayer> LootCallback { get; set; }
+            public IReadOnlyList<(string Operation, Exception Exception)> RewardDispatchFailures { get; private set; } = [];
 
             private readonly Dictionary<ulong, int> participantRewardCounts = [];
 
@@ -448,6 +612,16 @@ namespace NexusForever.Game.Tests.Entity
 
                 if (FailingParticipantCharacterId == player.CharacterId)
                     throw new InvalidOperationException("participant reward failure");
+
+                if (UseDefaultRewardKiller)
+                {
+                    RewardDispatchFailures = DispatchKillRewards(
+                        RewardCreatureId,
+                        () => RewardDifficultyId,
+                        () => RewardTargetGroupIds,
+                        player.QuestManager.ObjectiveUpdate,
+                        () => LootCallback?.Invoke(player));
+                }
             }
 
             protected override void PublishDeathState()

@@ -1092,24 +1092,85 @@ namespace NexusForever.Game.Entity
 
         protected virtual void RewardKiller(IPlayer player)
         {
-            player.QuestManager.ObjectiveUpdate(QuestObjectiveType.KillCreature, CreatureId, 1u);
+            uint creatureId = CreatureId;
+            uint entityGuid = Guid;
+            ulong characterId = player.CharacterId;
+            IReadOnlyList<(string Operation, Exception Exception)> failures = DispatchKillRewards(
+                creatureId,
+                () =>
+                {
+                    uint creatureDifficultyId = CreatureEntry?.Creature2DifficultyId ?? 0u;
+                    if (creatureDifficultyId == 0u)
+                        return null;
 
-            uint creatureDifficultyId = CreatureEntry?.Creature2DifficultyId ?? 0u;
-            Creature2DifficultyEntry difficultyEntry = creatureDifficultyId == 0u
-                ? null
-                : GameTableManager.Instance.Creature2Difficulty?.GetEntry(creatureDifficultyId);
-            if (difficultyEntry != null)
-                player.QuestManager.ObjectiveUpdate(QuestObjectiveType.KillCreature2, difficultyEntry.Id, 1u);
+                    return GameTableManager.Instance.Creature2Difficulty
+                        ?.GetEntry(creatureDifficultyId)
+                        ?.Id;
+                },
+                () => AssetManager.Instance.GetTargetGroupsForCreatureId(creatureId),
+                (type, data, progress) => player.QuestManager.ObjectiveUpdate(type, data, progress),
+                () => NexusForever.Game.Loot.GlobalLootManager.Instance.DropLoot(player, this));
 
-            foreach (uint targetGroupId in AssetManager.Instance.GetTargetGroupsForCreatureId(CreatureId))
+            foreach ((string operation, Exception exception) in failures)
             {
-                player.QuestManager.ObjectiveUpdate(QuestObjectiveType.KillTargetGroup, targetGroupId, 1u);
-                player.QuestManager.ObjectiveUpdate(QuestObjectiveType.KillTargetGroups, targetGroupId, 1u);
+                log.Error(exception,
+                    $"Failed to {operation} for entity {entityGuid} and player {characterId}.");
             }
 
             // TODO: Reward XP
-            NexusForever.Game.Loot.GlobalLootManager.Instance.DropLoot(player, this);
             // TODO: Handle Achievements
+        }
+
+        /// <summary>
+        /// Dispatch all kill-credit and loot observers for one rewarded participant.
+        /// </summary>
+        internal static IReadOnlyList<(string Operation, Exception Exception)> DispatchKillRewards(
+            uint creatureId,
+            Func<uint?> resolveDifficultyId,
+            Func<IEnumerable<uint>> resolveTargetGroupIds,
+            Action<QuestObjectiveType, uint, uint> updateObjective,
+            Action dropLoot)
+        {
+            uint? creatureDifficultyId = null;
+            uint[] targetGroupIds = [];
+            List<(string Operation, Exception Exception)> failures = [];
+
+            Execute("resolve creature difficulty",
+                () => creatureDifficultyId = resolveDifficultyId());
+            Execute("resolve target groups",
+                () => targetGroupIds = resolveTargetGroupIds()?.ToArray() ?? []);
+
+            Execute("publish direct creature kill credit",
+                () => updateObjective(QuestObjectiveType.KillCreature, creatureId, 1u));
+
+            if (creatureDifficultyId is uint resolvedDifficultyId)
+            {
+                Execute("publish creature difficulty kill credit",
+                    () => updateObjective(QuestObjectiveType.KillCreature2, resolvedDifficultyId, 1u));
+            }
+
+            foreach (uint targetGroupId in targetGroupIds)
+            {
+                Execute($"publish target-group {targetGroupId} kill credit",
+                    () => updateObjective(QuestObjectiveType.KillTargetGroup, targetGroupId, 1u));
+                Execute($"publish target-groups {targetGroupId} kill credit",
+                    () => updateObjective(QuestObjectiveType.KillTargetGroups, targetGroupId, 1u));
+            }
+
+            Execute("drop loot", dropLoot);
+            return failures;
+
+            void Execute(string operation, Action action)
+            {
+                try
+                {
+                    action();
+                }
+                catch (Exception exception)
+                {
+                    failures.Add((operation, exception));
+                }
+            }
         }
 
         /// <summary>
