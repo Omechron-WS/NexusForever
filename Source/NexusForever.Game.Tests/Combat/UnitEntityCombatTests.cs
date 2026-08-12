@@ -415,6 +415,47 @@ namespace NexusForever.Game.Tests.Combat
         }
 
         [Fact]
+        public void Death_ThrowingProcCancellationDoesNotBlockSiblingOrThreatCleanup()
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            var operations = new List<string>();
+            var threatManager = new Mock<IThreatManager>();
+            threatManager
+                .Setup(t => t.GetEnumerator())
+                .Returns(() => Enumerable.Empty<IHostileEntity>().GetEnumerator());
+            threatManager
+                .Setup(t => t.ClearThreatList())
+                .Callback(() => operations.Add("threat-clear"));
+            SetThreatManager(entity, threatManager.Object);
+            Mock<IProcInfo> failedProc = CreateProc(entity, ProcType.CriticalDamage, 789u, 123u);
+            Mock<IProcInfo> healthyProc = CreateProc(entity, ProcType.CriticalDamage, 790u, 456u);
+            failedProc
+                .Setup(p => p.Cancel())
+                .Callback(() =>
+                {
+                    operations.Add("failed-cancel");
+                    throw new InvalidOperationException("Test cancellation failure.");
+                });
+            healthyProc
+                .Setup(p => p.Cancel())
+                .Callback(() => operations.Add("healthy-cancel"));
+            entity.ApplyProc(failedProc.Object);
+            entity.ApplyProc(healthyProc.Object);
+
+            entity.Die();
+            entity.FireProc(ProcType.CriticalDamage);
+
+            Assert.Equal(
+                ["failed-cancel", "healthy-cancel", "threat-clear"],
+                operations);
+            failedProc.Verify(p => p.Cancel(), Times.Once);
+            healthyProc.Verify(p => p.Cancel(), Times.Once);
+            failedProc.Verify(p => p.Trigger(It.IsAny<IUnitEntity>()), Times.Never);
+            healthyProc.Verify(p => p.Trigger(It.IsAny<IUnitEntity>()), Times.Never);
+            threatManager.Verify(t => t.ClearThreatList(), Times.Once);
+        }
+
+        [Fact]
         public void Dispose_CancelsRegisteredProcsAndDisposesPendingSpells()
         {
             TestUnitEntity entity = CreateEntity(1u);
@@ -428,6 +469,55 @@ namespace NexusForever.Game.Tests.Combat
             entity.Dispose();
 
             proc.Verify(p => p.Cancel(), Times.Once);
+            spell.Verify(s => s.Finish(), Times.Once);
+            spell.Verify(s => s.Dispose(), Times.Once);
+            threatManager.Verify(t => t.ClearThreatList(), Times.Once);
+        }
+
+        [Fact]
+        public void Dispose_ThrowingProcCancellationDoesNotBlockSiblingOrPendingSpellCleanup()
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            var operations = new List<string>();
+            var threatManager = new Mock<IThreatManager>();
+            threatManager
+                .Setup(t => t.ClearThreatList())
+                .Callback(() => operations.Add("threat-clear"));
+            SetThreatManager(entity, threatManager.Object);
+            Mock<IProcInfo> failedProc = CreateProc(entity, ProcType.CriticalDamage, 789u, 123u);
+            Mock<IProcInfo> healthyProc = CreateProc(entity, ProcType.CriticalDamage, 790u, 456u);
+            failedProc
+                .Setup(p => p.Cancel())
+                .Callback(() =>
+                {
+                    operations.Add("failed-cancel");
+                    throw new InvalidOperationException("Test cancellation failure.");
+                });
+            healthyProc
+                .Setup(p => p.Cancel())
+                .Callback(() => operations.Add("healthy-cancel"));
+            var spell = new Mock<ISpell>();
+            spell
+                .Setup(s => s.Finish())
+                .Callback(() => operations.Add("spell-finish"));
+            spell
+                .Setup(s => s.Dispose())
+                .Callback(() => operations.Add("spell-dispose"));
+            AddPendingSpell(entity, spell.Object);
+            entity.ApplyProc(failedProc.Object);
+            entity.ApplyProc(healthyProc.Object);
+
+            Exception exception = Record.Exception(entity.Dispose);
+            entity.FireProc(ProcType.CriticalDamage);
+
+            Assert.Null(exception);
+            Assert.Equal(
+                ["threat-clear", "failed-cancel", "healthy-cancel", "spell-finish", "spell-dispose"],
+                operations);
+            failedProc.Verify(p => p.Cancel(), Times.Once);
+            healthyProc.Verify(p => p.Cancel(), Times.Once);
+            failedProc.Verify(p => p.Trigger(It.IsAny<IUnitEntity>()), Times.Never);
+            healthyProc.Verify(p => p.Trigger(It.IsAny<IUnitEntity>()), Times.Never);
             spell.Verify(s => s.Finish(), Times.Once);
             spell.Verify(s => s.Dispose(), Times.Once);
             threatManager.Verify(t => t.ClearThreatList(), Times.Once);

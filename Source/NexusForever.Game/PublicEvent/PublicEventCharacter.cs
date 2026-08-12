@@ -52,7 +52,9 @@ namespace NexusForever.Game.PublicEvent
         /// </summary>
         public void RemoveEvent(IPublicEvent publicEvent)
         {
-            if (!events.Remove(publicEvent.Id))
+            if (!events.TryGetValue(publicEvent.Id, out IPublicEvent currentEvent)
+                || !ReferenceEquals(currentEvent, publicEvent)
+                || !events.Remove(publicEvent.Id))
                 throw new InvalidOperationException($"Character {CharacterId} is not participating in event {publicEvent.Guid}!");
 
             log.LogTrace($"Public event {publicEvent.Guid} removed for character {CharacterId}.");
@@ -63,8 +65,9 @@ namespace NexusForever.Game.PublicEvent
         /// </summary>
         public void OnRemoveFromMap(IPlayer player)
         {
-            foreach (IPublicEvent @event in events.Values)
-                @event.LeaveEvent(player, PublicEventRemoveReason.LeftArea);
+            InvokeEvents(
+                @event => @event.LeaveEvent(player, PublicEventRemoveReason.LeftArea),
+                "leave");
         }
 
         /// <summary>
@@ -72,8 +75,9 @@ namespace NexusForever.Game.PublicEvent
         /// </summary>
         public void UpdateObjective(IPlayer player, PublicEventObjectiveType type, uint objectId, int count)
         {
-            foreach (IPublicEvent @event in events.Values)
-                @event.UpdateObjective(player, type, objectId, count);
+            InvokeEvents(
+                @event => @event.UpdateObjective(player, type, objectId, count),
+                "update objective for");
         }
 
         /// <summary>
@@ -81,8 +85,9 @@ namespace NexusForever.Game.PublicEvent
         /// </summary>
         public void UpdateStat(IPlayer player, PublicEventStat stat, uint value)
         {
-            foreach (IPublicEvent @event in events.Values)
-                @event.UpdateStat(player, stat, value);
+            InvokeEvents(
+                @event => @event.UpdateStat(player, stat, value),
+                "update stat for");
         }
 
         /// <summary>
@@ -90,8 +95,9 @@ namespace NexusForever.Game.PublicEvent
         /// </summary>
         public void UpdateCustomStat(IPlayer player, uint index, uint value)
         {
-            foreach (IPublicEvent @event in events.Values)
-                @event.UpdateCustomStat(player, index, value);
+            InvokeEvents(
+                @event => @event.UpdateCustomStat(player, index, value),
+                "update custom stat for");
         }
 
         /// <summary>
@@ -103,6 +109,27 @@ namespace NexusForever.Game.PublicEvent
                 return;
 
             @event.RespondVote(player, choice);
+        }
+
+        private void InvokeEvents(Action<IPublicEvent> action, string operation)
+        {
+            foreach (KeyValuePair<uint, IPublicEvent> eventEntry in events.ToArray())
+            {
+                if (!events.TryGetValue(eventEntry.Key, out IPublicEvent currentEvent)
+                    || !ReferenceEquals(currentEvent, eventEntry.Value))
+                    continue;
+
+                try
+                {
+                    action(currentEvent);
+                }
+                catch (Exception exception)
+                {
+                    log.LogError(
+                        exception,
+                        $"Failed to {operation} public event {eventEntry.Key} for character {CharacterId}.");
+                }
+            }
         }
     }
 }

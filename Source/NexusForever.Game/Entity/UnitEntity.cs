@@ -941,7 +941,16 @@ namespace NexusForever.Game.Entity
             procs.Clear();
 
             foreach (IProcInfo proc in activeProcs)
-                proc.Cancel();
+            {
+                try
+                {
+                    proc.Cancel();
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to cancel proc during bulk teardown for entity {Guid}.");
+                }
+            }
         }
 
         /// <summary>
