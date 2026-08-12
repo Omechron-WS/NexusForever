@@ -249,8 +249,23 @@ namespace NexusForever.Game.Entity
 
             foreach (ISpell spell in pendingSpells.ToArray())
             {
-                spell.Finish();
-                spell.Dispose();
+                try
+                {
+                    spell.Finish();
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to finish a pending spell while disposing entity {Guid}.");
+                }
+
+                try
+                {
+                    spell.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to dispose a pending spell while disposing entity {Guid}.");
+                }
             }
 
             pendingSpells.Clear();

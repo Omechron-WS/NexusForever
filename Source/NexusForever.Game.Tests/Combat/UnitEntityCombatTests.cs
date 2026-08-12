@@ -524,6 +524,69 @@ namespace NexusForever.Game.Tests.Combat
         }
 
         [Fact]
+        public void Dispose_ThrowingPendingSpellCleanupDoesNotBlockSiblingCleanupAndDoesNotRetry()
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            var operations = new List<string>();
+            var threatManager = new Mock<IThreatManager>();
+            SetThreatManager(entity, threatManager.Object);
+            var finishFailure = new Mock<ISpell>();
+            var disposeFailure = new Mock<ISpell>();
+            var healthySpell = new Mock<ISpell>();
+            var reentrantSpell = new Mock<ISpell>();
+            finishFailure
+                .Setup(s => s.Finish())
+                .Callback(() =>
+                {
+                    operations.Add("first-finish");
+                    AddPendingSpell(entity, reentrantSpell.Object);
+                    throw new InvalidOperationException("Test finish failure.");
+                });
+            finishFailure
+                .Setup(s => s.Dispose())
+                .Callback(() => operations.Add("first-dispose"));
+            disposeFailure
+                .Setup(s => s.Finish())
+                .Callback(() => operations.Add("second-finish"));
+            disposeFailure
+                .Setup(s => s.Dispose())
+                .Callback(() =>
+                {
+                    operations.Add("second-dispose");
+                    throw new InvalidOperationException("Test dispose failure.");
+                });
+            healthySpell
+                .Setup(s => s.Finish())
+                .Callback(() => operations.Add("third-finish"));
+            healthySpell
+                .Setup(s => s.Dispose())
+                .Callback(() => operations.Add("third-dispose"));
+            AddPendingSpell(entity, finishFailure.Object);
+            AddPendingSpell(entity, disposeFailure.Object);
+            AddPendingSpell(entity, healthySpell.Object);
+
+            Exception firstException = Record.Exception(entity.Dispose);
+            ISpell activeSpell = entity.GetActiveSpell(_ => true);
+            Exception secondException = Record.Exception(entity.Dispose);
+
+            Assert.Null(firstException);
+            Assert.Null(secondException);
+            Assert.Null(activeSpell);
+            Assert.Equal(
+                ["first-finish", "first-dispose", "second-finish", "second-dispose", "third-finish", "third-dispose"],
+                operations);
+            finishFailure.Verify(s => s.Finish(), Times.Once);
+            finishFailure.Verify(s => s.Dispose(), Times.Once);
+            disposeFailure.Verify(s => s.Finish(), Times.Once);
+            disposeFailure.Verify(s => s.Dispose(), Times.Once);
+            healthySpell.Verify(s => s.Finish(), Times.Once);
+            healthySpell.Verify(s => s.Dispose(), Times.Once);
+            reentrantSpell.Verify(s => s.Finish(), Times.Never);
+            reentrantSpell.Verify(s => s.Dispose(), Times.Never);
+            threatManager.Verify(t => t.ClearThreatList(), Times.Exactly(2));
+        }
+
+        [Fact]
         public void ThreatRemoval_LeavesCombatAfterTwoUpdateTicks()
         {
             TestUnitEntity entity = CreateEntity(1u);
