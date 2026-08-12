@@ -33,6 +33,7 @@ This document records verified implementation status on the `convergence` branch
 Completed hardening:
 
 - Bounded inbound game packets, bounded nested packed packets, and fail-closed game-packet dispatch.
+- Character creation admits only the four playable path values encoded by build 16042. Reserved three-bit values and the `None` sentinel fail with the normal creation response before text filtering, table/database lookup, identifier allocation, currency, inventory, event-queue, or persistence work, preventing new characters whose complete path graph is locked. Existing corrupt `ActivePath` records are not repaired by this admission boundary.
 - A per-session bounded asynchronous writer serialises complete game and STS frames, handles partial sends, applies byte/frame backpressure without blocking the world thread, and makes disconnect/drain state atomic.
 - Bounded STS headers, bodies, SRP fields, and XML parsing, including correct fragmented and coalesced packet handling.
 - Enforced STS authentication states with a pending state, authenticated-only token/account operations, and same-connection reauthentication support.

@@ -60,7 +60,9 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Character
 
             CharacterModifyResult? GetResult()
             {
-                // TODO: validate path
+                if (characterCreate.Path > (byte)Game.Static.PlayerPath.Path.Explorer)
+                    return CharacterModifyResult.CreateFailed;
+
                 if (!textFilterManager.IsTextValid(characterCreate.Name)
                     || !textFilterManager.IsTextValid(characterCreate.Name, UserText.CharacterName))
                     return CharacterModifyResult.CreateFailed_InvalidName;
