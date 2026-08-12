@@ -1034,19 +1034,61 @@ namespace NexusForever.Game.Entity
         /// </summary>
         public void QuestIgnore(ushort questId, bool ignored)
         {
-            IQuestInfo questInfo = GlobalQuestManager.Instance.GetQuestInfo(questId);
-            if (questInfo == null)
+            IQuestInfo questInfo = GetGlobalQuestManager().GetQuestInfo(questId);
+            if (questInfo?.Entry?.Id != questId)
                 throw new ArgumentException($"Invalid quest {questId}!");
 
-            IQuest quest = GetQuest((ushort)questInfo.Entry.Id);
+            IQuest quest = GetQuest(questId);
             if (quest == null)
-                quest = new Quest.Quest(player, questInfo, GetGlobalQuestManager(), null, null); // Add quest so we can set it to ignored.
+                return;
+
+            QuestState currentState = quest.State;
+            QuestState targetState = ignored ? QuestState.Ignored : QuestState.Mentioned;
+
+            if (currentState == QuestState.Abandoned)
+            {
+                if (!quest.PendingDelete
+                    || !activeQuests.TryGetValue(questId, out IQuest activeQuest)
+                    || !ReferenceEquals(activeQuest, quest)
+                    || completedQuests.ContainsKey(questId)
+                    || inactiveQuests.ContainsKey(questId))
+                    return;
+
+                if (!ignored)
+                    return;
+
+                if (!inactiveQuests.TryAdd(questId, quest))
+                    return;
+
+                if (!RemoveQuest(activeQuests, quest))
+                {
+                    RemoveQuest(inactiveQuests, quest);
+                    return;
+                }
+
+                quest.EnqueueDelete(false);
+            }
             else
-                QuestRemove(quest); // Removes from quest log. Might not be the cleanest way to do this?
+            {
+                if (currentState != QuestState.Mentioned && currentState != QuestState.Ignored
+                    || !inactiveQuests.TryGetValue(questId, out IQuest inactiveQuest)
+                    || !ReferenceEquals(inactiveQuest, quest)
+                    || activeQuests.ContainsKey(questId)
+                    || completedQuests.ContainsKey(questId))
+                    return;
 
-            quest.State = ignored ? QuestState.Ignored : QuestState.Mentioned;
+                if (currentState == targetState)
+                    return;
+            }
 
-            inactiveQuests.Add(questId, quest);
+            try
+            {
+                quest.State = targetState;
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, $"Failed to notify player {player.CharacterId} about ignored state for quest {questId}.");
+            }
         }
 
         /// <summary>
