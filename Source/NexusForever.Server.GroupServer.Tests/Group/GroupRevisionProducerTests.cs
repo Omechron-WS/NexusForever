@@ -29,6 +29,50 @@ namespace NexusForever.Server.GroupServer.Tests.Group
         private const ulong MemberId = 202ul;
         private const ulong CandidateId = 303ul;
 
+        private const GroupMemberInfoFlags AllDefinedMemberFlags = GroupMemberInfoFlags.CanInvite
+            | GroupMemberInfoFlags.CanKick
+            | GroupMemberInfoFlags.Disconnected
+            | GroupMemberInfoFlags.Pending
+            | GroupMemberInfoFlags.RoleFlags
+            | GroupMemberInfoFlags.MainTank
+            | GroupMemberInfoFlags.MainAssist
+            | GroupMemberInfoFlags.RaidAssistant
+            | GroupMemberInfoFlags.Ready
+            | GroupMemberInfoFlags.RoleLocked
+            | GroupMemberInfoFlags.CanMark
+            | GroupMemberInfoFlags.HasSetReady;
+
+        public static TheoryData<GroupMemberInfoFlags> ValidMemberChangedFlags => new()
+        {
+            GroupMemberInfoFlags.None,
+            GroupMemberInfoFlags.CanInvite,
+            GroupMemberInfoFlags.CanKick,
+            GroupMemberInfoFlags.Tank,
+            GroupMemberInfoFlags.Healer,
+            GroupMemberInfoFlags.DPS,
+            GroupMemberInfoFlags.MainTank,
+            GroupMemberInfoFlags.MainAssist,
+            GroupMemberInfoFlags.RaidAssistant,
+            GroupMemberInfoFlags.Ready,
+            GroupMemberInfoFlags.RoleLocked,
+            GroupMemberInfoFlags.CanMark,
+            GroupMemberInfoFlags.HasSetReady,
+            GroupMemberInfoFlags.Ready | GroupMemberInfoFlags.HasSetReady,
+        };
+
+        public static TheoryData<GroupMemberInfoFlags, GroupMemberInfoFlags> InvalidMemberFlagChanges => new()
+        {
+            { (GroupMemberInfoFlags)1u, GroupMemberInfoFlags.None },
+            { (GroupMemberInfoFlags)(1u << 15), GroupMemberInfoFlags.None },
+            { AllDefinedMemberFlags, GroupMemberInfoFlags.Disconnected },
+            { AllDefinedMemberFlags, GroupMemberInfoFlags.Pending },
+            { AllDefinedMemberFlags, GroupMemberInfoFlags.Tank | GroupMemberInfoFlags.Healer },
+            { AllDefinedMemberFlags, GroupMemberInfoFlags.CanInvite | GroupMemberInfoFlags.CanKick },
+            { GroupMemberInfoFlags.Ready, GroupMemberInfoFlags.Ready | GroupMemberInfoFlags.HasSetReady },
+            { GroupMemberInfoFlags.None, GroupMemberInfoFlags.HasSetReady },
+            { GroupMemberInfoFlags.None, GroupMemberInfoFlags.Ready | GroupMemberInfoFlags.HasSetReady },
+        };
+
         public static TheoryData<LootRule, LootRule, LootThreshold, HarvestLootRule> InvalidLootRuleTuples => new()
         {
             { (LootRule)4, LootRule.NeedBeforeGreed, LootThreshold.Good, HarvestLootRule.FirstTagger },
@@ -324,10 +368,16 @@ namespace NexusForever.Server.GroupServer.Tests.Group
             GroupMember member = group.GetMember(Identity(MemberId));
 
             GroupActionResult setResult = await group.SetMemberFlagsAsync(
-                Identity(MemberId), Identity(MemberId), GroupMemberInfoFlags.Tank);
+                Identity(MemberId),
+                Identity(MemberId),
+                GroupMemberInfoFlags.GroupMemberFlags | GroupMemberInfoFlags.Tank,
+                GroupMemberInfoFlags.Tank);
             await member.SetFlagAsync(GroupMemberInfoFlags.Tank);
             GroupActionResult removeResult = await group.SetMemberFlagsAsync(
-                Identity(MemberId), Identity(MemberId), GroupMemberInfoFlags.Tank);
+                Identity(MemberId),
+                Identity(MemberId),
+                GroupMemberInfoFlags.GroupMemberFlags,
+                GroupMemberInfoFlags.Tank);
             await member.RemoveFlagAsync(GroupMemberInfoFlags.Tank);
 
             Assert.Equal(GroupActionResult.MemberFlagsSuccess, setResult);
@@ -343,6 +393,233 @@ namespace NexusForever.Server.GroupServer.Tests.Group
                 Assert.True(message.Member.Flags.HasFlag(GroupMemberInfoFlags.Tank)));
             Assert.All(messages.Where(message => message.Group.Revision == InitialRevision + 2ul), message =>
                 Assert.Equal(GroupMemberInfoFlags.GroupMemberFlags, message.Member.Flags));
+        }
+
+        [Theory]
+        [MemberData(nameof(ValidMemberChangedFlags))]
+        public async Task MemberFlags_ExactStockDeltaUsesDirectionWithoutReplacingAuthoritativeSnapshot(
+            GroupMemberInfoFlags changedFlag)
+        {
+            using var fixture = new ProducerFixture();
+            GroupEntity group = fixture.CreateGroup();
+            GroupMember target = group.GetMember(Identity(MemberId));
+
+            GroupActionResult result = await group.SetMemberFlagsAsync(
+                Identity(LeaderId),
+                Identity(MemberId),
+                AllDefinedMemberFlags,
+                changedFlag);
+
+            Assert.Equal(GroupActionResult.MemberFlagsSuccess, result);
+            ulong expectedRevision = changedFlag is GroupMemberInfoFlags.None or GroupMemberInfoFlags.CanMark
+                ? InitialRevision
+                : InitialRevision + 1ul;
+            Assert.Equal(expectedRevision, group.Revision);
+            Assert.Equal(changedFlag, target.Flags & changedFlag);
+            Assert.False(target.Flags.HasFlag(GroupMemberInfoFlags.Disconnected));
+            Assert.False(target.Flags.HasFlag(GroupMemberInfoFlags.Pending));
+            GroupMemberFlagsUpdatedMessage message = fixture.SingleMessage<GroupMemberFlagsUpdatedMessage>();
+            Assert.Equal(expectedRevision, message.Group.Revision);
+            Assert.Equal(target.Flags, message.Member.Flags);
+        }
+
+        [Theory]
+        [MemberData(nameof(InvalidMemberFlagChanges))]
+        public async Task MemberFlags_InvalidLeaderChangeDoesNotMutateRevisionOrPublish(
+            GroupMemberInfoFlags currentFlags,
+            GroupMemberInfoFlags changedFlag)
+        {
+            using var fixture = new ProducerFixture();
+            GroupEntity group = fixture.CreateGroup();
+            GroupMember target = group.GetMember(Identity(MemberId));
+            GroupMemberInfoFlags originalFlags = target.Flags;
+
+            GroupActionResult result = await group.SetMemberFlagsAsync(
+                Identity(LeaderId),
+                Identity(MemberId),
+                currentFlags,
+                changedFlag);
+
+            Assert.Equal(GroupActionResult.MemberFlagsFailed, result);
+            Assert.Equal(InitialRevision, group.Revision);
+            Assert.Equal(originalFlags, target.Flags);
+            Assert.Empty(fixture.PendingMessages);
+        }
+
+        [Fact]
+        public async Task MemberFlags_MissingActorOrTargetReturnsInvalidGroupBeforeFlagValidation()
+        {
+            using var fixture = new ProducerFixture();
+            GroupEntity group = fixture.CreateGroup();
+
+            GroupActionResult missingActor = await group.SetMemberFlagsAsync(
+                Identity(CandidateId),
+                Identity(MemberId),
+                (GroupMemberInfoFlags)uint.MaxValue,
+                (GroupMemberInfoFlags)uint.MaxValue);
+            GroupActionResult missingTarget = await group.SetMemberFlagsAsync(
+                Identity(MemberId),
+                Identity(CandidateId),
+                (GroupMemberInfoFlags)uint.MaxValue,
+                (GroupMemberInfoFlags)uint.MaxValue);
+
+            Assert.Equal(GroupActionResult.InvalidGroup, missingActor);
+            Assert.Equal(GroupActionResult.InvalidGroup, missingTarget);
+            Assert.Equal(InitialRevision, group.Revision);
+            Assert.Equal(GroupMemberInfoFlags.GroupMemberFlags, group.GetMember(Identity(MemberId)).Flags);
+            Assert.Empty(fixture.PendingMessages);
+        }
+
+        [Fact]
+        public async Task MemberFlags_RoleAddPreservesUnchangedRolesAndServerOwnedFlags()
+        {
+            using var fixture = new ProducerFixture();
+            GroupEntity group = fixture.CreateGroup();
+            GroupMember member = group.GetMember(Identity(MemberId));
+            member.Flags |= GroupMemberInfoFlags.Disconnected
+                | GroupMemberInfoFlags.Pending
+                | GroupMemberInfoFlags.Healer
+                | GroupMemberInfoFlags.DPS;
+
+            GroupActionResult result = await group.SetMemberFlagsAsync(
+                Identity(MemberId),
+                Identity(MemberId),
+                GroupMemberInfoFlags.GroupMemberFlags
+                    | GroupMemberInfoFlags.Disconnected
+                    | GroupMemberInfoFlags.Pending
+                    | GroupMemberInfoFlags.Tank,
+                GroupMemberInfoFlags.Tank);
+
+            Assert.Equal(GroupActionResult.MemberFlagsSuccess, result);
+            Assert.Equal(
+                GroupMemberInfoFlags.GroupMemberFlags
+                    | GroupMemberInfoFlags.Disconnected
+                    | GroupMemberInfoFlags.Pending
+                    | GroupMemberInfoFlags.Tank
+                    | GroupMemberInfoFlags.Healer
+                    | GroupMemberInfoFlags.DPS,
+                member.Flags);
+            Assert.Equal(InitialRevision + 1ul, group.Revision);
+            Assert.Equal(member.Flags, fixture.SingleMessage<GroupMemberFlagsUpdatedMessage>().Member.Flags);
+        }
+
+        [Theory]
+        [InlineData(GroupMemberInfoFlags.HasSetReady, false)]
+        [InlineData(GroupMemberInfoFlags.Ready | GroupMemberInfoFlags.HasSetReady, true)]
+        public async Task MemberFlags_FirstReadyResponseAddsOnlyDesiredReadyState(
+            GroupMemberInfoFlags changedFlag,
+            bool ready)
+        {
+            using var fixture = new ProducerFixture();
+            GroupEntity group = fixture.CreateGroup();
+            GroupMember member = group.GetMember(Identity(MemberId));
+            member.Flags |= GroupMemberInfoFlags.Pending;
+            GroupMemberInfoFlags currentFlags = member.Flags | changedFlag;
+
+            GroupActionResult result = await group.SetMemberFlagsAsync(
+                Identity(MemberId),
+                Identity(MemberId),
+                currentFlags,
+                changedFlag);
+
+            Assert.Equal(GroupActionResult.MemberFlagsSuccess, result);
+            Assert.True(member.Flags.HasFlag(GroupMemberInfoFlags.Pending));
+            Assert.True(member.Flags.HasFlag(GroupMemberInfoFlags.HasSetReady));
+            Assert.Equal(ready, member.Flags.HasFlag(GroupMemberInfoFlags.Ready));
+            Assert.Equal(InitialRevision + 1ul, group.Revision);
+            Assert.Equal(member.Flags, fixture.SingleMessage<GroupMemberFlagsUpdatedMessage>().Member.Flags);
+        }
+
+        [Fact]
+        public async Task MemberFlags_AuthorisationUsesActorRoleLockAndRaidAssistantWhileLeaderBypasses()
+        {
+            using var targetAssistantFixture = new ProducerFixture();
+            GroupEntity targetAssistantGroup = targetAssistantFixture.CreateGroup();
+            GroupMember ordinaryActor = targetAssistantGroup.GetMember(Identity(MemberId));
+            GroupMember assistantTarget = targetAssistantGroup.GetMember(Identity(LeaderId));
+            assistantTarget.Flags |= GroupMemberInfoFlags.RaidAssistant;
+
+            GroupActionResult targetAssistantResult = await targetAssistantGroup.SetMemberFlagsAsync(
+                Identity(MemberId),
+                Identity(LeaderId),
+                assistantTarget.Flags | GroupMemberInfoFlags.Tank,
+                GroupMemberInfoFlags.Tank);
+
+            Assert.Equal(GroupActionResult.MemberFlagsFailed, targetAssistantResult);
+            Assert.False(assistantTarget.Flags.HasFlag(GroupMemberInfoFlags.Tank));
+            Assert.Equal(InitialRevision, targetAssistantGroup.Revision);
+            Assert.Empty(targetAssistantFixture.PendingMessages);
+
+            using var lockedFixture = new ProducerFixture();
+            GroupEntity lockedGroup = lockedFixture.CreateGroup();
+            GroupMember lockedActor = lockedGroup.GetMember(Identity(MemberId));
+            lockedActor.Flags |= GroupMemberInfoFlags.RoleLocked;
+
+            GroupActionResult lockedResult = await lockedGroup.SetMemberFlagsAsync(
+                Identity(MemberId),
+                Identity(MemberId),
+                lockedActor.Flags | GroupMemberInfoFlags.Tank,
+                GroupMemberInfoFlags.Tank);
+
+            Assert.Equal(GroupActionResult.MemberFlagsFailed, lockedResult);
+            Assert.False(lockedActor.Flags.HasFlag(GroupMemberInfoFlags.Tank));
+            Assert.Equal(InitialRevision, lockedGroup.Revision);
+            Assert.Empty(lockedFixture.PendingMessages);
+
+            using var assistantFixture = new ProducerFixture();
+            GroupEntity assistantGroup = assistantFixture.CreateGroup();
+            GroupMember assistant = assistantGroup.GetMember(Identity(MemberId));
+            GroupMember leader = assistantGroup.GetMember(Identity(LeaderId));
+            assistant.Flags |= GroupMemberInfoFlags.RaidAssistant;
+            leader.Flags |= GroupMemberInfoFlags.RoleLocked;
+
+            GroupActionResult assistantResult = await assistantGroup.SetMemberFlagsAsync(
+                Identity(MemberId),
+                Identity(LeaderId),
+                leader.Flags | GroupMemberInfoFlags.Tank,
+                GroupMemberInfoFlags.Tank);
+
+            Assert.Equal(GroupActionResult.MemberFlagsSuccess, assistantResult);
+            Assert.True(leader.Flags.HasFlag(GroupMemberInfoFlags.Tank));
+            Assert.Equal(InitialRevision + 1ul, assistantGroup.Revision);
+            Assert.Single(assistantFixture.PendingMessages);
+
+            using var leaderFixture = new ProducerFixture();
+            GroupEntity leaderGroup = leaderFixture.CreateGroup();
+            GroupMember leaderActor = leaderGroup.GetMember(Identity(LeaderId));
+            GroupMember leaderTarget = leaderGroup.GetMember(Identity(MemberId));
+            leaderActor.Flags |= GroupMemberInfoFlags.RoleLocked;
+
+            GroupActionResult leaderResult = await leaderGroup.SetMemberFlagsAsync(
+                Identity(LeaderId),
+                Identity(MemberId),
+                leaderTarget.Flags | GroupMemberInfoFlags.CanKick,
+                GroupMemberInfoFlags.CanKick);
+
+            Assert.Equal(GroupActionResult.MemberFlagsSuccess, leaderResult);
+            Assert.True(leaderTarget.Flags.HasFlag(GroupMemberInfoFlags.CanKick));
+            Assert.Equal(InitialRevision + 1ul, leaderGroup.Revision);
+            Assert.Single(leaderFixture.PendingMessages);
+        }
+
+        [Fact]
+        public async Task MemberFlags_ValidReplayPublishesAuthoritativeStateWithoutRevisionAdvance()
+        {
+            using var fixture = new ProducerFixture();
+            GroupEntity group = fixture.CreateGroup();
+            GroupMember member = group.GetMember(Identity(MemberId));
+            member.Flags |= GroupMemberInfoFlags.Tank;
+
+            GroupActionResult result = await group.SetMemberFlagsAsync(
+                Identity(MemberId),
+                Identity(MemberId),
+                member.Flags,
+                GroupMemberInfoFlags.Tank);
+
+            Assert.Equal(GroupActionResult.MemberFlagsSuccess, result);
+            Assert.Equal(InitialRevision, group.Revision);
+            Assert.Equal(member.Flags, fixture.SingleMessage<GroupMemberFlagsUpdatedMessage>().Member.Flags);
+            Assert.Single(fixture.PendingMessages);
         }
 
         [Fact]
@@ -399,7 +676,10 @@ namespace NexusForever.Server.GroupServer.Tests.Group
             Assert.Equal(GroupActionResult.ChangeSettingsFailed, await group.SetLootRulesAsync(
                 Identity(MemberId), LootRule.RoundRobin, LootRule.Master, LootThreshold.Excellent, HarvestLootRule.RoundRobin));
             Assert.Equal(GroupActionResult.MemberFlagsFailed, await group.SetMemberFlagsAsync(
-                Identity(MemberId), Identity(LeaderId), GroupMemberInfoFlags.Tank));
+                Identity(MemberId),
+                Identity(LeaderId),
+                GroupMemberInfoFlags.GroupAdminFlags | GroupMemberInfoFlags.Tank,
+                GroupMemberInfoFlags.Tank));
             Assert.Equal(GroupActionResult.PromoteSuccess, await group.PromoteMemberAsync(Identity(LeaderId), Identity(LeaderId)));
 
             Assert.Equal(InitialRevision, group.Revision);

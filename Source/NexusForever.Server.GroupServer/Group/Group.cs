@@ -679,23 +679,76 @@ namespace NexusForever.Server.GroupServer.Group
         /// </summary>
         /// <param name="updater">Identity of the member update the group member flags.</param>
         /// <param name="target">Identity of the member having member flags set.</param>
-        /// <param name="flags">Flags to set or unset.</param>
-        public async Task<GroupActionResult> SetMemberFlagsAsync(Identity updater, Identity target, GroupMemberInfoFlags flags)
+        /// <param name="currentFlags">Client's complete cached flag snapshot after applying the requested change, used only to determine direction.</param>
+        /// <param name="changedFlag">Exact flag delta represented by <paramref name="currentFlags"/>.</param>
+        public async Task<GroupActionResult> SetMemberFlagsAsync(Identity updater, Identity target, GroupMemberInfoFlags currentFlags, GroupMemberInfoFlags changedFlag)
         {
+            GroupMember updaterMember = GetMember(updater);
             GroupMember member = GetMember(target);
-            if (member == null)
+            if (updaterMember == null || member == null)
                 return GroupActionResult.InvalidGroup;
 
-            if (updater != Leader
-                && !member.CanSetFlags(updater, flags))
+            if (!IsValidMemberFlagChange(currentFlags, changedFlag))
                 return GroupActionResult.MemberFlagsFailed;
 
-            if ((member.Flags & flags) == 0)
-                await member.SetFlagAsync(flags);
+            if (updater != Leader
+                && !updaterMember.CanSetFlags(member, changedFlag))
+                return GroupActionResult.MemberFlagsFailed;
+
+            bool add = (currentFlags & changedFlag) == changedFlag;
+            GroupMemberInfoFlags flags = member.Flags;
+            if (add)
+                flags |= changedFlag;
             else
-                await member.RemoveFlagAsync(flags);
+                flags &= ~changedFlag;
+
+            await member.SetFlagsAsync(flags);
 
             return GroupActionResult.MemberFlagsSuccess;
+        }
+
+        private static bool IsValidMemberFlagChange(GroupMemberInfoFlags currentFlags, GroupMemberInfoFlags changedFlag)
+        {
+            const GroupMemberInfoFlags allDefinedFlags = GroupMemberInfoFlags.CanInvite
+                | GroupMemberInfoFlags.CanKick
+                | GroupMemberInfoFlags.Disconnected
+                | GroupMemberInfoFlags.Pending
+                | GroupMemberInfoFlags.RoleFlags
+                | GroupMemberInfoFlags.MainTank
+                | GroupMemberInfoFlags.MainAssist
+                | GroupMemberInfoFlags.RaidAssistant
+                | GroupMemberInfoFlags.Ready
+                | GroupMemberInfoFlags.RoleLocked
+                | GroupMemberInfoFlags.CanMark
+                | GroupMemberInfoFlags.HasSetReady;
+
+            if ((currentFlags & ~allDefinedFlags) != 0 || !IsValidChangedFlag(changedFlag))
+                return false;
+
+            bool allSet = (currentFlags & changedFlag) == changedFlag;
+            bool allClear = (currentFlags & changedFlag) == 0;
+            if (!allSet && !allClear)
+                return false;
+
+            return (changedFlag & GroupMemberInfoFlags.HasSetReady) == 0 || allSet;
+        }
+
+        private static bool IsValidChangedFlag(GroupMemberInfoFlags changedFlag)
+        {
+            return changedFlag == GroupMemberInfoFlags.None
+                || changedFlag == GroupMemberInfoFlags.CanInvite
+                || changedFlag == GroupMemberInfoFlags.CanKick
+                || changedFlag == GroupMemberInfoFlags.Tank
+                || changedFlag == GroupMemberInfoFlags.Healer
+                || changedFlag == GroupMemberInfoFlags.DPS
+                || changedFlag == GroupMemberInfoFlags.MainTank
+                || changedFlag == GroupMemberInfoFlags.MainAssist
+                || changedFlag == GroupMemberInfoFlags.RaidAssistant
+                || changedFlag == GroupMemberInfoFlags.Ready
+                || changedFlag == GroupMemberInfoFlags.RoleLocked
+                || changedFlag == GroupMemberInfoFlags.CanMark
+                || changedFlag == GroupMemberInfoFlags.HasSetReady
+                || changedFlag == (GroupMemberInfoFlags.Ready | GroupMemberInfoFlags.HasSetReady);
         }
 
         /// <summary>

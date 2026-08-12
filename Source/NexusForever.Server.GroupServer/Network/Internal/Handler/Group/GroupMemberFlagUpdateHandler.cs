@@ -47,7 +47,11 @@ namespace NexusForever.Server.GroupServer.Network.Internal.Handler.Group
             if (group == null)
                 return GroupActionResult.InvalidGroup;
 
-            return await group.SetMemberFlagsAsync(message.Source.ToGroupIdentity(), message.Target.ToGroupIdentity(), message.Flags);
+            return await group.SetMemberFlagsAsync(
+                message.Source.ToGroupIdentity(),
+                message.Target.ToGroupIdentity(),
+                message.CurrentFlags,
+                message.ChangedFlag);
         }
     }
 }

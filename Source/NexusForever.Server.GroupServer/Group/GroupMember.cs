@@ -110,9 +110,9 @@ namespace NexusForever.Server.GroupServer.Group
         /// <summary>
         /// Check if group member flags can be set.
         /// </summary>
-        /// <param name="updater">Identity of the group member updating the flags.</param>
+        /// <param name="target">Group member whose flags are being updated.</param>
         /// <param name="flags">Flags to either set or unset.</param>
-        public bool CanSetFlags(Identity updater, GroupMemberInfoFlags flags)
+        public bool CanSetFlags(GroupMember target, GroupMemberInfoFlags flags)
         {
             // If we are role locked and we are not the leader, we cannot update the flags.
             if (Flags.HasFlag(GroupMemberInfoFlags.RoleLocked))
@@ -121,7 +121,7 @@ namespace NexusForever.Server.GroupServer.Group
             if ((Flags & GroupMemberInfoFlags.RaidAssistant) != 0)
                 return true;
 
-            if (Identity != updater)
+            if (Identity != target.Identity)
                 return false;
 
             GroupMemberInfoFlags allowedFlags = GroupMemberInfoFlags.RoleFlags

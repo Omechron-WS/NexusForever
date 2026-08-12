@@ -8,6 +8,7 @@ namespace NexusForever.Network.Internal.Message.Group
         public ulong GroupId { get; set; }
         public Identity Source { get; set; }
         public Identity Target { get; set; }
-        public GroupMemberInfoFlags Flags { get; set; }
+        public GroupMemberInfoFlags CurrentFlags { get; set; }
+        public GroupMemberInfoFlags ChangedFlag { get; set; }
     }
 }
