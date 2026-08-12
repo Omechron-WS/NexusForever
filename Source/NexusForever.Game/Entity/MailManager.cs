@@ -537,10 +537,16 @@ namespace NexusForever.Game.Entity
             IMailItem mailItem;
             GenericError GetResult()
             {
-                if (!availableMail.TryGetValue(mailId, out mailItem))
+                if (!availableMail.TryGetValue(mailId, out mailItem)
+                    || mailItem.PendingDelete
+                    || mailItem.Id != mailId
+                    || mailItem.RecipientId != player.CharacterId)
                     return GenericError.MailDoesNotExist;
 
-                if ((mailItem.Flags & MailFlag.NotReturnable) != 0)
+                if (mailItem.SenderType != SenderType.Player
+                    || mailItem.SenderId == 0ul
+                    || mailItem.SenderId == mailItem.RecipientId
+                    || (mailItem.Flags & MailFlag.NotReturnable) != 0)
                     return GenericError.MailCannotReturn;
 
                 return GenericError.Ok;

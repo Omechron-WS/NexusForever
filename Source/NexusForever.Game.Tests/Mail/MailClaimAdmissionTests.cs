@@ -229,7 +229,7 @@ namespace NexusForever.Game.Tests.Mail
                 currencyAmount,
                 pendingDelete,
                 recipientId,
-                attachment.Object);
+                attachments: new[] { attachment.Object });
             MailFixture fixture = CreateFixture(mail);
 
             fixture.Manager.MailPayCod(MailId, MailboxUnitId);
@@ -320,6 +320,170 @@ namespace NexusForever.Game.Tests.Mail
             Assert.Equal(CurrencyType.Credits, senderMail.CurrencyType);
             Assert.Equal(CurrencyAmount, senderMail.CurrencyAmount);
             Assert.False(senderMail.IsCashOnDelivery);
+        }
+
+        public static IEnumerable<object[]> InvalidReturnStates()
+        {
+            yield return new object[] { ReturnMailFailure.Missing, GenericError.MailDoesNotExist };
+            yield return new object[] { ReturnMailFailure.PendingDelete, GenericError.MailDoesNotExist };
+            yield return new object[] { ReturnMailFailure.MismatchedId, GenericError.MailDoesNotExist };
+            yield return new object[] { ReturnMailFailure.ForeignRecipient, GenericError.MailDoesNotExist };
+            yield return new object[] { ReturnMailFailure.CreatureSender, GenericError.MailCannotReturn };
+            yield return new object[] { ReturnMailFailure.GmSender, GenericError.MailCannotReturn };
+            yield return new object[] { ReturnMailFailure.CommodityAuctionSender, GenericError.MailCannotReturn };
+            yield return new object[] { ReturnMailFailure.ItemAuctionSender, GenericError.MailCannotReturn };
+            yield return new object[] { ReturnMailFailure.AccountItemSender, GenericError.MailCannotReturn };
+            yield return new object[] { ReturnMailFailure.ZeroSender, GenericError.MailCannotReturn };
+            yield return new object[] { ReturnMailFailure.SelfSender, GenericError.MailCannotReturn };
+            yield return new object[] { ReturnMailFailure.NotReturnable, GenericError.MailCannotReturn };
+        }
+
+        [Theory]
+        [MemberData(nameof(InvalidReturnStates))]
+        public void ReturnMail_InvalidLiveOrSenderStateRejectsWithoutMutation(
+            ReturnMailFailure failure,
+            GenericError expectedResult)
+        {
+            Mock<IMailItem> mail = failure == ReturnMailFailure.Missing
+                ? null
+                : CreateMail(
+                    currencyAmount: 0ul,
+                    pendingDelete: failure == ReturnMailFailure.PendingDelete,
+                    recipientId: failure == ReturnMailFailure.ForeignRecipient ? SenderId : PlayerId,
+                    senderType: failure switch
+                    {
+                        ReturnMailFailure.CreatureSender => SenderType.Creature,
+                        ReturnMailFailure.GmSender => SenderType.GM,
+                        ReturnMailFailure.CommodityAuctionSender => SenderType.CommodityAuction,
+                        ReturnMailFailure.ItemAuctionSender => SenderType.ItemAuction,
+                        ReturnMailFailure.AccountItemSender => SenderType.AccountItem,
+                        _ => SenderType.Player
+                    },
+                    senderId: failure switch
+                    {
+                        ReturnMailFailure.ZeroSender => 0ul,
+                        ReturnMailFailure.SelfSender => PlayerId,
+                        _ => SenderId
+                    },
+                    flags: failure == ReturnMailFailure.NotReturnable
+                        ? MailFlag.NotReturnable
+                        : MailFlag.None,
+                    id: failure == ReturnMailFailure.MismatchedId ? MailId + 1ul : MailId);
+            MailFixture fixture = CreateFixture(mail);
+
+            fixture.Manager.ReturnMail(MailId);
+
+            ServerMailResult result = GetSingleMessage<ServerMailResult>(fixture);
+            Assert.Equal(1u, result.Action);
+            Assert.Equal(MailId, result.MailId);
+            Assert.Equal(expectedResult, result.Result);
+            Assert.Empty(GetMessages<ServerMailUnavailable>(fixture));
+            Assert.Empty(GetOutgoingMail(fixture.Manager));
+            if (mail != null)
+            {
+                Assert.Same(mail.Object, GetAvailableMail(fixture.Manager)[MailId]);
+                mail.Verify(value => value.ReturnMail(), Times.Never);
+            }
+            fixture.Player.Verify(value => value.GetVisible<IWorldEntity>(It.IsAny<uint>()), Times.Never);
+        }
+
+        [Theory]
+        [InlineData(ReturnMailPayload.Empty)]
+        [InlineData(ReturnMailPayload.Attachment)]
+        [InlineData(ReturnMailPayload.Gift)]
+        [InlineData(ReturnMailPayload.UnpaidCod)]
+        [InlineData(ReturnMailPayload.PendingCreate)]
+        public void ReturnMail_ValidPlayerMailPreservesMutationAndPublicationOrder(
+            ReturnMailPayload payload)
+        {
+            IMailAttachment[] attachments = payload is ReturnMailPayload.Attachment or ReturnMailPayload.UnpaidCod
+                ? new[] { new Mock<IMailAttachment>().Object }
+                : Array.Empty<IMailAttachment>();
+            Mock<IMailItem> mail = CreateMail(
+                isCashOnDelivery: payload == ReturnMailPayload.UnpaidCod,
+                hasPaidOrCollectedCurrency: false,
+                currencyAmount: payload is ReturnMailPayload.Gift or ReturnMailPayload.UnpaidCod
+                    ? CurrencyAmount
+                    : 0ul,
+                pendingCreate: payload == ReturnMailPayload.PendingCreate,
+                attachments: attachments);
+            MailFixture fixture = CreateFixture(mail);
+            bool returnMutationStarted = false;
+            mail.Setup(value => value.ReturnMail()).Callback(() =>
+            {
+                returnMutationStarted = true;
+                Assert.Same(mail.Object, GetAvailableMail(fixture.Manager)[MailId]);
+                Assert.Empty(GetOutgoingMail(fixture.Manager));
+            });
+
+            fixture.Manager.ReturnMail(MailId);
+
+            Assert.True(returnMutationStarted);
+            Assert.False(GetAvailableMail(fixture.Manager).ContainsKey(MailId));
+            Assert.Same(mail.Object, Assert.Single(GetOutgoingMail(fixture.Manager)));
+            object[] messages = fixture.Session.Invocations
+                .SelectMany(invocation => invocation.Arguments)
+                .ToArray();
+            Assert.Collection(messages,
+                value => Assert.Equal(MailId, Assert.IsType<ServerMailUnavailable>(value).MailId),
+                value =>
+                {
+                    ServerMailResult result = Assert.IsType<ServerMailResult>(value);
+                    Assert.Equal(1u, result.Action);
+                    Assert.Equal(MailId, result.MailId);
+                    Assert.Equal(GenericError.Ok, result.Result);
+                });
+            mail.Verify(value => value.ReturnMail(), Times.Once);
+            fixture.Player.Verify(value => value.GetVisible<IWorldEntity>(It.IsAny<uint>()), Times.Never);
+        }
+
+        [Fact]
+        public void ReturnMail_ReplayAfterSuccessReturnsDoesNotExistWithoutRepeatingMutation()
+        {
+            Mock<IMailItem> mail = CreateMail(currencyAmount: 0ul);
+            MailFixture fixture = CreateFixture(mail);
+
+            fixture.Manager.ReturnMail(MailId);
+            fixture.Manager.ReturnMail(MailId);
+
+            Assert.Equal(
+                new[] { GenericError.Ok, GenericError.MailDoesNotExist },
+                GetMessages<ServerMailResult>(fixture).Select(value => value.Result));
+            Assert.Single(GetMessages<ServerMailUnavailable>(fixture));
+            Assert.Same(mail.Object, Assert.Single(GetOutgoingMail(fixture.Manager)));
+            mail.Verify(value => value.ReturnMail(), Times.Once);
+        }
+
+        [Fact]
+        public void ReturnMail_AfterDeleteTombstoneReturnsDoesNotExistWithoutTransfer()
+        {
+            Mock<IMailItem> mail = CreateMail(currencyAmount: 0ul);
+            MailFixture fixture = CreateFixture(mail);
+
+            fixture.Manager.MailDelete(MailId);
+            fixture.Manager.ReturnMail(MailId);
+
+            object[] messages = fixture.Session.Invocations
+                .SelectMany(invocation => invocation.Arguments)
+                .ToArray();
+            Assert.Collection(messages,
+                value => Assert.Equal(MailId, Assert.IsType<ServerMailUnavailable>(value).MailId),
+                value =>
+                {
+                    ServerMailResult result = Assert.IsType<ServerMailResult>(value);
+                    Assert.Equal(5u, result.Action);
+                    Assert.Equal(GenericError.Ok, result.Result);
+                },
+                value =>
+                {
+                    ServerMailResult result = Assert.IsType<ServerMailResult>(value);
+                    Assert.Equal(1u, result.Action);
+                    Assert.Equal(GenericError.MailDoesNotExist, result.Result);
+                });
+            Assert.Same(mail.Object, GetAvailableMail(fixture.Manager)[MailId]);
+            Assert.Empty(GetOutgoingMail(fixture.Manager));
+            mail.Verify(value => value.EnqueueDelete(true), Times.Once);
+            mail.Verify(value => value.ReturnMail(), Times.Never);
         }
 
         public static IEnumerable<object[]> UnavailableDeleteStates()
@@ -533,19 +697,27 @@ namespace NexusForever.Game.Tests.Mail
             ulong currencyAmount = CurrencyAmount,
             bool pendingDelete = false,
             ulong recipientId = PlayerId,
+            bool pendingCreate = false,
+            SenderType senderType = SenderType.Player,
+            ulong senderId = SenderId,
+            MailFlag flags = MailFlag.None,
+            ulong id = MailId,
             params IMailAttachment[] attachments)
         {
             attachments ??= Array.Empty<IMailAttachment>();
 
             var mail = new Mock<IMailItem>();
-            mail.SetupGet(value => value.Id).Returns(MailId);
+            mail.SetupGet(value => value.Id).Returns(id);
             mail.SetupGet(value => value.RecipientId).Returns(recipientId);
-            mail.SetupGet(value => value.SenderId).Returns(SenderId);
+            mail.SetupGet(value => value.SenderType).Returns(senderType);
+            mail.SetupGet(value => value.SenderId).Returns(senderId);
             mail.SetupGet(value => value.Subject).Returns("COD Subject");
             mail.SetupGet(value => value.CurrencyType).Returns(currencyType);
             mail.SetupGet(value => value.CurrencyAmount).Returns(currencyAmount);
             mail.SetupGet(value => value.IsCashOnDelivery).Returns(isCashOnDelivery);
             mail.SetupGet(value => value.HasPaidOrCollectedCurrency).Returns(hasPaidOrCollectedCurrency);
+            mail.SetupGet(value => value.Flags).Returns(flags);
+            mail.SetupGet(value => value.PendingCreate).Returns(pendingCreate);
             bool currentPendingDelete = pendingDelete;
             mail.SetupGet(value => value.PendingDelete).Returns(() => currentPendingDelete);
             mail.Setup(value => value.EnqueueDelete(It.IsAny<bool>()))
@@ -740,6 +912,31 @@ namespace NexusForever.Game.Tests.Mail
             ZeroStack,
             MissingInfo,
             MissingEntry
+        }
+
+        public enum ReturnMailFailure
+        {
+            Missing,
+            PendingDelete,
+            MismatchedId,
+            ForeignRecipient,
+            CreatureSender,
+            GmSender,
+            CommodityAuctionSender,
+            ItemAuctionSender,
+            AccountItemSender,
+            ZeroSender,
+            SelfSender,
+            NotReturnable
+        }
+
+        public enum ReturnMailPayload
+        {
+            Empty,
+            Attachment,
+            Gift,
+            UnpaidCod,
+            PendingCreate
         }
     }
 }
