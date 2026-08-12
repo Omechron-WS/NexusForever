@@ -44,8 +44,22 @@ namespace NexusForever.Game.Map
 
         public void Update(double lastTick)
         {
-            foreach (IGridEntity entity in entities)
-                entity.Update(lastTick);
+            foreach (IGridEntity entity in entities.ToArray())
+            {
+                if (!entities.Any(candidate => ReferenceEquals(candidate, entity)))
+                    continue;
+
+                try
+                {
+                    entity.Update(lastTick);
+                }
+                catch (Exception exception)
+                {
+                    string entityType = entity?.GetType().FullName ?? "null";
+                    log.Error(exception,
+                        $"Failed to update {entityType} in cell X:{Coord.X}, Z:{Coord.Z}.");
+                }
+            }
         }
 
         /// <summary>
