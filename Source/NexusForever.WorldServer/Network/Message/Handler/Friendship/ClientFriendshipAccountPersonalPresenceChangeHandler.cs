@@ -1,4 +1,6 @@
-﻿using NexusForever.Network.Internal;
+﻿using NexusForever.Game.Static.Chat;
+using NexusForever.Network;
+using NexusForever.Network.Internal;
 using NexusForever.Network.Internal.Message.Friendship;
 using NexusForever.Network.Message;
 using NexusForever.Network.World.Message.Model.Friendship;
@@ -22,6 +24,12 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Friendship
 
         public void HandleMessage(IWorldSession session, ClientFriendshipAccountPersonalPresenceChange message)
         {
+            if (message.Presence is not (AccountPresenceState.Available
+                or AccountPresenceState.Away
+                or AccountPresenceState.Busy
+                or AccountPresenceState.Invisible))
+                throw new InvalidPacketValueException();
+
             messagePublisher.PublishAsync(new FriendshipAccountPresenceUpdateMessage
             {
                 AccountId = session.Account.Id,
