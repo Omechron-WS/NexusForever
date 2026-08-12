@@ -1,4 +1,5 @@
 ﻿using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.CSI;
 using NexusForever.Game.Static.Entity;
 using NexusForever.Network.Message;
 using NexusForever.Network.World.Message.Model;
@@ -22,27 +23,33 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Vendor
 
         public void HandleMessage(IWorldSession session, ClientBuybackItemFromVendor buybackItemFromVendor)
         {
-            IBuybackItem buybackItem = buybackManager.GetItem(session.Player, buybackItemFromVendor.UniqueId);
+            IPlayer player = session.Player;
+            INonPlayerEntity vendor = player.SelectedVendor;
+            if (!ClientSideInteractionValidator.IsValid(player, vendor)
+                || vendor.VendorInfo == null)
+                return;
+
+            IBuybackItem buybackItem = buybackManager.GetItem(player, buybackItemFromVendor.UniqueId);
             if (buybackItem == null)
                 return;
 
             //TODO Ensure player has room in inventory
-            if (session.Player.Inventory.GetInventorySlotsRemaining(InventoryLocation.Inventory) < 1)
+            if (player.Inventory.GetInventorySlotsRemaining(InventoryLocation.Inventory) < 1)
             {
-                session.Player.SendGenericError(GenericError.ItemInventoryFull);
+                player.SendGenericError(GenericError.ItemInventoryFull);
                 return;
             }
 
             // do all sanity checks before modifying currency
             foreach ((CurrencyType currencyTypeId, ulong currencyAmount) in buybackItem.CurrencyChange)
-                if (!session.Player.CurrencyManager.CanAfford(currencyTypeId, currencyAmount))
+                if (!player.CurrencyManager.CanAfford(currencyTypeId, currencyAmount))
                     return;
 
             foreach ((CurrencyType currencyTypeId, ulong currencyAmount) in buybackItem.CurrencyChange)
-                session.Player.CurrencyManager.CurrencySubtractAmount(currencyTypeId, currencyAmount);
+                player.CurrencyManager.CurrencySubtractAmount(currencyTypeId, currencyAmount);
 
-            session.Player.Inventory.AddItem(buybackItem.Item, InventoryLocation.Inventory);
-            buybackManager.RemoveItem(session.Player, buybackItem);
+            player.Inventory.AddItem(buybackItem.Item, InventoryLocation.Inventory);
+            buybackManager.RemoveItem(player, buybackItem);
         }
     }
 }
