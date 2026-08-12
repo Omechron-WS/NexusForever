@@ -128,6 +128,111 @@ namespace NexusForever.Game.Tests.Quest
             Assert.Equal(750u, Assert.Single(active.Objectives).TimeRemaining);
         }
 
+        [Fact]
+        public void QuestManager_Update_ThrowingQuestDoesNotBlockLaterTimer()
+        {
+            QuestFixture fixture = CreateLoadedQuest(QuestState.Accepted, 1_500u, 5_000u);
+            QuestManager manager = CreateQuestManager(fixture);
+            Dictionary<ushort, IQuest> activeQuests = GetQuestDictionary(manager, "activeQuests");
+            Mock<IQuest> throwingQuest = CreateQuestMock(99, QuestState.Accepted);
+            throwingQuest
+                .Setup(quest => quest.Update(0.5d))
+                .Throws(new InvalidOperationException("Test quest update failure."));
+            activeQuests.Add(99, throwingQuest.Object);
+            activeQuests.Add(fixture.Quest.Id, fixture.Quest);
+
+            Exception exception = Record.Exception(() => manager.Update(0.5d));
+
+            Assert.Null(exception);
+            Assert.Equal(1_000u, fixture.Quest.Timer);
+            Assert.Equal(QuestState.Accepted, fixture.Quest.State);
+            throwingQuest.Verify(quest => quest.Update(0.5d), Times.Once);
+        }
+
+        [Fact]
+        public void QuestManager_Update_PublicationFailureStillMigratesCommittedBotchExactlyOnce()
+        {
+            QuestFixture fixture = CreateLoadedQuest(QuestState.Accepted, 1_500u, 5_000u);
+            fixture.Session
+                .Setup(session => session.EnqueueMessageEncrypted(
+                    It.Is<ServerQuestStateChange>(message =>
+                        message.QuestId == fixture.Quest.Id
+                        && message.QuestState == QuestState.Botched)))
+                .Throws(new InvalidOperationException("Test quest-state publication failure."));
+            QuestManager manager = CreateQuestManager(fixture);
+            Dictionary<ushort, IQuest> activeQuests = GetQuestDictionary(manager, "activeQuests");
+            Dictionary<ushort, IQuest> inactiveQuests = GetQuestDictionary(manager, "inactiveQuests");
+            activeQuests.Add(fixture.Quest.Id, fixture.Quest);
+
+            Exception firstException = Record.Exception(() => manager.Update(1.5d));
+            Exception secondException = Record.Exception(() => manager.Update(1d));
+
+            Assert.Null(firstException);
+            Assert.Null(secondException);
+            Assert.Equal(QuestState.Botched, fixture.Quest.State);
+            Assert.False(activeQuests.ContainsKey(fixture.Quest.Id));
+            Assert.Same(fixture.Quest, inactiveQuests[fixture.Quest.Id]);
+            fixture.Session.Verify(session => session.EnqueueMessageEncrypted(
+                It.Is<ServerQuestStateChange>(message =>
+                    message.QuestId == fixture.Quest.Id
+                    && message.QuestState == QuestState.Botched)), Times.Once);
+        }
+
+        [Fact]
+        public void QuestManager_Update_RevalidatesSnapshotAndDefersNewQuests()
+        {
+            QuestFixture fixture = CreateLoadedQuest(QuestState.Accepted, 1_500u, 5_000u);
+            QuestManager manager = CreateQuestManager(fixture);
+            Dictionary<ushort, IQuest> activeQuests = GetQuestDictionary(manager, "activeQuests");
+            Mock<IQuest> first = CreateQuestMock(1, QuestState.Accepted);
+            Mock<IQuest> removed = CreateQuestMock(2, QuestState.Accepted);
+            Mock<IQuest> replaced = CreateQuestMock(3, QuestState.Accepted);
+            Mock<IQuest> replacement = CreateQuestMock(3, QuestState.Accepted);
+            Mock<IQuest> removedAndReadded = CreateQuestMock(4, QuestState.Accepted);
+            Mock<IQuest> addedAfterSnapshot = CreateQuestMock(5, QuestState.Accepted);
+            first.Setup(quest => quest.Update(1d)).Callback(() =>
+            {
+                activeQuests.Remove(2);
+                activeQuests[3] = replacement.Object;
+                activeQuests.Remove(4);
+                activeQuests.Add(4, removedAndReadded.Object);
+                activeQuests.Add(5, addedAfterSnapshot.Object);
+            });
+            activeQuests.Add(1, first.Object);
+            activeQuests.Add(2, removed.Object);
+            activeQuests.Add(3, replaced.Object);
+            activeQuests.Add(4, removedAndReadded.Object);
+
+            manager.Update(1d);
+
+            first.Verify(quest => quest.Update(1d), Times.Once);
+            removed.Verify(quest => quest.Update(It.IsAny<double>()), Times.Never);
+            replaced.Verify(quest => quest.Update(It.IsAny<double>()), Times.Never);
+            replacement.Verify(quest => quest.Update(It.IsAny<double>()), Times.Never);
+            removedAndReadded.Verify(quest => quest.Update(1d), Times.Once);
+            addedAfterSnapshot.Verify(quest => quest.Update(It.IsAny<double>()), Times.Never);
+        }
+
+        [Fact]
+        public void QuestManager_Update_InactiveCollisionRetainsActiveQuest()
+        {
+            QuestFixture fixture = CreateLoadedQuest(QuestState.Accepted, 1_500u, 5_000u);
+            QuestManager manager = CreateQuestManager(fixture);
+            Dictionary<ushort, IQuest> activeQuests = GetQuestDictionary(manager, "activeQuests");
+            Dictionary<ushort, IQuest> inactiveQuests = GetQuestDictionary(manager, "inactiveQuests");
+            Mock<IQuest> botchedQuest = CreateQuestMock(1, QuestState.Botched);
+            Mock<IQuest> existingInactiveQuest = CreateQuestMock(1, QuestState.Botched);
+            activeQuests.Add(1, botchedQuest.Object);
+            inactiveQuests.Add(1, existingInactiveQuest.Object);
+
+            Exception exception = Record.Exception(() => manager.Update(1d));
+
+            Assert.Null(exception);
+            Assert.Same(botchedQuest.Object, activeQuests[1]);
+            Assert.Same(existingInactiveQuest.Object, inactiveQuests[1]);
+            botchedQuest.Verify(quest => quest.Update(1d), Times.Once);
+        }
+
         private static QuestFixture CreateLoadedQuest(
             QuestState state,
             uint? timer,
@@ -194,6 +299,24 @@ namespace NexusForever.Game.Tests.Quest
                 new Mock<IScriptManager>().Object,
                 assetManager.Object);
             return new QuestFixture(quest, player, session, globalQuestManager);
+        }
+
+        private static QuestManager CreateQuestManager(QuestFixture fixture)
+        {
+            return new QuestManager(
+                fixture.Player.Object,
+                new CharacterModel(),
+                fixture.GlobalQuestManager.Object,
+                null,
+                Mock.Of<IDisableManager>());
+        }
+
+        private static Mock<IQuest> CreateQuestMock(ushort questId, QuestState state)
+        {
+            var quest = new Mock<IQuest>();
+            quest.SetupGet(value => value.Id).Returns(questId);
+            quest.SetupGet(value => value.State).Returns(state);
+            return quest;
         }
 
         private static Dictionary<ushort, IQuest> GetQuestDictionary(QuestManager manager, string name)

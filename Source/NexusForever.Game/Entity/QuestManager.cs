@@ -176,20 +176,81 @@ namespace NexusForever.Game.Entity
                     Interlocked.CompareExchange(ref pendingQuestShare, null, pending);
             }
 
-            var botchedQuests = new List<IQuest>();
-            foreach (IQuest quest in activeQuests.Values)
+            KeyValuePair<ushort, IQuest>[] activeQuestSnapshot;
+            try
             {
-                quest.Update(lastTick);
-                if (quest.State == QuestState.Botched)
-                    botchedQuests.Add(quest);
+                activeQuestSnapshot = activeQuests.ToArray();
+            }
+            catch (Exception exception)
+            {
+                log.Error(exception, "Failed to snapshot active quests while advancing quest timers.");
+                return;
             }
 
-            foreach (IQuest quest in botchedQuests)
+            var botchedQuests = new List<KeyValuePair<ushort, IQuest>>();
+            foreach (KeyValuePair<ushort, IQuest> entry in activeQuestSnapshot)
             {
-                activeQuests.Remove(quest.Id);
-                inactiveQuests.Add(quest.Id, quest);
+                try
+                {
+                    if (!activeQuests.TryGetValue(entry.Key, out IQuest activeQuest)
+                        || !ReferenceEquals(activeQuest, entry.Value))
+                        continue;
 
-                log.Trace($"Failed to complete quest {quest.Id} before the timer expired!");
+                    activeQuest.Update(lastTick);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to update active quest {entry.Key}.");
+                }
+
+                try
+                {
+                    if (activeQuests.TryGetValue(entry.Key, out IQuest activeQuest)
+                        && ReferenceEquals(activeQuest, entry.Value)
+                        && activeQuest.State == QuestState.Botched)
+                        botchedQuests.Add(entry);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to inspect active quest {entry.Key} after its update.");
+                }
+            }
+
+            foreach (KeyValuePair<ushort, IQuest> entry in botchedQuests)
+            {
+                try
+                {
+                    if (!activeQuests.TryGetValue(entry.Key, out IQuest activeQuest)
+                        || !ReferenceEquals(activeQuest, entry.Value)
+                        || activeQuest.State != QuestState.Botched)
+                        continue;
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to revalidate botched quest {entry.Key}.");
+                    continue;
+                }
+
+                if (!inactiveQuests.TryAdd(entry.Key, entry.Value))
+                {
+                    log.Error(
+                        $"Failed to migrate botched quest {entry.Key} because an inactive quest with the same id is already tracked.");
+                    continue;
+                }
+
+                if (!activeQuests.TryGetValue(entry.Key, out IQuest currentQuest)
+                    || !ReferenceEquals(currentQuest, entry.Value))
+                {
+                    if (inactiveQuests.TryGetValue(entry.Key, out IQuest inactiveQuest)
+                        && ReferenceEquals(inactiveQuest, entry.Value))
+                        inactiveQuests.Remove(entry.Key);
+
+                    continue;
+                }
+
+                activeQuests.Remove(entry.Key);
+
+                log.Trace($"Failed to complete quest {entry.Key} before the timer expired!");
             }
         }
 
