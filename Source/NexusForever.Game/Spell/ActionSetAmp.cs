@@ -97,7 +97,7 @@ namespace NexusForever.Game.Spell
             {
                 Id        = actionSet.Owner,
                 SpecIndex = actionSet.Index,
-                AmpId     = (byte)Entry.Id
+                AmpId     = checked((ushort)Entry.Id)
             };
 
             if ((mask & AmpSaveMask.Create) != 0)

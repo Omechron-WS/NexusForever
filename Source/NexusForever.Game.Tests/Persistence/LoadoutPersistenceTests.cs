@@ -196,8 +196,9 @@ namespace NexusForever.Game.Tests.Persistence
         [Fact]
         public void ActionSetAmp_DeleteCancellationQueuesCompensatingCreate()
         {
+            const uint ampId = 976u;
             ActionSet actionSet = CreateActionSet();
-            var amp = new ActionSetAmp(actionSet, new EldanAugmentationEntry { Id = 2u }, false);
+            var amp = new ActionSetAmp(actionSet, new EldanAugmentationEntry { Id = ampId }, false);
             amp.EnqueueDelete(true);
             bool removed = false;
             var scope = new SaveCommitScope();
@@ -212,7 +213,75 @@ namespace NexusForever.Game.Tests.Persistence
 
             Assert.False(removed);
             Assert.True(amp.PendingCreate);
-            Assert.Equal(EntityState.Added, Assert.Single(retryContext.ChangeTracker.Entries<CharacterActionSetAmpModel>()).State);
+            var entry = Assert.Single(retryContext.ChangeTracker.Entries<CharacterActionSetAmpModel>());
+            Assert.Equal(EntityState.Added, entry.State);
+            Assert.Equal((ushort)ampId, entry.Entity.AmpId);
+        }
+
+        [Fact]
+        public void ActionSetAmp_CreateStagesExactUShortIdentity()
+        {
+            const uint ampId = 976u;
+            var amp = new ActionSetAmp(
+                CreateActionSet(),
+                new EldanAugmentationEntry { Id = ampId },
+                true);
+            var scope = new SaveCommitScope();
+
+            using CharacterContext context = CreateContext();
+            amp.Save(context, scope);
+
+            var entry = Assert.Single(
+                context.ChangeTracker.Entries<CharacterActionSetAmpModel>());
+            Assert.Equal(EntityState.Added, entry.State);
+            Assert.Equal(1ul, entry.Entity.Id);
+            Assert.Equal((byte)0, entry.Entity.SpecIndex);
+            Assert.Equal((ushort)ampId, entry.Entity.AmpId);
+        }
+
+        [Fact]
+        public void ActionSetAmp_DeleteStagesExactUShortIdentityAndAcknowledgesCallback()
+        {
+            const uint ampId = 976u;
+            var amp = new ActionSetAmp(
+                CreateActionSet(),
+                new EldanAugmentationEntry { Id = ampId },
+                false);
+            amp.EnqueueDelete(true);
+            bool removed = false;
+            var scope = new SaveCommitScope();
+
+            using CharacterContext context = CreateContext();
+            amp.Save(context, scope, () => removed = true);
+
+            var entry = Assert.Single(
+                context.ChangeTracker.Entries<CharacterActionSetAmpModel>());
+            Assert.Equal(EntityState.Deleted, entry.State);
+            Assert.Equal(1ul, entry.Entity.Id);
+            Assert.Equal((byte)0, entry.Entity.SpecIndex);
+            Assert.Equal((ushort)ampId, entry.Entity.AmpId);
+            Assert.False(removed);
+
+            scope.CreateAcknowledgement().Acknowledge();
+
+            Assert.True(removed);
+        }
+
+        [Fact]
+        public void ActionSetAmp_OutOfRangeIdentityFailsBeforeTrackingOrAcknowledgement()
+        {
+            var amp = new ActionSetAmp(
+                CreateActionSet(),
+                new EldanAugmentationEntry { Id = (uint)ushort.MaxValue + 1u },
+                true);
+            var scope = new Mock<ISaveCommitScope>();
+
+            using CharacterContext context = CreateContext();
+            Assert.Throws<OverflowException>(() => amp.Save(context, scope.Object));
+
+            Assert.Empty(context.ChangeTracker.Entries<CharacterActionSetAmpModel>());
+            scope.Verify(value => value.Register(It.IsAny<Action>()), Times.Never);
+            Assert.True(amp.PendingCreate);
         }
 
         private static ActionSet CreateActionSet()
