@@ -170,6 +170,59 @@ namespace NexusForever.Game.Tests.Combat
         }
 
         [Fact]
+        public void FireProc_ThrowingCleanupDoesNotBlockSiblingAndFailedProcDoesNotReplay()
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            Mock<IProcInfo> failedProc = CreateProc(entity, ProcType.BeginMoving, 789u, 123u);
+            Mock<IProcInfo> healthyProc = CreateProc(entity, ProcType.BeginMoving, 790u, 456u);
+            failedProc
+                .Setup(p => p.Trigger(null))
+                .Throws<InvalidOperationException>();
+            failedProc
+                .Setup(p => p.Cancel())
+                .Throws<InvalidOperationException>();
+            entity.ApplyProc(failedProc.Object);
+            entity.ApplyProc(healthyProc.Object);
+
+            entity.FireProc(ProcType.BeginMoving);
+            entity.FireProc(ProcType.BeginMoving);
+
+            failedProc.Verify(p => p.Trigger(null), Times.Once);
+            failedProc.Verify(p => p.Cancel(), Times.Once);
+            healthyProc.Verify(p => p.Trigger(null), Times.Exactly(2));
+        }
+
+        [Fact]
+        public void FireProc_ReentrantRemovalSkipsRemovedSnapshotSibling()
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            Mock<IProcInfo> firstProc = CreateProc(entity, ProcType.BeginMoving, 789u, 123u);
+            Mock<IProcInfo> removedProc = CreateProc(entity, ProcType.BeginMoving, 790u, 456u);
+            Mock<IProcInfo> addedProc = CreateProc(entity, ProcType.BeginMoving, 791u, 789u);
+            firstProc
+                .Setup(p => p.Trigger(null))
+                .Callback(() =>
+                {
+                    entity.RemoveProc(removedProc.Object);
+                    entity.ApplyProc(addedProc.Object);
+                })
+                .Returns(true);
+            entity.ApplyProc(firstProc.Object);
+            entity.ApplyProc(removedProc.Object);
+
+            entity.FireProc(ProcType.BeginMoving);
+
+            firstProc.Verify(p => p.Trigger(null), Times.Once);
+            removedProc.Verify(p => p.Trigger(It.IsAny<IUnitEntity>()), Times.Never);
+            removedProc.Verify(p => p.Cancel(), Times.Once);
+            addedProc.Verify(p => p.Trigger(It.IsAny<IUnitEntity>()), Times.Never);
+
+            entity.FireProc(ProcType.BeginMoving);
+
+            addedProc.Verify(p => p.Trigger(null), Times.Once);
+        }
+
+        [Fact]
         public void TakeDamage_FiresHitAndReceivedProcsWithOpposingEventTargets()
         {
             IServiceProvider previousProvider = LegacyServiceProvider.Provider;
@@ -206,6 +259,63 @@ namespace NexusForever.Game.Tests.Combat
 
                 hitProc.Verify(p => p.Trigger(victim), Times.Once);
                 receivedProc.Verify(p => p.Trigger(attacker), Times.Once);
+                Assert.Equal(90u, victim.Health);
+            }
+            finally
+            {
+                LegacyServiceProvider.Provider = previousProvider;
+            }
+        }
+
+        [Fact]
+        public void TakeDamage_ThrowingHitProcDoesNotBlockSiblingVictimProcOrDamage()
+        {
+            IServiceProvider previousProvider = LegacyServiceProvider.Provider;
+            var entityManager = new EntityManager();
+            typeof(EntityManager).GetMethod(
+                    "InitialiseEntityStats",
+                    BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(entityManager, null);
+            using ServiceProvider serviceProvider = new ServiceCollection()
+                .AddSingleton(entityManager)
+                .BuildServiceProvider();
+            LegacyServiceProvider.Provider = serviceProvider;
+
+            try
+            {
+                TestUnitEntity attacker = CreateEntity(1u);
+                TestUnitEntity victim = CreateEntity(2u);
+                attacker.MaxHealth = 100u;
+                attacker.SetHealth(100u);
+                victim.MaxHealth = 100u;
+                victim.SetHealth(100u);
+
+                Mock<IProcInfo> failedProc = CreateProc(attacker, ProcType.OnHit, 789u, 123u);
+                Mock<IProcInfo> healthyProc = CreateProc(attacker, ProcType.OnHit, 790u, 456u);
+                Mock<IProcInfo> receivedProc = CreateProc(victim, ProcType.OnDamageReceived, 791u, 789u);
+                failedProc
+                    .Setup(p => p.Trigger(victim))
+                    .Throws<InvalidOperationException>();
+                failedProc
+                    .Setup(p => p.Cancel())
+                    .Throws<InvalidOperationException>();
+                attacker.ApplyProc(failedProc.Object);
+                attacker.ApplyProc(healthyProc.Object);
+                victim.ApplyProc(receivedProc.Object);
+
+                var damage = new Mock<IDamageDescription>();
+                damage.SetupGet(d => d.DamageType).Returns(DamageType.Physical);
+                damage.SetupGet(d => d.RawDamage).Returns(10u);
+                damage.SetupGet(d => d.AdjustedDamage).Returns(10u);
+
+                victim.TakeDamage(attacker, damage.Object);
+                attacker.FireProc(ProcType.OnHit, victim);
+
+                failedProc.Verify(p => p.Trigger(victim), Times.Once);
+                failedProc.Verify(p => p.Cancel(), Times.Once);
+                healthyProc.Verify(p => p.Trigger(victim), Times.Exactly(2));
+                receivedProc.Verify(p => p.Trigger(attacker), Times.Once);
+                Assert.NotNull(victim.ThreatManager.GetHostile(attacker.Guid));
                 Assert.Equal(90u, victim.Health);
             }
             finally

@@ -953,7 +953,31 @@ namespace NexusForever.Game.Entity
                 return;
 
             foreach (IProcInfo proc in procList.ToArray())
-                proc.Trigger(primaryTarget);
+            {
+                if (!IsProcRegistered(type, proc))
+                    continue;
+
+                try
+                {
+                    proc.Trigger(primaryTarget);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to trigger {type} proc for entity {Guid}.");
+
+                    if (!TryDetachProc(type, proc))
+                        continue;
+
+                    try
+                    {
+                        proc.Cancel();
+                    }
+                    catch (Exception cancelException)
+                    {
+                        log.Error(cancelException, $"Failed to cancel rejected {type} proc for entity {Guid}.");
+                    }
+                }
+            }
         }
 
         /// <summary>
