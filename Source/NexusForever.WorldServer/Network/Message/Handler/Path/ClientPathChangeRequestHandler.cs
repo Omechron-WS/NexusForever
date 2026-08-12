@@ -1,9 +1,11 @@
 ﻿using System;
 using NexusForever.Game.Static.AccountInventory;
 using NexusForever.GameTable;
+using NexusForever.Network;
 using NexusForever.Network.Message;
 using NexusForever.Network.World.Message.Model.PlayerPath;
 using NexusForever.Network.World.Message.Static;
+using PlayerPath = NexusForever.Game.Static.PlayerPath.Path;
 
 namespace NexusForever.WorldServer.Network.Message.Handler.Path
 {
@@ -23,6 +25,9 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Path
 
         public void HandleMessage(IWorldSession session, ClientPathChangeRequest clientPathChangeRequest)
         {
+            if (clientPathChangeRequest.Path > PlayerPath.Explorer)
+                throw new InvalidPacketValueException();
+
             uint activateCooldown = gameTableManager.GameFormula.GetEntry(2366).Dataint0;
             uint bypassCost       = gameTableManager.GameFormula.GetEntry(2366).Dataint01;
             bool needToUseTokens  = DateTime.UtcNow.Subtract(session.Player.PathActivatedTime).TotalSeconds < activateCooldown;

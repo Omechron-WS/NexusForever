@@ -284,8 +284,23 @@ namespace NexusForever.Game.PublicEvent
         /// </summary>
         public void Broadcast(IWritable message)
         {
-            foreach (IPublicEventTeamMember member in members.Values)
-                member.Send(message);
+            foreach (KeyValuePair<ulong, IPublicEventTeamMember> memberEntry in members.ToArray())
+            {
+                try
+                {
+                    if (!members.TryGetValue(memberEntry.Key, out IPublicEventTeamMember member)
+                        || !ReferenceEquals(member, memberEntry.Value))
+                        continue;
+
+                    member.Send(message);
+                }
+                catch (Exception exception)
+                {
+                    log.LogError(
+                        exception,
+                        $"Failed to broadcast public event team {Team} message to character {memberEntry.Key}.");
+                }
+            }
         }
     }
 }

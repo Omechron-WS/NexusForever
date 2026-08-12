@@ -1,8 +1,10 @@
 ﻿using NexusForever.Game.Static.AccountInventory;
 using NexusForever.GameTable;
+using NexusForever.Network;
 using NexusForever.Network.Message;
 using NexusForever.Network.World.Message.Model.PlayerPath;
 using NexusForever.Network.World.Message.Static;
+using PlayerPath = NexusForever.Game.Static.PlayerPath.Path;
 
 namespace NexusForever.WorldServer.Network.Message.Handler.Path
 {
@@ -22,6 +24,9 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Path
 
         public void HandleMessage(IWorldSession session, ClientPathUnlockRequest clientPathUnlockRequest)
         {
+            if (clientPathUnlockRequest.Path > PlayerPath.Explorer)
+                throw new InvalidPacketValueException();
+
             uint unlockCost = gameTableManager.GameFormula.GetEntry(2365).Dataint0;
 
             GenericError CanUnlockPath()
