@@ -83,6 +83,75 @@ namespace NexusForever.Game.Tests.Combat
         }
 
         [Fact]
+        public void Update_ThrowingProcDoesNotBlockSiblingOrThreatTick()
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            var threatManager = new Mock<IThreatManager>();
+            SetThreatManager(entity, threatManager.Object);
+            Mock<IProcInfo> failedProc = CreateProc(entity, ProcType.BeginMoving, 789u, 123u);
+            Mock<IProcInfo> healthyProc = CreateProc(entity, ProcType.BeginMoving, 790u, 456u);
+            failedProc.Setup(p => p.Update(0.1d)).Throws<InvalidOperationException>();
+            entity.ApplyProc(failedProc.Object);
+            entity.ApplyProc(healthyProc.Object);
+
+            entity.Update(0.1d);
+            entity.Update(0.2d);
+
+            failedProc.Verify(p => p.Update(It.IsAny<double>()), Times.Once);
+            failedProc.Verify(p => p.Cancel(), Times.Once);
+            healthyProc.Verify(p => p.Update(0.1d), Times.Once);
+            healthyProc.Verify(p => p.Update(0.2d), Times.Once);
+            threatManager.Verify(t => t.Update(0.1d), Times.Once);
+            threatManager.Verify(t => t.Update(0.2d), Times.Once);
+        }
+
+        [Fact]
+        public void Update_ThrowingProcCleanupDoesNotBlockSiblingOrThreatTick()
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            var threatManager = new Mock<IThreatManager>();
+            SetThreatManager(entity, threatManager.Object);
+            Mock<IProcInfo> failedProc = CreateProc(entity, ProcType.BeginMoving, 789u, 123u);
+            Mock<IProcInfo> healthyProc = CreateProc(entity, ProcType.BeginMoving, 790u, 456u);
+            failedProc.Setup(p => p.Update(0.1d)).Throws<InvalidOperationException>();
+            failedProc.Setup(p => p.Cancel()).Throws<InvalidOperationException>();
+            entity.ApplyProc(failedProc.Object);
+            entity.ApplyProc(healthyProc.Object);
+
+            entity.Update(0.1d);
+            entity.Update(0.2d);
+
+            failedProc.Verify(p => p.Update(It.IsAny<double>()), Times.Once);
+            failedProc.Verify(p => p.Cancel(), Times.Once);
+            healthyProc.Verify(p => p.Update(0.1d), Times.Once);
+            healthyProc.Verify(p => p.Update(0.2d), Times.Once);
+            threatManager.Verify(t => t.Update(0.1d), Times.Once);
+            threatManager.Verify(t => t.Update(0.2d), Times.Once);
+        }
+
+        [Fact]
+        public void Update_ReentrantRemovalSkipsRemovedSnapshotSibling()
+        {
+            TestUnitEntity entity = CreateEntity(1u);
+            var threatManager = new Mock<IThreatManager>();
+            SetThreatManager(entity, threatManager.Object);
+            Mock<IProcInfo> firstProc = CreateProc(entity, ProcType.BeginMoving, 789u, 123u);
+            Mock<IProcInfo> removedProc = CreateProc(entity, ProcType.BeginMoving, 790u, 456u);
+            firstProc
+                .Setup(p => p.Update(0.1d))
+                .Callback(() => entity.RemoveProc(removedProc.Object));
+            entity.ApplyProc(firstProc.Object);
+            entity.ApplyProc(removedProc.Object);
+
+            entity.Update(0.1d);
+
+            firstProc.Verify(p => p.Update(0.1d), Times.Once);
+            removedProc.Verify(p => p.Update(It.IsAny<double>()), Times.Never);
+            removedProc.Verify(p => p.Cancel(), Times.Once);
+            threatManager.Verify(t => t.Update(0.1d), Times.Once);
+        }
+
+        [Fact]
         public void RemoveProc_CancelsOnlyExactProcAndPreservesOtherRegistrations()
         {
             TestUnitEntity entity = CreateEntity(1u);

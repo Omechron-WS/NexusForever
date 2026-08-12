@@ -283,8 +283,35 @@ namespace NexusForever.Game.Entity
                 }
             }
 
-            foreach (IProcInfo proc in procs.Values.SelectMany(list => list).ToArray())
-                proc.Update(lastTick);
+            KeyValuePair<ProcType, IProcInfo>[] procSnapshot = procs
+                .SelectMany(pair => pair.Value.Select(proc => new KeyValuePair<ProcType, IProcInfo>(pair.Key, proc)))
+                .ToArray();
+            foreach (KeyValuePair<ProcType, IProcInfo> entry in procSnapshot)
+            {
+                if (!IsProcRegistered(entry.Key, entry.Value))
+                    continue;
+
+                try
+                {
+                    entry.Value.Update(lastTick);
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to update {entry.Key} proc for entity {Guid}.");
+
+                    if (!TryDetachProc(entry.Key, entry.Value))
+                        continue;
+
+                    try
+                    {
+                        entry.Value.Cancel();
+                    }
+                    catch (Exception cancelException)
+                    {
+                        log.Error(cancelException, $"Failed to cancel rejected {entry.Key} proc for entity {Guid}.");
+                    }
+                }
+            }
 
             ThreatManager.Update(lastTick);
             CombatStateTick();
@@ -883,6 +910,28 @@ namespace NexusForever.Game.Entity
                 procs.Remove(proc.Type);
 
             removedProc.Cancel();
+            return true;
+        }
+
+        private bool IsProcRegistered(ProcType type, IProcInfo proc)
+        {
+            return procs.TryGetValue(type, out List<IProcInfo> procList)
+                && procList.Any(candidate => ReferenceEquals(candidate, proc));
+        }
+
+        private bool TryDetachProc(ProcType type, IProcInfo proc)
+        {
+            if (!procs.TryGetValue(type, out List<IProcInfo> procList))
+                return false;
+
+            int index = procList.FindIndex(candidate => ReferenceEquals(candidate, proc));
+            if (index < 0)
+                return false;
+
+            procList.RemoveAt(index);
+            if (procList.Count == 0)
+                procs.Remove(type);
+
             return true;
         }
 
