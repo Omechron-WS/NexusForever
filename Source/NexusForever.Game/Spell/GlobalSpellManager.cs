@@ -33,12 +33,23 @@ namespace NexusForever.Game.Spell
 
         private readonly Dictionary<uint, ISpellBaseInfo> spellBaseInfoStore = new();
         private readonly Dictionary<SpellEffectType, SpellEffectDelegate> spellEffectDelegates = new();
+        private readonly Func<uint, bool> spellBaseExists;
         private ImmutableDictionary<CastMethod, SpellFactoryDelegate> spellFactoryDelegates;
 
         // entry caches
         private ImmutableDictionary<uint, ImmutableList<Spell4Entry>> spellEntries;
         private ImmutableDictionary<uint, ImmutableList<Spell4EffectsEntry>> spellEffectEntries;
         private ImmutableDictionary<uint, ImmutableList<TelegraphDamageEntry>> spellTelegraphEntries;
+
+        public GlobalSpellManager()
+            : this(spell4BaseId => GameTableManager.Instance.Spell4Base.GetEntry(spell4BaseId) != null)
+        {
+        }
+
+        internal GlobalSpellManager(Func<uint, bool> spellBaseExists)
+        {
+            this.spellBaseExists = spellBaseExists ?? throw new ArgumentNullException(nameof(spellBaseExists));
+        }
 
         public void Initialise()
         {
@@ -210,6 +221,21 @@ namespace NexusForever.Game.Spell
         public SpellEffectDelegate GetEffectHandler(SpellEffectType spellEffectType)
         {
             return spellEffectDelegates.TryGetValue(spellEffectType, out SpellEffectDelegate handler) ? handler : null;
+        }
+
+        /// <summary>
+        /// Return <see cref="SpellEffectDelegate"/> for a supported effect row.
+        /// </summary>
+        public SpellEffectDelegate GetEffectHandler(Spell4EffectsEntry entry)
+        {
+            if (entry == null)
+                return null;
+
+            SpellEffectDelegate handler = GetEffectHandler(entry.EffectType);
+            if (handler == null)
+                return null;
+
+            return SpellEffectSupportPolicy.IsSupported(entry, spellBaseExists) ? handler : null;
         }
     }
 }

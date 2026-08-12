@@ -12,6 +12,7 @@ using NexusForever.Network.Message;
 using NexusForever.Network.Session;
 using NexusForever.Network.World.Combat;
 using NexusForever.Network.World.Message.Model;
+using NexusForever.Network.World.Message.Model.Shared;
 using NexusForever.Network.World.Message.Static;
 using NexusForever.Script;
 using NexusForever.Script.Template.Collection;
@@ -452,6 +453,96 @@ namespace NexusForever.Game.Tests.Spell
             Assert.True(spell.IsFinished);
         }
 
+        [Fact]
+        public void ModifySpellCooldown_ExactImmediateRowExecutesAndPublishesOnce()
+        {
+            using var context = new EffectExecutionContext(100f);
+            context.SpellManager
+                .Setup(manager => manager.TryResetSpellCooldownsByBaseSpell(20684u))
+                .Returns(true);
+            Spell4EffectsEntry effect = CreateModifySpellCooldownEffect();
+            TestEffectSpell spell = context.CreateSpell([effect]);
+
+            spell.ExecuteForTest();
+
+            context.SpellManager.Verify(
+                manager => manager.TryResetSpellCooldownsByBaseSpell(20684u),
+                Times.Once);
+            var invocation = Assert.Single(context.Invocations);
+            Assert.Same(context.Player.Object, invocation.Target);
+            Assert.Same(effect, invocation.Effect.Entry);
+            Assert.False(invocation.Effect.DropEffect);
+            Assert.Empty(invocation.Effect.CombatLogs);
+            Assert.Equal(2, context.BaseAuthorityReads);
+            Assert.Equal(2u, context.NextEffectIdValue);
+            TargetInfo.EffectInfo published = Assert.Single(
+                Assert.Single(Assert.Single(
+                    context.VisiblePackets.OfType<ServerSpellGo>()).TargetInfoData).EffectInfoData);
+            Assert.Equal(effect.Id, published.Spell4EffectId);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void ModifySpellCooldown_UnsupportedImmediateOrDelayedRowNeverPassesInitialRegistration(
+            bool delayed)
+        {
+            using var context = new EffectExecutionContext(100f);
+            Spell4EffectsEntry effect = CreateModifySpellCooldownEffect();
+            if (delayed)
+                effect.DelayTime = 100u;
+            else
+                effect.DataBits02 = 3u;
+            effect.InnateCostPerTickType0 = (uint)Vital.Resource1;
+            effect.InnateCostPerTick0 = 10u;
+            TestEffectSpell spell = context.CreateSpell([effect]);
+
+            spell.ExecuteForTest();
+            spell.Update(1d);
+            spell.LateUpdate(0d);
+
+            Assert.Equal(100f, context.Values[Vital.Resource1]);
+            Assert.Empty(context.Mutations);
+            Assert.Empty(context.Invocations);
+            context.SpellManager.Verify(
+                manager => manager.TryResetSpellCooldownsByBaseSpell(It.IsAny<uint>()),
+                Times.Never);
+            Assert.Empty(Assert.Single(
+                context.VisiblePackets.OfType<ServerSpellGo>()).TargetInfoData);
+            Assert.Empty(context.VisiblePackets.OfType<Server07F8>());
+            Assert.Equal(0, context.BaseAuthorityReads);
+            Assert.Equal(1u, context.NextEffectIdValue);
+            Assert.True(spell.IsFinished);
+        }
+
+        [Fact]
+        public void ModifySpellCooldown_ResetFailureDropsOnlyThatEffectAndPreservesOrder()
+        {
+            using var context = new EffectExecutionContext(100f);
+            var lifecycle = new List<string>();
+            context.SpellManager
+                .Setup(manager => manager.TryResetSpellCooldownsByBaseSpell(20684u))
+                .Callback(() => lifecycle.Add("reset"))
+                .Returns(false);
+            context.Handler = (_, _, _) => lifecycle.Add("damage");
+            Spell4EffectsEntry reset = CreateModifySpellCooldownEffect();
+            Spell4EffectsEntry damage = CreateEffect(83529u, 0u);
+            damage.OrderIndex = 1u;
+            TestEffectSpell spell = context.CreateSpell([reset, damage]);
+
+            spell.ExecuteForTest();
+
+            Assert.Equal(["reset", "damage"], lifecycle);
+            Assert.Collection(
+                context.Invocations,
+                invocation => Assert.True(invocation.Effect.DropEffect),
+                invocation => Assert.False(invocation.Effect.DropEffect));
+            TargetInfo targetInfo = Assert.Single(
+                Assert.Single(context.VisiblePackets.OfType<ServerSpellGo>()).TargetInfoData);
+            TargetInfo.EffectInfo published = Assert.Single(targetInfo.EffectInfoData);
+            Assert.Equal(damage.Id, published.Spell4EffectId);
+        }
+
         private static Spell4EffectsEntry CreateEffect(
             uint id,
             uint cost,
@@ -502,6 +593,11 @@ namespace NexusForever.Game.Tests.Spell
             };
         }
 
+        private static Spell4EffectsEntry CreateModifySpellCooldownEffect()
+        {
+            return SpellEffectSupportPolicyTests.ExactEntry();
+        }
+
         private static void AssertVitalFailurePackets(
             IReadOnlyList<IWritable> packets,
             ISpell spell,
@@ -529,6 +625,11 @@ namespace NexusForever.Game.Tests.Spell
             public Mock<IPlayer> Player { get; } = new();
             public Mock<IGameSession> Session { get; } = new();
             public Mock<IBaseMap> Map { get; } = new();
+            public Mock<ISpellManager> SpellManager { get; } = new();
+            public int BaseAuthorityReads { get; private set; }
+            public uint NextEffectIdValue => (uint)typeof(GlobalSpellManager).GetField(
+                "nextEffectId",
+                BindingFlags.Instance | BindingFlags.NonPublic).GetValue(globalSpellManager);
 
             public Dictionary<Vital, float> Values { get; } = [];
             public Dictionary<Vital, float> Maxima { get; } = [];
@@ -545,6 +646,7 @@ namespace NexusForever.Game.Tests.Spell
             private readonly Dictionary<Vital, int> vitalReadAttempts = [];
             private readonly IServiceProvider previousProvider;
             private readonly ServiceProvider serviceProvider;
+            private readonly GlobalSpellManager globalSpellManager;
 
             public EffectExecutionContext(float resource1, float? focus = null)
             {
@@ -564,7 +666,11 @@ namespace NexusForever.Game.Tests.Spell
                         It.IsAny<ISpell>(), It.IsAny<uint>()))
                     .Returns(scriptCollection.Object);
 
-                var globalSpellManager = new GlobalSpellManager();
+                globalSpellManager = new GlobalSpellManager(_ =>
+                {
+                    BaseAuthorityReads++;
+                    return true;
+                });
                 FieldInfo handlerField = typeof(GlobalSpellManager).GetField(
                     "spellEffectDelegates",
                     BindingFlags.Instance | BindingFlags.NonPublic);
@@ -575,6 +681,11 @@ namespace NexusForever.Game.Tests.Spell
                     Handler?.Invoke(spell, target, effect);
                 });
                 handlers.Add(SpellEffectType.VitalModifier, SpellHandler.HandleEffectVitalModifier);
+                handlers.Add(SpellEffectType.ModifySpellCooldown, (spell, target, effect) =>
+                {
+                    Invocations.Add((spell, target, effect));
+                    SpellHandler.HandleEffectModifySpellCooldown(spell, target, effect);
+                });
 
                 serviceProvider = new ServiceCollection()
                     .AddSingleton(scriptManager.Object)
@@ -582,13 +693,12 @@ namespace NexusForever.Game.Tests.Spell
                     .BuildServiceProvider();
                 LegacyServiceProvider.Provider = serviceProvider;
 
-                var spellManager = new Mock<ISpellManager>();
                 Player.SetupGet(entity => entity.Guid).Returns(7u);
                 Player.SetupGet(entity => entity.InWorld).Returns(true);
                 Player.SetupGet(entity => entity.Map).Returns(Map.Object);
                 Player.SetupGet(entity => entity.IsLoading).Returns(false);
                 Player.SetupGet(entity => entity.Session).Returns(Session.Object);
-                Player.SetupGet(entity => entity.SpellManager).Returns(spellManager.Object);
+                Player.SetupGet(entity => entity.SpellManager).Returns(SpellManager.Object);
                 Player.Setup(entity => entity.TryGetVitalValue(
                         It.IsAny<Vital>(),
                         out It.Ref<float>.IsAny))

@@ -206,6 +206,35 @@ namespace NexusForever.Game.Spell
             });
         }
 
+        [SpellEffectHandler(SpellEffectType.ModifySpellCooldown)]
+        public static void HandleEffectModifySpellCooldown(
+            ISpell spell,
+            IUnitEntity target,
+            ISpellTargetEffectInfo info)
+        {
+            if (info == null)
+                return;
+
+            if (target is not IPlayer player
+                || !SpellEffectSupportPolicy.IsSupported(
+                    info.Entry,
+                    spell4BaseId => spell4BaseId == SpellEffectSupportPolicy.ModifySpellCooldownBaseId))
+            {
+                info.DropEffect = true;
+                return;
+            }
+
+            try
+            {
+                if (!player.SpellManager.TryResetSpellCooldownsByBaseSpell(info.Entry.DataBits01))
+                    info.DropEffect = true;
+            }
+            catch
+            {
+                info.DropEffect = true;
+            }
+        }
+
         private static bool TryCalculateVitalModifierValue(
             IUnitEntity target,
             Vital vital,

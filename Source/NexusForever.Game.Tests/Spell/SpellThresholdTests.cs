@@ -48,7 +48,7 @@ namespace NexusForever.Game.Tests.Spell
 
             serviceProvider = new ServiceCollection()
                 .AddSingleton(scriptManager.Object)
-                .AddSingleton(new GlobalSpellManager())
+                .AddSingleton(new GlobalSpellManager(_ => true))
                 .BuildServiceProvider();
             LegacyServiceProvider.Provider = serviceProvider;
         }
@@ -360,6 +360,179 @@ namespace NexusForever.Game.Tests.Spell
             spell.TryHandleThresholdInput(false);
             spell.Update(1d);
             Assert.Single(mutations);
+        }
+
+        [Fact]
+        public void ChargeRelease_Build16042RootCooldownCommitsBeforeChildResetAndDamage()
+        {
+            var packets = new List<object>();
+            Mock<IPlayer> player = CreatePlayer(packets, out _, out _);
+            var spellManager = new SpellManager(
+                player.Object,
+                spell4BaseId => spell4BaseId == 20684u
+                    ? new Spell4BaseEntry { Id = spell4BaseId }
+                    : null,
+                spell4BaseId => spell4BaseId == 20684u
+                    ? [new Spell4Entry { Id = 34718u, Spell4BaseIdBaseSpell = spell4BaseId }]
+                    : []);
+            player.SetupGet(unit => unit.SpellManager).Returns(spellManager);
+
+            RegisterEffectHandler(
+                SpellEffectType.ModifySpellCooldown,
+                (spell, target, info) =>
+                {
+                    packets.Add("reset");
+                    SpellHandler.HandleEffectModifySpellCooldown(spell, target, info);
+                });
+            RegisterEffectHandler(SpellEffectType.Damage, (_, _, _) =>
+            {
+                Assert.Equal(0d, spellManager.GetSpellCooldown(34718u));
+                packets.Add("damage");
+            });
+
+            SpellParameters parameters = CreateRootParameters(
+                CastMethod.ChargeRelease,
+                thresholdTime: 8200u);
+            parameters.SpellInfo = CreateSpellInfo(
+                new Spell4Entry
+                {
+                    Id                    = 34718u,
+                    Spell4BaseIdBaseSpell = 20684u,
+                    TierIndex             = 1u,
+                    ThresholdTime         = 8200u,
+                    SpellCoolDown         = 10000u
+                },
+                CastMethod.ChargeRelease);
+            parameters.RootSpellInfo = parameters.SpellInfo;
+            var row = new Spell4ThresholdsEntry
+            {
+                Id                = 125u,
+                Spell4IdParent    = 34718u,
+                Spell4IdToCast    = 34720u,
+                OrderIndex        = 0u,
+                ThresholdDuration = 0u,
+                IconReplacement   = string.Empty
+            };
+            ThresholdData data = CreateData(row);
+            Spell4EffectsEntry reset = SpellEffectSupportPolicyTests.ExactEntry();
+            var damage = new Spell4EffectsEntry
+            {
+                Id             = 83529u,
+                SpellId        = 34720u,
+                TargetFlags    = (uint)SpellEffectTargetFlags.Telegraph,
+                EffectType     = SpellEffectType.Damage,
+                DamageType     = DamageType.Magic,
+                DataBits00     = BitConverter.SingleToUInt32Bits(1f),
+                ThreatMultiplier = 1f,
+                PhaseFlags     = uint.MaxValue,
+                OrderIndex     = 1u,
+                ParameterType  =
+                [
+                    SpellEffectParameterType.AssaultPower,
+                    SpellEffectParameterType.PerLevel,
+                    SpellEffectParameterType.None,
+                    SpellEffectParameterType.None
+                ],
+                ParameterValue =
+                [
+                    BitConverter.UInt32BitsToSingle(0x3E78A090u),
+                    BitConverter.UInt32BitsToSingle(0x414F3333u),
+                    0f,
+                    0f
+                ]
+            };
+            Spell4Entry childEntry = data.Spells[34720u].Entry;
+            childEntry.Spell4BaseIdBaseSpell = 20686u;
+            childEntry.TierIndex = 1u;
+            data.Spells[34720u] = CreateSpellInfo(
+                childEntry,
+                CastMethod.ChargeRelease,
+                [reset, damage]);
+            TestThresholdChildSpell child = null;
+            var root = new TestChargeRelease(player.Object, parameters, data, (spell4Id, childParameters) =>
+            {
+                childParameters.SpellInfo = data.Spells[spell4Id];
+                child = new TestThresholdChildSpell(player.Object, childParameters);
+                child.Cast();
+                return child;
+            });
+
+            root.Cast();
+            root.Update(0d);
+            Assert.Equal(10d, spellManager.GetSpellCooldown(34718u));
+            ServerCooldown rootCooldownPacket = Assert.Single(packets.OfType<ServerCooldown>());
+            Assert.Equal(34718u, rootCooldownPacket.Cooldown.SpellId);
+            Assert.Equal(10000u, rootCooldownPacket.Cooldown.TimeRemaining);
+            Assert.DoesNotContain(packets, packet => packet is string);
+
+            Assert.True(root.TryHandleThresholdInput(false));
+            Assert.NotNull(child);
+            child.Update(0d);
+
+            Assert.Equal(0d, spellManager.GetSpellCooldown(34718u));
+            Assert.Equal(0d, spellManager.GetSpellCooldown(34720u));
+            Assert.Single(packets.OfType<ServerCooldown>());
+            Assert.Collection(
+                packets.Where(packet => packet is ServerCooldown or string),
+                packet => Assert.IsType<ServerCooldown>(packet),
+                packet => Assert.Equal("reset", packet),
+                packet => Assert.Equal("damage", packet));
+        }
+
+        [Fact]
+        public void ChargeRelease_FailedBuild16042ChildDispatchRetainsCommittedRootCooldown()
+        {
+            var lifecycle = new List<object>();
+            Mock<IPlayer> player = CreatePlayer(lifecycle, out _, out _);
+            var spellManager = new SpellManager(
+                player.Object,
+                spell4BaseId => spell4BaseId == 20684u
+                    ? new Spell4BaseEntry { Id = spell4BaseId }
+                    : null,
+                spell4BaseId => spell4BaseId == 20684u
+                    ? [new Spell4Entry { Id = 34718u, Spell4BaseIdBaseSpell = spell4BaseId }]
+                    : []);
+            player.SetupGet(unit => unit.SpellManager).Returns(spellManager);
+            SpellParameters parameters = CreateRootParameters(
+                CastMethod.ChargeRelease,
+                thresholdTime: 8200u);
+            parameters.SpellInfo = CreateSpellInfo(
+                new Spell4Entry
+                {
+                    Id                    = 34718u,
+                    Spell4BaseIdBaseSpell = 20684u,
+                    TierIndex             = 1u,
+                    ThresholdTime         = 8200u,
+                    SpellCoolDown         = 10000u
+                },
+                CastMethod.ChargeRelease);
+            parameters.RootSpellInfo = parameters.SpellInfo;
+            var row = new Spell4ThresholdsEntry
+            {
+                Id                = 125u,
+                Spell4IdParent    = 34718u,
+                Spell4IdToCast    = 34720u,
+                OrderIndex        = 0u,
+                ThresholdDuration = 0u,
+                IconReplacement   = string.Empty
+            };
+            ThresholdData data = CreateData(row);
+            Spell4Entry childEntry = data.Spells[34720u].Entry;
+            childEntry.Spell4BaseIdBaseSpell = 20686u;
+            childEntry.TierIndex = 1u;
+            data.Spells[34720u] = CreateSpellInfo(
+                childEntry,
+                CastMethod.ChargeRelease);
+            var root = new TestChargeRelease(player.Object, parameters, data, (_, _) =>
+                throw new InvalidOperationException("Test child dispatch failure."));
+
+            root.Cast();
+            root.Update(0d);
+            root.TryHandleThresholdInput(false);
+
+            Assert.Equal(10d, spellManager.GetSpellCooldown(34718u));
+            Assert.Single(lifecycle.OfType<ServerCooldown>());
+            Assert.True(root.IsFinishing);
         }
 
         [Fact]
@@ -964,6 +1137,23 @@ namespace NexusForever.Game.Tests.Spell
             protected override Spell4Entry GetSpellEntry(uint spell4Id) => data.GetSpell(spell4Id);
             protected override Spell4BaseEntry GetSpellBaseEntry(uint spell4BaseId) => data.GetBase(spell4BaseId);
             protected override ISpell CastThresholdChild(uint spell4Id, ISpellParameters parameters) => startChild(spell4Id, parameters);
+        }
+
+        private sealed class TestThresholdChildSpell : SpellChargeRelease
+        {
+            public TestThresholdChildSpell(
+                IUnitEntity caster,
+                ISpellParameters parameters)
+                : base(caster, parameters)
+            {
+            }
+
+            protected override void SelectTargets()
+            {
+                targets.Add(new SpellTargetInfo(
+                    SpellEffectTargetFlags.Caster | SpellEffectTargetFlags.Telegraph,
+                    Caster));
+            }
         }
 
         private class FakeSpell : ISpell

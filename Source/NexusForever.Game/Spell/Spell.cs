@@ -871,7 +871,7 @@ namespace NexusForever.Game.Spell
                         continue;
                     }
 
-                    if (GlobalSpellManager.Instance.GetEffectHandler(effect.EffectType) == null)
+                    if (GlobalSpellManager.Instance.GetEffectHandler(effect) == null)
                     {
                         log.Warn($"Unhandled spell effect {effect.EffectType}");
                         continue;
@@ -1175,7 +1175,7 @@ namespace NexusForever.Game.Spell
             var plans = new List<EffectExecutionPlan>();
             foreach (Spell4EffectsEntry effect in effects)
             {
-                SpellEffectDelegate handler = GlobalSpellManager.Instance.GetEffectHandler(effect.EffectType);
+                SpellEffectDelegate handler = GlobalSpellManager.Instance.GetEffectHandler(effect);
                 if (handler == null)
                 {
                     log.Warn($"Unhandled spell effect {effect.EffectType}");
@@ -1278,7 +1278,7 @@ namespace NexusForever.Game.Spell
                 }
                 else
                 {
-                    handler = GlobalSpellManager.Instance.GetEffectHandler(effect.EffectType);
+                    handler = GlobalSpellManager.Instance.GetEffectHandler(effect);
                     if (handler == null)
                         continue;
 

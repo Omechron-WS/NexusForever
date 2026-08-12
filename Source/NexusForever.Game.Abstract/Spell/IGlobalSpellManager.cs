@@ -53,6 +53,11 @@ namespace NexusForever.Game.Abstract.Spell
         SpellEffectDelegate GetEffectHandler(SpellEffectType spellEffectType);
 
         /// <summary>
+        /// Return <see cref="SpellEffectDelegate"/> for a supported effect row.
+        /// </summary>
+        SpellEffectDelegate GetEffectHandler(Spell4EffectsEntry entry);
+
+        /// <summary>
         /// Create a new <see cref="ISpell"/> instance for the supplied <see cref="CastMethod"/>.
         /// </summary>
         ISpell NewSpell(CastMethod castMethod, IUnitEntity caster, ISpellParameters parameters);

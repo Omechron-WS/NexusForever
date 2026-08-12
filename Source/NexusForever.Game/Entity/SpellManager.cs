@@ -51,6 +51,8 @@ namespace NexusForever.Game.Entity
         private byte activeActionSet;
 
         private readonly IPlayer player;
+        private readonly Func<uint, Spell4BaseEntry> getSpellBaseEntry;
+        private readonly Func<uint, IEnumerable<Spell4Entry>> getSpell4Entries;
 
         private readonly Dictionary<uint /*spell4BaseId*/, ICharacterSpell> spells = new();
         private readonly Dictionary<uint /*spell4Id*/, double /*cooldown*/> spellCooldowns = new();
@@ -95,8 +97,21 @@ namespace NexusForever.Game.Entity
         /// Create a minimal manager suitable for exercising ephemeral cooldown state.
         /// </summary>
         internal SpellManager(IPlayer owner)
+            : this(
+                owner,
+                spell4BaseId => GameTableManager.Instance.Spell4Base.GetEntry(spell4BaseId),
+                spell4BaseId => GlobalSpellManager.Instance.GetSpell4Entries(spell4BaseId))
+        {
+        }
+
+        internal SpellManager(
+            IPlayer owner,
+            Func<uint, Spell4BaseEntry> getSpellBaseEntry,
+            Func<uint, IEnumerable<Spell4Entry>> getSpell4Entries)
         {
             player = owner ?? throw new ArgumentNullException(nameof(owner));
+            this.getSpellBaseEntry = getSpellBaseEntry ?? throw new ArgumentNullException(nameof(getSpellBaseEntry));
+            this.getSpell4Entries = getSpell4Entries ?? throw new ArgumentNullException(nameof(getSpell4Entries));
         }
 
         public void GrantSpells()
@@ -337,6 +352,44 @@ namespace NexusForever.Game.Entity
                     }
                 });
             }
+        }
+
+        /// <inheritdoc />
+        public bool TryResetSpellCooldownsByBaseSpell(uint spell4BaseId)
+        {
+            Spell4Entry[] spell4Entries;
+            try
+            {
+                Spell4BaseEntry spell4BaseEntry = getSpellBaseEntry(spell4BaseId);
+                if (spell4BaseEntry == null || spell4BaseEntry.Id != spell4BaseId)
+                    return false;
+
+                IEnumerable<Spell4Entry> entries = getSpell4Entries(spell4BaseId);
+                if (entries == null)
+                    return false;
+
+                spell4Entries = entries.ToArray();
+            }
+            catch
+            {
+                return false;
+            }
+
+            if (spell4Entries.Length == 0
+                || spell4Entries.Any(entry => entry == null
+                    || entry.Id == 0u
+                    || entry.Spell4BaseIdBaseSpell != spell4BaseId)
+                || spell4Entries.Select(entry => entry.Id).Distinct().Count() != spell4Entries.Length)
+                return false;
+
+            uint[] trackedSpell4Ids = spell4Entries
+                .Select(entry => entry.Id)
+                .Where(spellCooldowns.ContainsKey)
+                .ToArray();
+            foreach (uint spell4Id in trackedSpell4Ids)
+                spellCooldowns[spell4Id] = 0d;
+
+            return true;
         }
 
         public void ResetAllSpellCooldowns()

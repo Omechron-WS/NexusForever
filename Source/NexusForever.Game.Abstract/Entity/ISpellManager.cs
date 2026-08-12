@@ -53,6 +53,11 @@ namespace NexusForever.Game.Abstract.Entity
         /// </summary>
         void SetSpellCooldown(uint spell4Id, double cooldown);
 
+        /// <summary>
+        /// Reset every currently tracked tier of the supplied spell base without emitting cooldown packets.
+        /// </summary>
+        bool TryResetSpellCooldownsByBaseSpell(uint spell4BaseId);
+
         void ResetAllSpellCooldowns();
 
         /// <summary>

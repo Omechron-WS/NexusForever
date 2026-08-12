@@ -11,6 +11,7 @@ using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Quest;
 using NexusForever.Game.Spell;
 using NexusForever.Game.Static.Spell;
+using NexusForever.Game.Tests.Spell;
 using NexusForever.GameTable.Model;
 using NexusForever.Network.World.Combat;
 using NexusForever.Network.World.Message.Static;
@@ -59,6 +60,100 @@ namespace NexusForever.Game.Tests.Combat
                     .Any(a => a.SpellEffectType == SpellEffectType.VitalModifier));
 
             Assert.Single(methods);
+        }
+
+        [Fact]
+        public void HandleEffectModifySpellCooldown_HandlerExists()
+        {
+            var methods = typeof(SpellHandler).GetMethods()
+                .Where(m => m.GetCustomAttributes(typeof(SpellEffectHandlerAttribute), false)
+                    .Cast<SpellEffectHandlerAttribute>()
+                    .Any(a => a.SpellEffectType == SpellEffectType.ModifySpellCooldown));
+
+            Assert.Single(methods);
+        }
+
+        [Fact]
+        public void HandleEffectModifySpellCooldown_PlayerExactRowResetsWithoutCombatLog()
+        {
+            var spellManager = new Mock<ISpellManager>();
+            spellManager.Setup(manager => manager.TryResetSpellCooldownsByBaseSpell(20684u))
+                .Returns(true);
+            var player = new Mock<IPlayer>();
+            player.SetupGet(unit => unit.SpellManager).Returns(spellManager.Object);
+            SpellTargetInfo.SpellTargetEffectInfo info = CreateModifySpellCooldownInfo();
+
+            SpellHandler.HandleEffectModifySpellCooldown(
+                Mock.Of<ISpell>(),
+                player.Object,
+                info);
+
+            Assert.False(info.DropEffect);
+            Assert.Empty(info.CombatLogs);
+            spellManager.Verify(
+                manager => manager.TryResetSpellCooldownsByBaseSpell(20684u),
+                Times.Once);
+        }
+
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        public void HandleEffectModifySpellCooldown_FailureIsDroppedWithoutCombatLog(
+            bool nonPlayer,
+            bool throwFromManager)
+        {
+            var spellManager = new Mock<ISpellManager>();
+            if (throwFromManager)
+            {
+                spellManager.Setup(manager => manager.TryResetSpellCooldownsByBaseSpell(20684u))
+                    .Throws(new InvalidOperationException("Test reset failure."));
+            }
+            else
+            {
+                spellManager.Setup(manager => manager.TryResetSpellCooldownsByBaseSpell(20684u))
+                    .Returns(false);
+            }
+
+            IUnitEntity target;
+            if (nonPlayer)
+            {
+                target = Mock.Of<IUnitEntity>();
+            }
+            else
+            {
+                var player = new Mock<IPlayer>();
+                player.SetupGet(unit => unit.SpellManager).Returns(spellManager.Object);
+                target = player.Object;
+            }
+
+            SpellTargetInfo.SpellTargetEffectInfo info = CreateModifySpellCooldownInfo();
+
+            SpellHandler.HandleEffectModifySpellCooldown(Mock.Of<ISpell>(), target, info);
+
+            Assert.True(info.DropEffect);
+            Assert.Empty(info.CombatLogs);
+            spellManager.Verify(
+                manager => manager.TryResetSpellCooldownsByBaseSpell(It.IsAny<uint>()),
+                nonPlayer ? Times.Never() : Times.Once());
+        }
+
+        [Fact]
+        public void HandleEffectModifySpellCooldown_DefensivelyRejectsMalformedRow()
+        {
+            var spellManager = new Mock<ISpellManager>();
+            var player = new Mock<IPlayer>();
+            player.SetupGet(unit => unit.SpellManager).Returns(spellManager.Object);
+            SpellTargetInfo.SpellTargetEffectInfo info = CreateModifySpellCooldownInfo();
+            info.Entry.DataBits02 = 3u;
+
+            SpellHandler.HandleEffectModifySpellCooldown(Mock.Of<ISpell>(), player.Object, info);
+
+            Assert.True(info.DropEffect);
+            Assert.Empty(info.CombatLogs);
+            spellManager.Verify(
+                manager => manager.TryResetSpellCooldownsByBaseSpell(It.IsAny<uint>()),
+                Times.Never);
         }
 
         [Theory]
@@ -888,6 +983,13 @@ namespace NexusForever.Game.Tests.Combat
                 ParameterType  = new SpellEffectParameterType[4],
                 ParameterValue = new float[4]
             });
+        }
+
+        private static SpellTargetInfo.SpellTargetEffectInfo CreateModifySpellCooldownInfo()
+        {
+            return new SpellTargetInfo.SpellTargetEffectInfo(
+                1u,
+                SpellEffectSupportPolicyTests.ExactEntry());
         }
 
         private sealed class VitalTargetContext
