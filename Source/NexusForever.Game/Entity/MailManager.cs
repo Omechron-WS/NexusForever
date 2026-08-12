@@ -433,12 +433,16 @@ namespace NexusForever.Game.Entity
         public void MailDelete(ulong mailId)
         {
             GenericError result = GenericError.Ok;
-            if (!availableMail.TryGetValue(mailId, out IMailItem mailItem))
+            if (!availableMail.TryGetValue(mailId, out IMailItem mailItem)
+                || mailItem.PendingDelete
+                || mailItem.RecipientId != player.CharacterId)
                 result = GenericError.MailDoesNotExist;
+            else if (mailItem.Any()
+                || (mailItem.CurrencyAmount > 0ul && !mailItem.HasPaidOrCollectedCurrency))
+                result = GenericError.MailCannotDelete;
 
             if (result == GenericError.Ok)
             {
-                // TODO: Confirm that this user is allowed to delete this mail
                 mailItem.EnqueueDelete(true);
 
                 player.Session.EnqueueMessageEncrypted(new ServerMailUnavailable

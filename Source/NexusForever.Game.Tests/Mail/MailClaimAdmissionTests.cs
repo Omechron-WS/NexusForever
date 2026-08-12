@@ -322,6 +322,122 @@ namespace NexusForever.Game.Tests.Mail
             Assert.False(senderMail.IsCashOnDelivery);
         }
 
+        public static IEnumerable<object[]> UnavailableDeleteStates()
+        {
+            yield return new object[] { true, false, PlayerId };
+            yield return new object[] { false, true, PlayerId };
+            yield return new object[] { false, false, SenderId };
+        }
+
+        [Theory]
+        [MemberData(nameof(UnavailableDeleteStates))]
+        public void MailDelete_MissingDeletedOrForeignMailReturnsDoesNotExistWithoutMutation(
+            bool missing,
+            bool pendingDelete,
+            ulong recipientId)
+        {
+            Mock<IMailItem> mail = missing
+                ? null
+                : CreateMail(
+                    currencyAmount: 0ul,
+                    pendingDelete: pendingDelete,
+                    recipientId: recipientId);
+            MailFixture fixture = CreateFixture(mail);
+
+            fixture.Manager.MailDelete(MailId);
+
+            ServerMailResult result = GetSingleMessage<ServerMailResult>(fixture);
+            Assert.Equal(5u, result.Action);
+            Assert.Equal(MailId, result.MailId);
+            Assert.Equal(GenericError.MailDoesNotExist, result.Result);
+            Assert.Empty(GetMessages<ServerMailUnavailable>(fixture));
+            mail?.Verify(value => value.EnqueueDelete(It.IsAny<bool>()), Times.Never);
+            fixture.Player.Verify(value => value.GetVisible<IWorldEntity>(It.IsAny<uint>()), Times.Never);
+        }
+
+        public static IEnumerable<object[]> NonDeletableMailStates()
+        {
+            yield return new object[] { false, true, 0ul, true };
+            yield return new object[] { false, false, CurrencyAmount, false };
+            yield return new object[] { true, false, CurrencyAmount, false };
+        }
+
+        [Theory]
+        [MemberData(nameof(NonDeletableMailStates))]
+        public void MailDelete_AttachmentOrUncollectedCurrencyReturnsCannotDeleteWithoutMutation(
+            bool isCashOnDelivery,
+            bool hasPaidOrCollectedCurrency,
+            ulong currencyAmount,
+            bool hasAttachment)
+        {
+            var attachment = new Mock<IMailAttachment>();
+            Mock<IMailItem> mail = CreateMail(
+                isCashOnDelivery: isCashOnDelivery,
+                hasPaidOrCollectedCurrency: hasPaidOrCollectedCurrency,
+                currencyAmount: currencyAmount,
+                attachments: hasAttachment ? new[] { attachment.Object } : Array.Empty<IMailAttachment>());
+            MailFixture fixture = CreateFixture(mail);
+
+            fixture.Manager.MailDelete(MailId);
+
+            ServerMailResult result = GetSingleMessage<ServerMailResult>(fixture);
+            Assert.Equal(5u, result.Action);
+            Assert.Equal(MailId, result.MailId);
+            Assert.Equal(GenericError.MailCannotDelete, result.Result);
+            Assert.Empty(GetMessages<ServerMailUnavailable>(fixture));
+            mail.Verify(value => value.EnqueueDelete(It.IsAny<bool>()), Times.Never);
+            fixture.Player.Verify(value => value.GetVisible<IWorldEntity>(It.IsAny<uint>()), Times.Never);
+        }
+
+        public static IEnumerable<object[]> DeletableMailStates()
+        {
+            yield return new object[] { false, false, 0ul };
+            yield return new object[] { false, true, CurrencyAmount };
+            yield return new object[] { true, true, CurrencyAmount };
+        }
+
+        [Theory]
+        [MemberData(nameof(DeletableMailStates))]
+        public void MailDelete_EmptyMailWithoutUncollectedCurrencyPreservesTombstoneAndPublication(
+            bool isCashOnDelivery,
+            bool hasPaidOrCollectedCurrency,
+            ulong currencyAmount)
+        {
+            Mock<IMailItem> mail = CreateMail(
+                isCashOnDelivery: isCashOnDelivery,
+                hasPaidOrCollectedCurrency: hasPaidOrCollectedCurrency,
+                currencyAmount: currencyAmount);
+            MailFixture fixture = CreateFixture(mail);
+
+            fixture.Manager.MailDelete(MailId);
+
+            object[] messages = fixture.Session.Invocations
+                .SelectMany(invocation => invocation.Arguments)
+                .ToArray();
+            Assert.Collection(messages,
+                value => Assert.Equal(MailId, Assert.IsType<ServerMailUnavailable>(value).MailId),
+                value => Assert.Equal(GenericError.Ok, Assert.IsType<ServerMailResult>(value).Result));
+            mail.Verify(value => value.EnqueueDelete(true), Times.Once);
+            fixture.Player.Verify(value => value.GetVisible<IWorldEntity>(It.IsAny<uint>()), Times.Never);
+        }
+
+        [Fact]
+        public void MailDelete_ReplayAfterSuccessfulTombstoneReturnsDoesNotExist()
+        {
+            Mock<IMailItem> mail = CreateMail(currencyAmount: 0ul);
+            MailFixture fixture = CreateFixture(mail);
+
+            fixture.Manager.MailDelete(MailId);
+            fixture.Manager.MailDelete(MailId);
+
+            Assert.Equal(
+                new[] { GenericError.Ok, GenericError.MailDoesNotExist },
+                GetMessages<ServerMailResult>(fixture).Select(value => value.Result));
+            Assert.Single(GetMessages<ServerMailUnavailable>(fixture));
+            mail.Verify(value => value.EnqueueDelete(true), Times.Once);
+            fixture.Player.Verify(value => value.GetVisible<IWorldEntity>(It.IsAny<uint>()), Times.Never);
+        }
+
         public static IEnumerable<object[]> InvalidSendAttachmentStates()
         {
             yield return new object[] { SendAttachmentState.Duplicate };
@@ -430,7 +546,10 @@ namespace NexusForever.Game.Tests.Mail
             mail.SetupGet(value => value.CurrencyAmount).Returns(currencyAmount);
             mail.SetupGet(value => value.IsCashOnDelivery).Returns(isCashOnDelivery);
             mail.SetupGet(value => value.HasPaidOrCollectedCurrency).Returns(hasPaidOrCollectedCurrency);
-            mail.SetupGet(value => value.PendingDelete).Returns(pendingDelete);
+            bool currentPendingDelete = pendingDelete;
+            mail.SetupGet(value => value.PendingDelete).Returns(() => currentPendingDelete);
+            mail.Setup(value => value.EnqueueDelete(It.IsAny<bool>()))
+                .Callback<bool>(value => currentPendingDelete = value);
             mail.Setup(value => value.GetEnumerator()).Returns(() => attachments.AsEnumerable().GetEnumerator());
             return mail;
         }
@@ -539,7 +658,8 @@ namespace NexusForever.Game.Tests.Mail
 
             var model = new CharacterModel { Id = PlayerId };
             var manager = new MailManager(player.Object, model, new Mock<IPlayerManager>().Object);
-            GetAvailableMail(manager).Add(MailId, mail.Object);
+            if (mail != null)
+                GetAvailableMail(manager).Add(MailId, mail.Object);
 
             return new MailFixture(manager, player, session, currencyManager, inventory);
         }
@@ -562,9 +682,14 @@ namespace NexusForever.Game.Tests.Mail
 
         private static T GetSingleMessage<T>(MailFixture fixture) where T : class
         {
-            return Assert.Single(fixture.Session.Invocations
+            return Assert.Single(GetMessages<T>(fixture));
+        }
+
+        private static IEnumerable<T> GetMessages<T>(MailFixture fixture) where T : class
+        {
+            return fixture.Session.Invocations
                 .SelectMany(invocation => invocation.Arguments)
-                .OfType<T>());
+                .OfType<T>();
         }
 
         private void SetGameFormula(GameTable<GameFormulaEntry> table)
