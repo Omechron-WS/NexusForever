@@ -130,13 +130,21 @@ namespace NexusForever.Game.Combat
             primaryTargetId = 0u;
             cooldownTimer.Reset(false);
 
-            foreach (ISpell spell in triggeredSpells)
-            {
-                if (!spell.IsFinished && !spell.IsFinishing)
-                    spell.Finish();
-            }
-
+            ISpell[] spellSnapshot = triggeredSpells.ToArray();
             triggeredSpells.Clear();
+
+            foreach (ISpell spell in spellSnapshot)
+            {
+                try
+                {
+                    if (!spell.IsFinished && !spell.IsFinishing)
+                        spell.Finish();
+                }
+                catch (Exception exception)
+                {
+                    log.Error(exception, $"Failed to finish a spell triggered by proc effect {EffectId}.");
+                }
+            }
         }
     }
 }

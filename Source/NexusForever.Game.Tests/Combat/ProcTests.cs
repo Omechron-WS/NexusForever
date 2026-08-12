@@ -251,21 +251,157 @@ namespace NexusForever.Game.Tests.Combat
             unrelatedSpell.Verify(s => s.Finish(), Times.Never);
         }
 
-        [Fact]
-        public void Cancel_DoesNotFinishAlreadyFinishedTriggeredSpell()
+        [Theory]
+        [InlineData(ProcCancelFailureStage.IsFinished)]
+        [InlineData(ProcCancelFailureStage.IsFinishing)]
+        [InlineData(ProcCancelFailureStage.Finish)]
+        public void Cancel_ThrowingChildCleanupDoesNotBlockLaterChildrenOrReplay(
+            ProcCancelFailureStage failureStage)
+        {
+            var owner = new Mock<IUnitEntity>();
+            var firstSpell = new Mock<ISpell>();
+            var secondSpell = new Mock<ISpell>();
+            var thirdSpell = new Mock<ISpell>();
+            var spells = new Queue<ISpell>([firstSpell.Object, secondSpell.Object, thirdSpell.Object]);
+            owner.Setup(o => o.CastSpellTracked(456u, It.IsAny<SpellParameters>()))
+                .Returns(spells.Dequeue);
+            var proc = new ProcInfo(owner.Object, CreateEntry());
+            for (int i = 0; i < 3; i++)
+            {
+                Assert.True(proc.Trigger());
+                proc.Update(0d);
+            }
+
+            var operations = new List<string>();
+            firstSpell
+                .SetupGet(s => s.IsFinished)
+                .Returns(() =>
+                {
+                    operations.Add("first-finished");
+                    if (failureStage == ProcCancelFailureStage.IsFinished)
+                        throw new InvalidOperationException("Test finished-state failure.");
+                    return false;
+                });
+            firstSpell
+                .SetupGet(s => s.IsFinishing)
+                .Returns(() =>
+                {
+                    operations.Add("first-finishing");
+                    if (failureStage == ProcCancelFailureStage.IsFinishing)
+                        throw new InvalidOperationException("Test finishing-state failure.");
+                    return false;
+                });
+            firstSpell
+                .Setup(s => s.Finish())
+                .Callback(() =>
+                {
+                    operations.Add("first-finish");
+                    if (failureStage == ProcCancelFailureStage.Finish)
+                        throw new InvalidOperationException("Test finish failure.");
+                });
+            secondSpell
+                .SetupGet(s => s.IsFinished)
+                .Returns(() =>
+                {
+                    operations.Add("second-finished");
+                    return false;
+                });
+            secondSpell
+                .SetupGet(s => s.IsFinishing)
+                .Returns(() =>
+                {
+                    operations.Add("second-finishing");
+                    return false;
+                });
+            secondSpell
+                .Setup(s => s.Finish())
+                .Callback(() =>
+                {
+                    operations.Add("second-finish");
+                    proc.Cancel();
+                    proc.Update(1d);
+                });
+            thirdSpell
+                .SetupGet(s => s.IsFinished)
+                .Returns(() =>
+                {
+                    operations.Add("third-finished");
+                    return false;
+                });
+            thirdSpell
+                .SetupGet(s => s.IsFinishing)
+                .Returns(() =>
+                {
+                    operations.Add("third-finishing");
+                    return false;
+                });
+            thirdSpell
+                .Setup(s => s.Finish())
+                .Callback(() => operations.Add("third-finish"));
+
+            Exception exception = Record.Exception(proc.Cancel);
+            string[] expectedFirstPrefix = failureStage switch
+            {
+                ProcCancelFailureStage.IsFinished => ["first-finished"],
+                ProcCancelFailureStage.IsFinishing => ["first-finished", "first-finishing"],
+                ProcCancelFailureStage.Finish => ["first-finished", "first-finishing", "first-finish"],
+                _ => throw new ArgumentOutOfRangeException(nameof(failureStage))
+            };
+            Assert.Null(exception);
+            Assert.Equal(
+                expectedFirstPrefix.Concat([
+                    "second-finished", "second-finishing", "second-finish",
+                    "third-finished", "third-finishing", "third-finish"
+                ]),
+                operations);
+
+            proc.Cancel();
+            proc.Update(1d);
+
+            Assert.Equal(
+                expectedFirstPrefix.Concat([
+                    "second-finished", "second-finishing", "second-finish",
+                    "third-finished", "third-finishing", "third-finish"
+                ]),
+                operations);
+            Assert.False(proc.CanTrigger);
+            Assert.False(proc.Trigger());
+            firstSpell.Verify(s => s.Finish(),
+                failureStage == ProcCancelFailureStage.Finish ? Times.Once() : Times.Never());
+            secondSpell.Verify(s => s.Finish(), Times.Once);
+            thirdSpell.Verify(s => s.Finish(), Times.Once);
+            owner.Verify(o => o.CastSpellTracked(456u, It.IsAny<SpellParameters>()), Times.Exactly(3));
+        }
+
+        [Theory]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        public void Cancel_DoesNotFinishAlreadyFinishedOrFinishingTriggeredSpell(
+            bool isFinished,
+            bool isFinishing)
         {
             var owner = new Mock<IUnitEntity>();
             var triggeredSpell = new Mock<ISpell>();
-            triggeredSpell.Setup(s => s.IsFinished).Returns(true);
+            bool finished = false;
+            triggeredSpell.Setup(s => s.IsFinished).Returns(() => finished);
+            triggeredSpell.Setup(s => s.IsFinishing).Returns(isFinishing);
             owner.Setup(o => o.CastSpellTracked(456u, It.IsAny<SpellParameters>()))
                 .Returns(triggeredSpell.Object);
             var proc = new ProcInfo(owner.Object, CreateEntry());
             proc.Trigger();
             proc.Update(0d);
+            finished = isFinished;
 
             proc.Cancel();
 
             triggeredSpell.Verify(s => s.Finish(), Times.Never);
+        }
+
+        public enum ProcCancelFailureStage
+        {
+            IsFinished,
+            IsFinishing,
+            Finish
         }
 
         private static Spell4EffectsEntry CreateEntry(
