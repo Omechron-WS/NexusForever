@@ -32,7 +32,14 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Vendor
                 return;
 
             IItemInfo info = item.Info;
-            if (info == null)
+            if (vendorSell.ItemLocation.Location != InventoryLocation.Inventory
+                || item.Location != vendorSell.ItemLocation.Location
+                || item.BagIndex != vendorSell.ItemLocation.BagIndex
+                || item.CharacterId != session.Player.CharacterId
+                || item.PendingDelete
+                || item.StackCount == 0u
+                || vendorSell.Quantity != item.StackCount
+                || info?.Entry == null)
                 return;
 
             float costMultiplier = vendorInfo.SellPriceMultiplier * vendorSell.Quantity;
