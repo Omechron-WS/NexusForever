@@ -18,6 +18,7 @@ using NexusForever.Game.Static.Combat;
 using NexusForever.Game.Static.Entity.Movement.Command.Mode;
 using NexusForever.Game.Static.Entity.Movement.Command.State;
 using NexusForever.Game.Static.Entity.Movement.Spline;
+using NexusForever.Network;
 using NexusForever.Network.Session;
 using NexusForever.Network.World.Entity;
 using NexusForever.Network.World.Entity.Command;
@@ -255,7 +256,23 @@ namespace NexusForever.Game.Entity.Movement
             if (ServerControl)
                 return;
 
-            foreach (INetworkEntityCommand command in commands)
+            INetworkEntityCommand[] commandSnapshot = commands.ToArray();
+            foreach (INetworkEntityCommand command in commandSnapshot)
+            {
+                Vector3? directVector = command.Model switch
+                {
+                    SetPositionCommand setPosition => setPosition.Position,
+                    SetVelocityCommand setVelocity => setVelocity.Velocity,
+                    SetMoveCommand setMove         => setMove.Move,
+                    SetRotationCommand setRotation => setRotation.Rotation,
+                    _                              => null
+                };
+
+                if (directVector.HasValue && !IsFinite(directVector.Value))
+                    throw new InvalidPacketValueException();
+            }
+
+            foreach (INetworkEntityCommand command in commandSnapshot)
             {
                 switch (command.Model)
                 {
@@ -296,6 +313,13 @@ namespace NexusForever.Game.Entity.Movement
                         break;
                 }
             }
+        }
+
+        private static bool IsFinite(Vector3 vector)
+        {
+            return float.IsFinite(vector.X)
+                && float.IsFinite(vector.Y)
+                && float.IsFinite(vector.Z);
         }
 
         /// <summary>
