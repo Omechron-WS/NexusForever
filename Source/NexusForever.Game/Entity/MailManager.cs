@@ -269,13 +269,20 @@ namespace NexusForever.Game.Entity
                     if (!IsTargetMailBoxInRange(mailSend.MailboxUnitId))
                         return GenericError.MailMailBoxOutOfRange;
 
+                    var itemGuids = new HashSet<ulong>();
                     foreach (ulong itemGuid in mailSend.Items.Where(i => i != 0ul))
                     {
-                        IItem item = player.Inventory.GetItem(itemGuid);
-                        if (item == null)
+                        if (!itemGuids.Add(itemGuid))
                             return GenericError.MailInvalidInventorySlot;
 
-                        if (item.Location == InventoryLocation.Equipped)
+                        IItem item = player.Inventory.GetItem(itemGuid);
+                        if (item == null
+                            || item.Guid != itemGuid
+                            || item.CharacterId != player.CharacterId
+                            || item.Location != InventoryLocation.Inventory
+                            || item.PendingDelete
+                            || item.StackCount == 0u
+                            || item.Info?.Entry == null)
                             return GenericError.MailInvalidInventorySlot;
 
                         // TODO: Check the Item can be traded.

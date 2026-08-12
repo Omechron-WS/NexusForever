@@ -6,10 +6,13 @@ using Microsoft.Extensions.Options;
 using Moq;
 using NexusForever.Database.Character.Model;
 using NexusForever.Game;
+using NexusForever.Game.Abstract.Character;
 using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Mail;
+using NexusForever.Game.Character;
 using NexusForever.Game.Entity;
 using NexusForever.Game.Static.Entity;
+using NexusForever.Game.Static.Mail;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Configuration.Model;
 using NexusForever.GameTable.Model;
@@ -35,6 +38,8 @@ namespace NexusForever.Game.Tests.Mail
         private const ulong CurrencyAmount = 125ul;
         private const uint AttachmentIndex = 3u;
         private const uint MailboxUnitId = 77u;
+        private const ulong TargetId = 30ul;
+        private const string TargetName = "Recipient";
 
         private readonly IServiceProvider originalServiceProvider;
         private readonly ServiceProvider serviceProvider;
@@ -47,6 +52,7 @@ namespace NexusForever.Game.Tests.Mail
             serviceProvider = new ServiceCollection()
                 .AddSingleton(gameTableManager)
                 .AddSingleton<AssetManager>()
+                .AddSingleton<CharacterManager>()
                 .BuildServiceProvider();
             LegacyServiceProvider.Provider = serviceProvider;
 
@@ -55,6 +61,9 @@ namespace NexusForever.Game.Tests.Mail
             {
                 Id = 237u,
                 Datafloat0 = 5f
+            }, new GameFormulaEntry
+            {
+                Id = 861u
             }));
         }
 
@@ -313,6 +322,94 @@ namespace NexusForever.Game.Tests.Mail
             Assert.False(senderMail.IsCashOnDelivery);
         }
 
+        public static IEnumerable<object[]> InvalidSendAttachmentStates()
+        {
+            yield return new object[] { SendAttachmentState.Duplicate };
+            yield return new object[] { SendAttachmentState.Missing };
+            yield return new object[] { SendAttachmentState.GuidMismatch };
+            yield return new object[] { SendAttachmentState.MissingOwner };
+            yield return new object[] { SendAttachmentState.ForeignOwner };
+            yield return new object[] { SendAttachmentState.PlayerBank };
+            yield return new object[] { SendAttachmentState.Ability };
+            yield return new object[] { SendAttachmentState.PendingDelete };
+            yield return new object[] { SendAttachmentState.ZeroStack };
+            yield return new object[] { SendAttachmentState.MissingInfo };
+            yield return new object[] { SendAttachmentState.MissingEntry };
+        }
+
+        [Theory]
+        [MemberData(nameof(InvalidSendAttachmentStates))]
+        public void SendMail_InvalidAttachmentPlanRejectsBeforeCostOrMutation(SendAttachmentState state)
+        {
+            const ulong itemGuid = 1_001ul;
+
+            MailFixture fixture = CreateSendFixture();
+            Mock<IItem> item = state == SendAttachmentState.Missing
+                ? null
+                : CreateSendItem(itemGuid, state);
+            fixture.Inventory
+                .Setup(value => value.GetItem(itemGuid))
+                .Returns(item?.Object);
+
+            ClientMailSend request = CreateSendRequest(
+                state == SendAttachmentState.Duplicate
+                    ? new[] { itemGuid, itemGuid }
+                    : new[] { itemGuid });
+
+            fixture.Manager.SendMail(request);
+
+            ServerMailResult result = GetSingleMessage<ServerMailResult>(fixture);
+            Assert.Equal(1u, result.Action);
+            Assert.Equal(GenericError.MailInvalidInventorySlot, result.Result);
+            fixture.CurrencyManager.Verify(value => value.CanAfford(
+                It.IsAny<CurrencyType>(), It.IsAny<ulong>()), Times.Never);
+            fixture.CurrencyManager.Verify(value => value.CurrencySubtractAmount(
+                It.IsAny<CurrencyType>(), It.IsAny<ulong>(), It.IsAny<bool>()), Times.Never);
+            fixture.Inventory.Verify(value => value.ItemRemove(
+                It.IsAny<IItem>(), It.IsAny<ItemUpdateReason>()), Times.Never);
+            Assert.Empty(GetOutgoingMail(fixture.Manager));
+        }
+
+        [Fact]
+        public void SendMail_DistinctLiveInventoryAttachmentsPreserveOrderAndPendingCreateAdmission()
+        {
+            const ulong firstGuid = 1_001ul;
+            const ulong secondGuid = 1_002ul;
+
+            MailFixture fixture = CreateSendFixture();
+            Mock<IItem> first = CreateSendItem(firstGuid);
+            Mock<IItem> second = CreateSendItem(secondGuid, pendingCreate: true);
+            fixture.Inventory
+                .Setup(value => value.GetItem(It.IsAny<ulong>()))
+                .Returns((ulong guid) => guid switch
+                {
+                    firstGuid => first.Object,
+                    secondGuid => second.Object,
+                    _ => null
+                });
+
+            var removed = new List<ulong>();
+            fixture.Inventory
+                .Setup(value => value.ItemRemove(It.IsAny<IItem>(), ItemUpdateReason.NoReason))
+                .Callback<IItem, ItemUpdateReason>((item, _) => removed.Add(item.Guid));
+
+            fixture.Manager.SendMail(CreateSendRequest(firstGuid, secondGuid));
+
+            Assert.Equal(GenericError.Ok, GetSingleMessage<ServerMailResult>(fixture).Result);
+            Assert.Equal(new[] { firstGuid, secondGuid }, removed);
+            fixture.Inventory.Verify(value => value.GetItem(firstGuid), Times.Once);
+            fixture.Inventory.Verify(value => value.GetItem(secondGuid), Times.Once);
+            fixture.CurrencyManager.Verify(value => value.CanAfford(
+                CurrencyType.Credits, 0ul), Times.Exactly(2));
+            fixture.CurrencyManager.Verify(value => value.CurrencySubtractAmount(
+                CurrencyType.Credits, 0ul, false), Times.Once);
+
+            IMailItem outgoing = Assert.Single(GetOutgoingMail(fixture.Manager));
+            Assert.Equal(TargetId, outgoing.RecipientId);
+            Assert.Equal(PlayerId, outgoing.SenderId);
+            Assert.Equal(new[] { first.Object, second.Object }, outgoing.Select(attachment => attachment.Item));
+        }
+
         private static Mock<IMailItem> CreateMail(
             bool isCashOnDelivery = false,
             bool hasPaidOrCollectedCurrency = false,
@@ -336,6 +433,92 @@ namespace NexusForever.Game.Tests.Mail
             mail.SetupGet(value => value.PendingDelete).Returns(pendingDelete);
             mail.Setup(value => value.GetEnumerator()).Returns(() => attachments.AsEnumerable().GetEnumerator());
             return mail;
+        }
+
+        private static Mock<IItem> CreateSendItem(
+            ulong itemGuid,
+            SendAttachmentState state = SendAttachmentState.Valid,
+            bool pendingCreate = false)
+        {
+            var info = new Mock<IItemInfo>();
+            if (state != SendAttachmentState.MissingEntry)
+                info.SetupGet(value => value.Entry).Returns(new Item2Entry { Id = 500u });
+
+            var item = new Mock<IItem>();
+            item.SetupGet(value => value.Guid).Returns(
+                state == SendAttachmentState.GuidMismatch ? itemGuid + 1ul : itemGuid);
+            item.SetupGet(value => value.CharacterId).Returns(state switch
+            {
+                SendAttachmentState.MissingOwner => null,
+                SendAttachmentState.ForeignOwner => SenderId,
+                _ => PlayerId
+            });
+            item.SetupGet(value => value.Location).Returns(state switch
+            {
+                SendAttachmentState.PlayerBank => InventoryLocation.PlayerBank,
+                SendAttachmentState.Ability => InventoryLocation.Ability,
+                _ => InventoryLocation.Inventory
+            });
+            item.SetupGet(value => value.PendingCreate).Returns(pendingCreate);
+            item.SetupGet(value => value.PendingDelete).Returns(state == SendAttachmentState.PendingDelete);
+            item.SetupGet(value => value.StackCount).Returns(state == SendAttachmentState.ZeroStack ? 0u : 1u);
+            item.SetupGet(value => value.Info).Returns(
+                state == SendAttachmentState.MissingInfo ? null : info.Object);
+            return item;
+        }
+
+        private MailFixture CreateSendFixture()
+        {
+            var target = new Mock<ICharacter>();
+            target.SetupGet(value => value.CharacterId).Returns(TargetId);
+            target.SetupGet(value => value.Name).Returns(TargetName);
+            MethodInfo addCharacter = typeof(CharacterManager).GetMethod(
+                "AddCharacter",
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                null,
+                new[] { typeof(ulong), typeof(ICharacter) },
+                null);
+            addCharacter.Invoke(CharacterManager.Instance, new object[] { TargetId, target.Object });
+
+            var session = new Mock<IGameSession>();
+            var currencyManager = new Mock<ICurrencyManager>();
+            currencyManager
+                .Setup(value => value.CanAfford(CurrencyType.Credits, It.IsAny<ulong>()))
+                .Returns(true);
+            var inventory = new Mock<IInventory>();
+            var mailbox = new Mock<IMailboxEntity>();
+            mailbox.SetupGet(value => value.Position).Returns(Vector3.One);
+
+            var player = new Mock<IPlayer>();
+            player.SetupGet(value => value.CharacterId).Returns(PlayerId);
+            player.SetupGet(value => value.Position).Returns(Vector3.Zero);
+            player.SetupGet(value => value.Session).Returns(session.Object);
+            player.SetupGet(value => value.CurrencyManager).Returns(currencyManager.Object);
+            player.SetupGet(value => value.Inventory).Returns(inventory.Object);
+            player.Setup(value => value.GetVisible<IWorldEntity>(MailboxUnitId)).Returns(mailbox.Object);
+
+            var manager = new MailManager(
+                player.Object,
+                new CharacterModel { Id = PlayerId },
+                new Mock<IPlayerManager>().Object);
+            return new MailFixture(manager, player, session, currencyManager, inventory);
+        }
+
+        private static ClientMailSend CreateSendRequest(params ulong[] itemGuids)
+        {
+            var request = new ClientMailSend();
+            SetProperty(request, nameof(ClientMailSend.Name), TargetName);
+            SetProperty(request, nameof(ClientMailSend.Subject), "Subject");
+            SetProperty(request, nameof(ClientMailSend.Message), "Message");
+            SetProperty(request, nameof(ClientMailSend.DeliverySpeed), DeliverySpeed.Instant);
+            SetProperty(request, nameof(ClientMailSend.MailboxUnitId), MailboxUnitId);
+            request.Items.AddRange(itemGuids);
+            return request;
+        }
+
+        private static void SetProperty<T>(ClientMailSend request, string propertyName, T value)
+        {
+            typeof(ClientMailSend).GetProperty(propertyName)?.SetValue(request, value);
         }
 
         private static MailFixture CreateFixture(Mock<IMailItem> mail)
@@ -417,5 +600,21 @@ namespace NexusForever.Game.Tests.Mail
             Mock<IGameSession> Session,
             Mock<ICurrencyManager> CurrencyManager,
             Mock<IInventory> Inventory);
+
+        public enum SendAttachmentState
+        {
+            Valid,
+            Duplicate,
+            Missing,
+            GuidMismatch,
+            MissingOwner,
+            ForeignOwner,
+            PlayerBank,
+            Ability,
+            PendingDelete,
+            ZeroStack,
+            MissingInfo,
+            MissingEntry
+        }
     }
 }
