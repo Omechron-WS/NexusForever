@@ -61,9 +61,9 @@ namespace NexusForever.Server.GroupServer.Tests.Group
                 Assert.Equal(InitialRevision, loser.Revision);
 
                 GroupActionResult winnerResult = await winner.SetGroupFlagsAsync(
-                    Identity(LeaderId), GroupFlags.JoinRequestOpen);
+                    Identity(LeaderId), GroupFlags.OpenWorld | GroupFlags.JoinRequestOpen);
                 GroupActionResult loserResult = await loser.SetGroupFlagsAsync(
-                    Identity(LeaderId), GroupFlags.Raid);
+                    Identity(LeaderId), GroupFlags.OpenWorld | GroupFlags.Raid);
 
                 Assert.Equal(GroupActionResult.FlagsSuccess, winnerResult);
                 Assert.Equal(GroupActionResult.FlagsSuccess, loserResult);
@@ -125,7 +125,7 @@ namespace NexusForever.Server.GroupServer.Tests.Group
                 .ToArrayAsync();
 
             Assert.Equal(InitialRevision + 1ul, persistedGroup.Revision);
-            Assert.Equal(GroupFlags.JoinRequestOpen, persistedGroup.Flags);
+            Assert.Equal(GroupFlags.OpenWorld | GroupFlags.JoinRequestOpen, persistedGroup.Flags);
 
             InternalMessageModel persistedMessage = Assert.Single(persistedMessages);
             Assert.Equal(winnerMessageId, persistedMessage.Id);
@@ -138,7 +138,7 @@ namespace NexusForever.Server.GroupServer.Tests.Group
                 persistedMessage.Payload);
             Assert.NotNull(payload);
             Assert.Equal(InitialRevision + 1ul, payload.Group.Revision);
-            Assert.Equal(GroupFlags.JoinRequestOpen, payload.Group.Flags);
+            Assert.Equal(GroupFlags.OpenWorld | GroupFlags.JoinRequestOpen, payload.Group.Flags);
         }
 
         private static ServiceProvider CreateProvider(
@@ -180,7 +180,7 @@ namespace NexusForever.Server.GroupServer.Tests.Group
             {
                 GroupId           = GroupId,
                 Revision          = InitialRevision,
-                Flags             = GroupFlags.None,
+                Flags             = GroupFlags.OpenWorld,
                 LootRule          = LootRule.NeedBeforeGreed,
                 LootRuleThreshold = LootRule.NeedBeforeGreed,
                 LootThreshold     = LootThreshold.Good,

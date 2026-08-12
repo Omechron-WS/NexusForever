@@ -761,6 +761,12 @@ namespace NexusForever.Server.GroupServer.Group
             if (updater != Leader)
                 return GroupActionResult.FlagsFailed;
 
+            if (!IsValid(groupFlags)
+                || groupFlags.HasFlag(GroupFlags.OpenWorld) != IsOpenWorld
+                || IsRaid && !groupFlags.HasFlag(GroupFlags.Raid)
+                || !IsRaid && groupFlags.HasFlag(GroupFlags.Raid) && !IsOpenWorld)
+                return GroupActionResult.FlagsFailed;
+
             bool setToRaid = !IsRaid && groupFlags.HasFlag(GroupFlags.Raid);
             if (Flags != groupFlags)
             {
@@ -782,6 +788,22 @@ namespace NexusForever.Server.GroupServer.Group
             }
 
             return GroupActionResult.FlagsSuccess;
+        }
+
+        private static bool IsValid(GroupFlags flags)
+        {
+            const GroupFlags supportedFlags = GroupFlags.OpenWorld
+                | GroupFlags.Raid
+                | GroupFlags.JoinRequestOpen
+                | GroupFlags.JoinRequestClosed
+                | GroupFlags.ReferralsOpen
+                | GroupFlags.ReferralsClosed;
+            const GroupFlags joinRequestFlags = GroupFlags.JoinRequestOpen | GroupFlags.JoinRequestClosed;
+            const GroupFlags referralFlags = GroupFlags.ReferralsOpen | GroupFlags.ReferralsClosed;
+
+            return (flags & ~supportedFlags) == 0
+                && (flags & joinRequestFlags) != joinRequestFlags
+                && (flags & referralFlags) != referralFlags;
         }
 
         /// <summary>

@@ -29,6 +29,13 @@ namespace NexusForever.Server.GroupServer.Tests.Group
         private const ulong MemberId = 202ul;
         private const ulong CandidateId = 303ul;
 
+        private const GroupFlags SupportedGroupFlags = GroupFlags.OpenWorld
+            | GroupFlags.Raid
+            | GroupFlags.JoinRequestOpen
+            | GroupFlags.JoinRequestClosed
+            | GroupFlags.ReferralsOpen
+            | GroupFlags.ReferralsClosed;
+
         private const GroupMemberInfoFlags AllDefinedMemberFlags = GroupMemberInfoFlags.CanInvite
             | GroupMemberInfoFlags.CanKick
             | GroupMemberInfoFlags.Disconnected
@@ -71,6 +78,33 @@ namespace NexusForever.Server.GroupServer.Tests.Group
             { GroupMemberInfoFlags.Ready, GroupMemberInfoFlags.Ready | GroupMemberInfoFlags.HasSetReady },
             { GroupMemberInfoFlags.None, GroupMemberInfoFlags.HasSetReady },
             { GroupMemberInfoFlags.None, GroupMemberInfoFlags.Ready | GroupMemberInfoFlags.HasSetReady },
+        };
+
+        public static IEnumerable<object[]> StructurallyInvalidGroupFlags
+        {
+            get
+            {
+                for (var bit = 0; bit < 32; bit++)
+                {
+                    var flag = (GroupFlags)(1u << bit);
+                    if ((flag & SupportedGroupFlags) == 0)
+                        yield return [flag];
+                }
+
+                yield return [GroupFlags.JoinRequestOpen | GroupFlags.JoinRequestClosed];
+                yield return [GroupFlags.ReferralsOpen | GroupFlags.ReferralsClosed];
+                yield return [SupportedGroupFlags];
+                yield return [(GroupFlags)uint.MaxValue];
+            }
+        }
+
+        public static TheoryData<GroupFlags, GroupFlags> InvalidGroupFlagTransitions => new()
+        {
+            { GroupFlags.None, GroupFlags.OpenWorld },
+            { GroupFlags.OpenWorld, GroupFlags.None },
+            { GroupFlags.None, GroupFlags.Raid },
+            { GroupFlags.Raid, GroupFlags.None },
+            { GroupFlags.OpenWorld | GroupFlags.Raid, GroupFlags.OpenWorld },
         };
 
         public static TheoryData<LootRule, LootRule, LootThreshold, HarvestLootRule> InvalidLootRuleTuples => new()
@@ -204,8 +238,8 @@ namespace NexusForever.Server.GroupServer.Tests.Group
         public async Task GroupFlags_ChangedAndUnchangedValuesPublishAuthoritativeRevisions()
         {
             using var changedFixture = new ProducerFixture();
-            GroupEntity changedGroup = changedFixture.CreateGroup();
-            GroupFlags changedFlags = GroupFlags.Raid | GroupFlags.JoinRequestOpen;
+            GroupEntity changedGroup = changedFixture.CreateGroup(flags: GroupFlags.OpenWorld);
+            GroupFlags changedFlags = GroupFlags.OpenWorld | GroupFlags.Raid | GroupFlags.JoinRequestOpen;
 
             GroupActionResult changedResult = await changedGroup.SetGroupFlagsAsync(Identity(LeaderId), changedFlags);
 
@@ -226,6 +260,82 @@ namespace NexusForever.Server.GroupServer.Tests.Group
             Assert.Equal(InitialRevision, unchangedFixture.SingleMessage<GroupFlagsUpdatedMessage>().Group.Revision);
             Assert.Empty(unchangedFixture.Messages<GroupMaxSizeUpdatedMessage>());
             Assert.Single(unchangedFixture.PendingMessages);
+        }
+
+        [Theory]
+        [MemberData(nameof(StructurallyInvalidGroupFlags))]
+        public async Task GroupFlags_StructurallyInvalidLeaderValueDoesNotMutateRevisionOrPublish(GroupFlags flags)
+        {
+            using var fixture = new ProducerFixture();
+            GroupEntity group = fixture.CreateGroup();
+
+            GroupActionResult result = await group.SetGroupFlagsAsync(Identity(LeaderId), flags);
+
+            Assert.Equal(GroupActionResult.FlagsFailed, result);
+            Assert.Equal(InitialRevision, group.Revision);
+            Assert.Equal(GroupFlags.None, group.Flags);
+            Assert.Empty(fixture.PendingMessages);
+        }
+
+        [Theory]
+        [MemberData(nameof(InvalidGroupFlagTransitions))]
+        public async Task GroupFlags_ImmutableOrAddOnlyTransitionDoesNotMutateRevisionOrPublish(
+            GroupFlags currentFlags,
+            GroupFlags requestedFlags)
+        {
+            using var fixture = new ProducerFixture();
+            GroupEntity group = fixture.CreateGroup(flags: currentFlags);
+
+            GroupActionResult result = await group.SetGroupFlagsAsync(Identity(LeaderId), requestedFlags);
+
+            Assert.Equal(GroupActionResult.FlagsFailed, result);
+            Assert.Equal(InitialRevision, group.Revision);
+            Assert.Equal(currentFlags, group.Flags);
+            Assert.Empty(fixture.PendingMessages);
+        }
+
+        [Fact]
+        public async Task GroupFlags_OpenWorldRaidAdditionPreservesOriginAndPublishesMaxSize()
+        {
+            using var fixture = new ProducerFixture();
+            GroupEntity group = fixture.CreateGroup(flags: GroupFlags.OpenWorld);
+            GroupFlags requestedFlags = GroupFlags.OpenWorld
+                | GroupFlags.Raid
+                | GroupFlags.JoinRequestClosed
+                | GroupFlags.ReferralsOpen;
+
+            GroupActionResult result = await group.SetGroupFlagsAsync(Identity(LeaderId), requestedFlags);
+
+            Assert.Equal(GroupActionResult.FlagsSuccess, result);
+            Assert.Equal(InitialRevision + 1ul, group.Revision);
+            Assert.Equal(requestedFlags, group.Flags);
+            Assert.Equal(requestedFlags, fixture.SingleMessage<GroupFlagsUpdatedMessage>().Group.Flags);
+            Assert.Equal(20u, fixture.SingleMessage<GroupMaxSizeUpdatedMessage>().Group.MaxGroupSize);
+            Assert.Equal(2, fixture.PendingMessages.Count);
+        }
+
+        [Fact]
+        public async Task GroupFlags_TriStateChangesPreserveRaidWithoutRepublishingMaxSize()
+        {
+            using var fixture = new ProducerFixture();
+            GroupFlags currentFlags = GroupFlags.OpenWorld
+                | GroupFlags.Raid
+                | GroupFlags.JoinRequestOpen
+                | GroupFlags.ReferralsClosed;
+            GroupEntity group = fixture.CreateGroup(flags: currentFlags);
+            GroupFlags requestedFlags = GroupFlags.OpenWorld
+                | GroupFlags.Raid
+                | GroupFlags.JoinRequestClosed
+                | GroupFlags.ReferralsOpen;
+
+            GroupActionResult result = await group.SetGroupFlagsAsync(Identity(LeaderId), requestedFlags);
+
+            Assert.Equal(GroupActionResult.FlagsSuccess, result);
+            Assert.Equal(InitialRevision + 1ul, group.Revision);
+            Assert.Equal(requestedFlags, group.Flags);
+            Assert.Equal(requestedFlags, fixture.SingleMessage<GroupFlagsUpdatedMessage>().Group.Flags);
+            Assert.Empty(fixture.Messages<GroupMaxSizeUpdatedMessage>());
+            Assert.Single(fixture.PendingMessages);
         }
 
         [Fact]
