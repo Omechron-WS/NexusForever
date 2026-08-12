@@ -2,6 +2,7 @@
 using NexusForever.Database.World.Model;
 using NexusForever.Game.Abstract;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.CSI;
 using NexusForever.Game.Entity;
 using NexusForever.Game.Static.AccountInventory;
 using NexusForever.Game.Static.Entity;
@@ -31,7 +32,11 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Vendor
         public void HandleMessage(IWorldSession session, ClientVendorPurchase vendorPurchase)
         {
             IPlayer player = session.Player;
-            IVendorInfo vendorInfo = player.SelectedVendorInfo;
+            INonPlayerEntity vendor = player.SelectedVendor;
+            if (!ClientSideInteractionValidator.IsValid(player, vendor))
+                return;
+
+            IVendorInfo vendorInfo = vendor.VendorInfo;
             if (vendorInfo == null)
                 return;
 

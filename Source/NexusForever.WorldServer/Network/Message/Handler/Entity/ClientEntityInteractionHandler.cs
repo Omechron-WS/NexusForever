@@ -96,12 +96,13 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Entity
             if (worldEntity is not INonPlayerEntity vendorEntity)
                 throw new InvalidOperationException();
 
-            if (vendorEntity.VendorInfo == null)
+            IVendorInfo vendorInfo = vendorEntity.VendorInfo;
+            if (vendorInfo == null)
                 throw new InvalidOperationException();
 
-            session.Player.SelectedVendorInfo = vendorEntity.VendorInfo;
+            session.Player.SelectedVendor = vendorEntity;
 
-            ServerVendorItemsUpdated vendorItemsUpdated = vendorEntity.VendorInfo.Build();
+            ServerVendorItemsUpdated vendorItemsUpdated = vendorInfo.Build();
             vendorItemsUpdated.Guid = vendorEntity.Guid;
             session.EnqueueMessageEncrypted(vendorItemsUpdated);
         }

@@ -122,6 +122,48 @@ namespace NexusForever.WorldServer.Tests
         }
 
         [Fact]
+        public void VendorInteraction_RetainsExactValidatedEntityAndPublishesCurrentListing()
+        {
+            (Mock<IWorldSession> session, Mock<IPlayer> player, Mock<INonPlayerEntity> vendor, Mock<IVendorInfo> vendorInfo) =
+                CreateValidVendorInteraction();
+            var message = new ClientEntityInteract();
+            SetProperty(message, nameof(ClientEntityInteract.Guid), 77u);
+            SetProperty(message, nameof(ClientEntityInteract.Event), (byte)49);
+
+            new ClientEntityInteractionHandler(
+                Mock.Of<ILogger<ClientEntityInteractionHandler>>(),
+                Mock.Of<NexusForever.Game.Abstract.IAssetManager>())
+                .HandleMessage(session.Object, message);
+
+            player.VerifySet(value => value.SelectedVendor = vendor.Object, Times.Once);
+            vendorInfo.Verify(value => value.Build(), Times.Once);
+            session.Verify(value => value.EnqueueMessageEncrypted(
+                It.Is<ServerVendorItemsUpdated>(update => update.Guid == 77u)), Times.Once);
+        }
+
+        [Fact]
+        public void VendorInteraction_MissingCurrentVendorInfoDoesNotRetainEntity()
+        {
+            (Mock<IWorldSession> session, Mock<IPlayer> player, Mock<INonPlayerEntity> vendor, _) =
+                CreateValidVendorInteraction();
+            vendor.SetupGet(value => value.VendorInfo).Returns((IVendorInfo)null);
+            var message = new ClientEntityInteract();
+            SetProperty(message, nameof(ClientEntityInteract.Guid), 77u);
+            SetProperty(message, nameof(ClientEntityInteract.Event), (byte)49);
+
+            Assert.Throws<InvalidOperationException>(() => new ClientEntityInteractionHandler(
+                    Mock.Of<ILogger<ClientEntityInteractionHandler>>(),
+                    Mock.Of<NexusForever.Game.Abstract.IAssetManager>())
+                .HandleMessage(session.Object, message));
+
+            player.VerifySet(
+                value => value.SelectedVendor = It.IsAny<INonPlayerEntity>(),
+                Times.Never);
+            session.Verify(value => value.EnqueueMessageEncrypted(
+                It.IsAny<ServerVendorItemsUpdated>()), Times.Never);
+        }
+
+        [Fact]
         public void ActivationPacket_UnavailableSpellIsHandledWithoutDisconnecting()
         {
             (Mock<IWorldSession> session, Mock<IPlayer> player, Mock<IWorldEntity> entity) = CreateValidActivation();
@@ -289,6 +331,38 @@ namespace NexusForever.WorldServer.Tests
             var session = new Mock<IWorldSession>();
             session.SetupGet(value => value.Player).Returns(player.Object);
             return (session, player, entity);
+        }
+
+        private static (
+            Mock<IWorldSession> Session,
+            Mock<IPlayer> Player,
+            Mock<INonPlayerEntity> Vendor,
+            Mock<IVendorInfo> VendorInfo) CreateValidVendorInteraction()
+        {
+            var map = new Mock<IBaseMap>();
+            var vendorInfo = new Mock<IVendorInfo>();
+            vendorInfo.Setup(value => value.Build()).Returns(new ServerVendorItemsUpdated());
+            var vendor = new Mock<INonPlayerEntity>();
+            vendor.SetupGet(value => value.InWorld).Returns(true);
+            vendor.SetupGet(value => value.Guid).Returns(77u);
+            vendor.SetupGet(value => value.Map).Returns(map.Object);
+            vendor.SetupGet(value => value.Position).Returns(new Vector3(3f, 0f, 0f));
+            vendor.SetupGet(value => value.CreatureEntry).Returns(new Creature2Entry
+            {
+                ActivateSpellMaxRange = 5f
+            });
+            vendor.SetupGet(value => value.VendorInfo).Returns(vendorInfo.Object);
+
+            var player = new Mock<IPlayer>();
+            player.SetupGet(value => value.InWorld).Returns(true);
+            player.SetupGet(value => value.Map).Returns(map.Object);
+            player.SetupGet(value => value.Position).Returns(Vector3.Zero);
+            player.SetupGet(value => value.QuestManager).Returns(Mock.Of<IQuestManager>());
+            player.Setup(value => value.GetVisible<IWorldEntity>(77u)).Returns(vendor.Object);
+
+            var session = new Mock<IWorldSession>();
+            session.SetupGet(value => value.Player).Returns(player.Object);
+            return (session, player, vendor, vendorInfo);
         }
 
         private static T CreateMessage<T>(uint clientUniqueId, uint activateUnitId)

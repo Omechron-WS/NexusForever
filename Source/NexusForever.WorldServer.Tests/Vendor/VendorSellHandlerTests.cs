@@ -1,6 +1,8 @@
 using System.Reflection;
+using System.Numerics;
 using Moq;
 using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Abstract.Map;
 using NexusForever.Game.Static.Entity;
 using NexusForever.GameTable.Model;
 using NexusForever.Network.World.Message.Model;
@@ -14,7 +16,48 @@ namespace NexusForever.WorldServer.Tests.Vendor
     public sealed class VendorSellHandlerTests
     {
         private const ulong CharacterId = 42ul;
+        private const uint VendorGuid = 77u;
         private const uint BagIndex = 7u;
+
+        [Theory]
+        [InlineData(VendorAuthorityFailure.Despawned)]
+        [InlineData(VendorAuthorityFailure.DifferentMap)]
+        [InlineData(VendorAuthorityFailure.NotVisible)]
+        [InlineData(VendorAuthorityFailure.OutOfRange)]
+        [InlineData(VendorAuthorityFailure.MissingInfo)]
+        public void InvalidRetainedVendor_IsRejectedBeforeInventoryOrMutation(VendorAuthorityFailure failure)
+        {
+            SellFixture fixture = CreateFixture(stackCount: 1u);
+
+            switch (failure)
+            {
+                case VendorAuthorityFailure.Despawned:
+                    fixture.Vendor.SetupGet(value => value.InWorld).Returns(false);
+                    break;
+                case VendorAuthorityFailure.DifferentMap:
+                    fixture.Vendor.SetupGet(value => value.Map).Returns(Mock.Of<IBaseMap>());
+                    break;
+                case VendorAuthorityFailure.NotVisible:
+                    fixture.Player.Setup(value => value.GetVisible<IWorldEntity>(VendorGuid)).Returns((IWorldEntity)null);
+                    break;
+                case VendorAuthorityFailure.OutOfRange:
+                    fixture.Vendor.SetupGet(value => value.Position).Returns(new Vector3(6f, 0f, 0f));
+                    break;
+                case VendorAuthorityFailure.MissingInfo:
+                    fixture.Vendor.SetupGet(value => value.VendorInfo).Returns((IVendorInfo)null);
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(failure));
+            }
+
+            fixture.Handler.HandleMessage(
+                fixture.Session.Object,
+                CreateMessage(InventoryLocation.Inventory, BagIndex, 1u));
+
+            fixture.Inventory.Verify(value => value.GetItem(It.IsAny<ItemLocation>()), Times.Never);
+            fixture.VendorInfo.VerifyGet(value => value.SellPriceMultiplier, Times.Never);
+            AssertNoMutation(fixture);
+        }
 
         [Theory]
         [InlineData(1u)]
@@ -143,11 +186,27 @@ namespace NexusForever.WorldServer.Tests.Vendor
             var vendorInfo = new Mock<IVendorInfo>();
             vendorInfo.SetupGet(value => value.SellPriceMultiplier).Returns(1f);
 
+            var map = new Mock<IBaseMap>();
+            var vendor = new Mock<INonPlayerEntity>();
+            vendor.SetupGet(value => value.Guid).Returns(VendorGuid);
+            vendor.SetupGet(value => value.InWorld).Returns(true);
+            vendor.SetupGet(value => value.Map).Returns(map.Object);
+            vendor.SetupGet(value => value.Position).Returns(Vector3.One);
+            vendor.SetupGet(value => value.CreatureEntry).Returns(new Creature2Entry
+            {
+                ActivateSpellMaxRange = 5f
+            });
+            vendor.SetupGet(value => value.VendorInfo).Returns(vendorInfo.Object);
+
             var player = new Mock<IPlayer>();
             player.SetupGet(value => value.CharacterId).Returns(CharacterId);
+            player.SetupGet(value => value.InWorld).Returns(true);
+            player.SetupGet(value => value.Map).Returns(map.Object);
+            player.SetupGet(value => value.Position).Returns(Vector3.Zero);
+            player.SetupGet(value => value.SelectedVendor).Returns(vendor.Object);
+            player.Setup(value => value.GetVisible<IWorldEntity>(VendorGuid)).Returns(vendor.Object);
             player.SetupGet(value => value.Inventory).Returns(inventory.Object);
             player.SetupGet(value => value.CurrencyManager).Returns(currencyManager.Object);
-            player.SetupGet(value => value.SelectedVendorInfo).Returns(vendorInfo.Object);
 
             var session = new Mock<IWorldSession>();
             session.SetupGet(value => value.Player).Returns(player.Object);
@@ -157,6 +216,8 @@ namespace NexusForever.WorldServer.Tests.Vendor
                 new ClientVendorSellHandler(buybackManager.Object),
                 session,
                 player,
+                vendor,
+                vendorInfo,
                 inventory,
                 currencyManager,
                 buybackManager,
@@ -214,10 +275,21 @@ namespace NexusForever.WorldServer.Tests.Vendor
             MissingEntry
         }
 
+        public enum VendorAuthorityFailure
+        {
+            Despawned,
+            DifferentMap,
+            NotVisible,
+            OutOfRange,
+            MissingInfo
+        }
+
         private sealed record SellFixture(
             ClientVendorSellHandler Handler,
             Mock<IWorldSession> Session,
             Mock<IPlayer> Player,
+            Mock<INonPlayerEntity> Vendor,
+            Mock<IVendorInfo> VendorInfo,
             Mock<IInventory> Inventory,
             Mock<ICurrencyManager> CurrencyManager,
             Mock<IBuybackManager> BuybackManager,

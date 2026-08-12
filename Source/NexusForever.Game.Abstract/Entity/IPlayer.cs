@@ -93,7 +93,7 @@ namespace NexusForever.Game.Abstract.Entity
         IAppearanceManager AppearanceManager { get; }
         IResurrectionManager ResurrectionManager { get; }
 
-        IVendorInfo SelectedVendorInfo { get; set; }
+        INonPlayerEntity SelectedVendor { get; set; }
 
         /// <summary>
         /// Save <see cref="IPlayer"/> to the databases and invoke the supplied callback once both attempts complete successfully.

@@ -252,7 +252,7 @@ namespace NexusForever.Game.Entity
         public IAppearanceManager AppearanceManager { get; private set; }
         public IResurrectionManager ResurrectionManager { get; private set; }
 
-        public IVendorInfo SelectedVendorInfo { get; set; } // TODO unset this when too far away from vendor
+        public INonPlayerEntity SelectedVendor { get; set; }
 
         private bool forceSave;
         private UpdateTimer saveTimer = new(SaveDuration);
