@@ -32,7 +32,7 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Friendship
                 or FriendshipType.Account))
                 throw new InvalidPacketValueException();
 
-            messagePublisher.PublishAsync(new FriendshipIdentityInviteRequestMessage
+            messagePublisher.PublishAsync(new FriendshipNameInviteRequestMessage
             {
                 Inviter = session.Player.Identity.ToInternalIdentity(),
                 Invitee = message.Target.ToInternalIdentity(),
