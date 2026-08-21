@@ -39,25 +39,15 @@ namespace NexusForever.Game.Account.Costume
         /// </summary>
         public void Save(AuthContext context, ISaveCommitScope commitScope)
         {
-            var deletedUnlocks = new List<(uint ItemId, ICostumeUnlock Unlock)>();
-            foreach ((uint itemId, ICostumeUnlock costumeUnlock) in costumeUnlocks)
+            foreach ((uint itemId, ICostumeUnlock costumeUnlock) in costumeUnlocks.ToArray())
             {
-                if (costumeUnlock.PendingDelete)
-                    deletedUnlocks.Add((itemId, costumeUnlock));
-
-                costumeUnlock.Save(context, commitScope);
-            }
-
-            if (deletedUnlocks.Count == 0)
-                return;
-
-            commitScope.Register(() =>
-            {
-                foreach ((uint itemId, ICostumeUnlock deletedUnlock) in deletedUnlocks)
+                costumeUnlock.Save(context, commitScope, () =>
+                {
                     if (costumeUnlocks.TryGetValue(itemId, out ICostumeUnlock currentUnlock)
-                        && ReferenceEquals(currentUnlock, deletedUnlock))
+                        && ReferenceEquals(currentUnlock, costumeUnlock))
                         costumeUnlocks.Remove(itemId);
-            });
+                });
+            }
         }
 
         /// <summary>
@@ -137,10 +127,7 @@ namespace NexusForever.Game.Account.Costume
                 return;
             }
 
-            if (costumeUnlock.PendingCreate)
-                costumeUnlocks.Remove(itemId);
-            else
-                costumeUnlock.EnqueueDelete(true);
+            costumeUnlock.EnqueueDelete(true);
             SendCostumeItemUnlock(CostumeUnlockResult.ForgetItemSuccess, itemId);
         }
 

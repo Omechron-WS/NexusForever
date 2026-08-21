@@ -188,6 +188,12 @@ namespace NexusForever.Game.Matching.Queue
             log.LogTrace($"Queue join request, Character: {player.Identity}, Roles: {roles}, MatchType: {matchType}, Maps: {string.Join(", ", maps)}, Type {matchingGameTypeId}, Flags: {matchingQueueFlags}.");
 
             List<IMatchingMap> matchingMaps = GetMatchingMaps(maps, matchingGameTypeId);
+            if (matchingMaps == null)
+            {
+                SendInvalidGame(player);
+                return;
+            }
+
             JoinQueue(player, roles, matchType, matchingMaps, matchingQueueFlags);
         }
 
@@ -199,6 +205,12 @@ namespace NexusForever.Game.Matching.Queue
             log.LogTrace($"Party queue join request, Character: {player.Identity}, Roles: {roles}, MatchType: {matchType}, Maps: {string.Join(", ", maps)}, Type {matchingGameTypeId}, Flags: {matchingQueueFlags}.");
 
             List<IMatchingMap> matchingMaps = GetMatchingMaps(maps, matchingGameTypeId);
+            if (matchingMaps == null)
+            {
+                SendInvalidGame(player);
+                return;
+            }
+
             JoinPartyQueue(player, roles, matchType, matchingMaps, matchingQueueFlags);
         }
 
@@ -210,9 +222,28 @@ namespace NexusForever.Game.Matching.Queue
                 return matchingDataManager.GetMatchingMaps(matchingGameTypeId)
                     .ToList();
 
-            return maps
-                .Select(matchingDataManager.GetMatchingMap)
-                .ToList();
+            if (maps.Distinct().Count() != maps.Count)
+                return null;
+
+            var matchingMaps = new List<IMatchingMap>(maps.Count);
+            foreach (uint mapId in maps)
+            {
+                IMatchingMap matchingMap = matchingDataManager.GetMatchingMap(mapId);
+                if (matchingMap == null)
+                    return null;
+
+                matchingMaps.Add(matchingMap);
+            }
+
+            return matchingMaps;
+        }
+
+        private static void SendInvalidGame(IPlayer player)
+        {
+            player.Session.EnqueueMessageEncrypted(new ServerMatchingQueueResultAnnounce
+            {
+                Result = MatchingQueueResult.InvalidGame
+            });
         }
 
         private void JoinQueue(IPlayer player, Role roles, Static.Matching.MatchType matchType, List<IMatchingMap> matchingMaps, MatchingQueueFlags matchingQueueFlags)

@@ -70,6 +70,102 @@ namespace NexusForever.Game.Tests.Persistence
         }
 
         [Fact]
+        public void AccountCostumeSave_DeleteCancellationAfterStagingQueuesCompensatingCreate()
+        {
+            AccountCostumeManager manager = CreateCostumeManager(23u, 101u);
+            Dictionary<uint, ICostumeUnlock> unlocks = GetCostumeUnlocks(manager);
+            ICostumeUnlock unlock = unlocks[101u];
+            unlock.EnqueueDelete(true);
+            var scope = new SaveCommitScope();
+
+            using (AuthContext context = CreateContext())
+                manager.Save(context, scope);
+            unlock.EnqueueDelete(false);
+            scope.CreateAcknowledgement().Acknowledge();
+
+            Assert.Same(unlock, unlocks[101u]);
+            Assert.True(unlock.PendingCreate);
+            Assert.False(unlock.PendingDelete);
+
+            using AuthContext retryContext = CreateContext();
+            manager.Save(retryContext, new SaveCommitScope());
+
+            Assert.Equal(EntityState.Added,
+                Assert.Single(retryContext.ChangeTracker.Entries<AccountCostumeUnlockModel>()).State);
+        }
+
+        [Fact]
+        public void AccountCostumeSave_CreateAndDeleteBeforeFirstSaveStagesNoDatabaseChange()
+        {
+            var account = new Mock<IAccount>();
+            account.SetupGet(value => value.Id).Returns(23u);
+            var manager = new AccountCostumeManager(account.Object, new AccountModel { Id = 23u });
+            Dictionary<uint, ICostumeUnlock> unlocks = GetCostumeUnlocks(manager);
+            var unlock = new CostumeUnlock(account.Object, 101u);
+            unlocks.Add(101u, unlock);
+            unlock.EnqueueDelete(true);
+            var scope = new SaveCommitScope();
+
+            using AuthContext context = CreateContext();
+            manager.Save(context, scope);
+
+            Assert.Empty(context.ChangeTracker.Entries<AccountCostumeUnlockModel>());
+            Assert.Same(unlock, unlocks[101u]);
+
+            scope.CreateAcknowledgement().Acknowledge();
+
+            Assert.Empty(unlocks);
+        }
+
+        [Fact]
+        public void AccountCostumeSave_DeleteDuringPendingCreateQueuesFollowUpDelete()
+        {
+            var account = new Mock<IAccount>();
+            account.SetupGet(value => value.Id).Returns(23u);
+            var manager = new AccountCostumeManager(account.Object, new AccountModel { Id = 23u });
+            Dictionary<uint, ICostumeUnlock> unlocks = GetCostumeUnlocks(manager);
+            var unlock = new CostumeUnlock(account.Object, 101u);
+            unlocks.Add(101u, unlock);
+            var createScope = new SaveCommitScope();
+
+            using (AuthContext context = CreateContext())
+                manager.Save(context, createScope);
+            unlock.EnqueueDelete(true);
+            createScope.CreateAcknowledgement().Acknowledge();
+
+            Assert.Same(unlock, unlocks[101u]);
+            Assert.False(unlock.PendingCreate);
+            Assert.True(unlock.PendingDelete);
+
+            var deleteScope = new SaveCommitScope();
+            using (AuthContext retryContext = CreateContext())
+            {
+                manager.Save(retryContext, deleteScope);
+                Assert.Equal(EntityState.Deleted,
+                    Assert.Single(retryContext.ChangeTracker.Entries<AccountCostumeUnlockModel>()).State);
+            }
+
+            Assert.Same(unlock, unlocks[101u]);
+            deleteScope.CreateAcknowledgement().Acknowledge();
+            Assert.Empty(unlocks);
+        }
+
+        [Fact]
+        public void AccountCostumeSave_ImmediateAcknowledgementRemovesDeleteFromSnapshot()
+        {
+            AccountCostumeManager manager = CreateCostumeManager(23u, 101u);
+            Dictionary<uint, ICostumeUnlock> unlocks = GetCostumeUnlocks(manager);
+            unlocks[101u].EnqueueDelete(true);
+
+            using AuthContext context = CreateContext();
+            manager.Save(context);
+
+            Assert.Equal(EntityState.Deleted,
+                Assert.Single(context.ChangeTracker.Entries<AccountCostumeUnlockModel>()).State);
+            Assert.Empty(unlocks);
+        }
+
+        [Fact]
         public void KeybindingSave_PreservesMutationMadeWhileCreateCommitIsPending()
         {
             var bindingSet = new KeybindingSet(new AccountModel { Id = 31u });
@@ -141,6 +237,22 @@ namespace NexusForever.Game.Tests.Persistence
         {
             FieldInfo field = typeof(AccountCostumeManager).GetField("costumeUnlocks", BindingFlags.Instance | BindingFlags.NonPublic);
             return Assert.IsType<Dictionary<uint, ICostumeUnlock>>(field.GetValue(manager));
+        }
+
+        private static AccountCostumeManager CreateCostumeManager(uint accountId, uint itemId)
+        {
+            return new AccountCostumeManager(Mock.Of<IAccount>(), new AccountModel
+            {
+                Id = accountId,
+                AccountCostumeUnlock =
+                [
+                    new AccountCostumeUnlockModel
+                    {
+                        Id     = accountId,
+                        ItemId = itemId
+                    }
+                ]
+            });
         }
 
         private sealed class TestAuthContext : AuthContext

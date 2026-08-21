@@ -55,10 +55,39 @@ namespace NexusForever.Game.Account.Costume
         /// </summary>
         public void Save(AuthContext context, ISaveCommitScope commitScope)
         {
+            Save(context, commitScope, null);
+        }
+
+        /// <summary>
+        /// Stage the costume unlock change and invoke the supplied action when a requested deletion commits.
+        /// </summary>
+        public void Save(AuthContext context, ISaveCommitScope commitScope, Action deleteAcknowledged)
+        {
             VersionedSaveMaskSnapshot<CostumeUnlockSaveMask> snapshot = saveMask.Capture();
             CostumeUnlockSaveMask mask = snapshot.Mask;
             if (mask == CostumeUnlockSaveMask.None)
                 return;
+
+            void Acknowledge()
+            {
+                bool deleteStillRequested = PendingDelete;
+                saveMask.Acknowledge(snapshot);
+
+                if ((mask & CostumeUnlockSaveMask.Delete) == 0)
+                    return;
+
+                if (deleteStillRequested)
+                    deleteAcknowledged?.Invoke();
+                else
+                    saveMask.Mark(CostumeUnlockSaveMask.Create);
+            }
+
+            if ((mask & (CostumeUnlockSaveMask.Create | CostumeUnlockSaveMask.Delete)) ==
+                (CostumeUnlockSaveMask.Create | CostumeUnlockSaveMask.Delete))
+            {
+                commitScope.Register(Acknowledge);
+                return;
+            }
 
             var model = new AccountCostumeUnlockModel
             {
@@ -71,7 +100,7 @@ namespace NexusForever.Game.Account.Costume
             else
                 context.Entry(model).State = EntityState.Deleted;
 
-            commitScope.Register(() => saveMask.Acknowledge(snapshot));
+            commitScope.Register(Acknowledge);
         }
 
         /// <summary>
