@@ -1,5 +1,7 @@
 ﻿using Microsoft.Extensions.Logging;
 using NexusForever.Game.Abstract;
+using NexusForever.Game.Abstract.Entity;
+using NexusForever.Game.Abstract.Matching;
 using NexusForever.Game.Abstract.Matching.Queue;
 using NexusForever.Game.Static.Matching;
 using NexusForever.Network.Message;
@@ -21,13 +23,19 @@ namespace NexusForever.Game.Matching.Queue
         #region Dependency Injection
 
         private readonly ILogger<MatchingRoleCheck> log;
+        private readonly IPlayerManager playerManager;
+        private readonly IMatchingDataManager matchingDataManager;
         private readonly IFactory<IMatchingRoleCheckMember> matchingRoleCheckMemberFactory;
 
         public MatchingRoleCheck(
             ILogger<MatchingRoleCheck> log,
+            IPlayerManager playerManager,
+            IMatchingDataManager matchingDataManager,
             IFactory<IMatchingRoleCheckMember> matchingRoleCheckMemberFactory)
         {
             this.log                            = log;
+            this.playerManager                  = playerManager;
+            this.matchingDataManager            = matchingDataManager;
             this.matchingRoleCheckMemberFactory = matchingRoleCheckMemberFactory;
         }
 
@@ -93,6 +101,16 @@ namespace NexusForever.Game.Matching.Queue
 
             if (!members.TryGetValue(identity, out IMatchingRoleCheckMember matchingRoleCheckMember))
                 throw new InvalidOperationException();
+
+            if (matchingRoleCheckMember.Roles.HasValue)
+                throw new InvalidOperationException();
+
+            if (roles != Role.None)
+            {
+                IPlayer player = playerManager.GetPlayer(identity);
+                if (player == null || (roles & ~matchingDataManager.GetDefaultRole(player.Class)) != Role.None)
+                    roles = Role.None;
+            }
 
             matchingRoleCheckMember.SetRoles(roles);
 

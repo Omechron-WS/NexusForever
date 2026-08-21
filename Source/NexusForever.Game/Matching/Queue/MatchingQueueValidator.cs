@@ -46,6 +46,20 @@ namespace NexusForever.Game.Matching.Queue
                 .GetMembers()
                 .ToList();
 
+            List<IPlayer> players = members
+                .Select(c => playerManager.GetPlayer(c.Identity))
+                .ToList();
+
+            if (players.Any(player => player == null))
+                return MatchingQueueResult.OfflineGroupMember;
+
+            for (int i = 0; i < members.Count; i++)
+            {
+                Role eligibleRoles = matchingDataManager.GetDefaultRole(players[i].Class);
+                if ((members[i].Roles & ~eligibleRoles) != Role.None)
+                    return MatchingQueueResult.Role;
+            }
+
             foreach (IMatchingQueueProposalMember matachingQueueProposalMember in members)
             {
                 IMatchCharacter matchCharacter = matchManager.GetMatchCharacter(matachingQueueProposalMember.Identity);
@@ -60,10 +74,6 @@ namespace NexusForever.Game.Matching.Queue
                     if (memberMatchingQueueProposal.IsParty != matchingQueueProposal.IsParty)
                         return MatchingQueueResult.CannotQueueSoloAndGroup;
             }
-
-            List<IPlayer> players = members
-                .Select(c => playerManager.GetPlayer(c.Identity))
-                .ToList();
 
             foreach (IPlayer player in players)
                 if (player.Faction1 != matchingQueueProposal.Faction)
