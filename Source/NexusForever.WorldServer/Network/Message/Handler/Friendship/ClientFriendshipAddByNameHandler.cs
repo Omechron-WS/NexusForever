@@ -1,4 +1,6 @@
 ﻿using NexusForever.Game;
+using NexusForever.Game.Static.Friendship;
+using NexusForever.Network;
 using NexusForever.Network.Internal;
 using NexusForever.Network.Internal.Message.Friendship;
 using NexusForever.Network.Message;
@@ -23,6 +25,12 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Friendship
 
         public void HandleMessage(IWorldSession session, ClientFriendshipAddByName message)
         {
+            if (message.Type is not (FriendshipType.Friend
+                or FriendshipType.Ignore
+                or FriendshipType.Rival
+                or FriendshipType.Account))
+                throw new InvalidPacketValueException();
+
             messagePublisher.PublishAsync(new FriendshipNameInviteRequestMessage
             {
                 Inviter     = session.Player.Identity.ToInternalIdentity(),
