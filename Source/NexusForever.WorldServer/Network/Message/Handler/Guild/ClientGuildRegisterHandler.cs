@@ -12,6 +12,9 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Guild
 {
     public class ClientGuildRegisterHandler : IMessageHandler<IWorldSession, ClientGuildRegister>
     {
+        private const uint GuildMinimumLevelFormulaId = 1044u;
+        private const uint WarPartyMinimumLevelFormulaId = 872u;
+
         #region Dependency Injection
 
         private readonly IGameTableManager gameTableManager;
@@ -28,6 +31,19 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Guild
         {
             IGuildResultInfo GetResult()
             {
+                uint? minimumLevelFormulaId = guildRegister.GuildType switch
+                {
+                    GuildType.Guild    => GuildMinimumLevelFormulaId,
+                    GuildType.WarParty => WarPartyMinimumLevelFormulaId,
+                    _                  => null
+                };
+                if (minimumLevelFormulaId.HasValue)
+                {
+                    GameFormulaEntry minimumLevelEntry = gameTableManager.GameFormula.GetEntry(minimumLevelFormulaId.Value);
+                    if (minimumLevelEntry == null || session.Player.Level < minimumLevelEntry.Dataint0)
+                        return new GuildResultInfo(GuildResult.NotHighEnoughLevel);
+                }
+
                 // hardcoded GameFormula entries come from client GuildLib.GetCreateCost/GetAlternateCreateCost
                 switch (guildRegister.GuildType)
                 {
