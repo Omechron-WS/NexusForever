@@ -1,7 +1,10 @@
 ﻿using System.Collections.Generic;
 using System.Linq;
+using NexusForever.Game.Abstract.Entity;
 using NexusForever.Game.Abstract.Spell;
+using NexusForever.Game.Spell;
 using NexusForever.Game.Static.Spell;
+using NexusForever.Network;
 using NexusForever.Network.Message;
 using NexusForever.Network.World.Message.Model.Abilities;
 
@@ -9,11 +12,21 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Spell
 {
     public class ClientRequestActionSetChangesHandler : IMessageHandler<IWorldSession, ClientRequestActionSetChanges>
     {
+        private const int LimitedActionSetSize = 12;
+
         public void HandleMessage(IWorldSession session, ClientRequestActionSetChanges requestActionSetChanges)
         {
+            if (requestActionSetChanges.Actions.Count != LimitedActionSetSize
+                || requestActionSetChanges.ActionSetIndex >= ActionSet.MaxActionSets)
+                throw new InvalidPacketValueException();
+
+            ISpellManager spellManager = session.Player.SpellManager;
+            if (requestActionSetChanges.ActionSetIndex != spellManager.ActiveActionSet)
+                throw new InvalidPacketValueException();
+
             // TODO: check for client validity, e.g. Level & Spell4TierRequirements
 
-            IActionSet actionSet = session.Player.SpellManager.GetActionSet(requestActionSetChanges.ActionSetIndex);
+            IActionSet actionSet = spellManager.GetActionSet(requestActionSetChanges.ActionSetIndex);
 
             List<IActionSetShortcut> shortcuts = actionSet.Actions.ToList();
             for (UILocation i = 0; i < (UILocation)requestActionSetChanges.Actions.Count; i++)
@@ -32,11 +45,11 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Spell
             }
 
             foreach (ClientRequestActionSetChanges.ActionTier actionTier in requestActionSetChanges.ActionTiers)
-                session.Player.SpellManager.UpdateSpell(actionTier.Action, actionTier.Tier, requestActionSetChanges.ActionSetIndex);
+                spellManager.UpdateSpell(actionTier.Action, actionTier.Tier, requestActionSetChanges.ActionSetIndex);
 
             session.EnqueueMessageEncrypted(actionSet.BuildServerActionSet());
             if (requestActionSetChanges.ActionTiers.Count > 0)
-                session.Player.SpellManager.SendServerAbilityPoints();
+                spellManager.SendServerAbilityPoints();
 
             // only new AMP can be added with this packet, filter out existing ones
             List<ushort> newAmps = requestActionSetChanges.Amps
