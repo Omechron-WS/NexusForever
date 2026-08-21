@@ -332,8 +332,13 @@ namespace NexusForever.Game.Matching.Queue
         {
             log.LogTrace($"Leave queue request, Character: {player.Identity}, MatchType: {matchType}.");
 
-            IMatchingCharacter character = GetMatchingCharacter(player.Identity);
+            if (!characters.TryGetValue(player.Identity, out IMatchingCharacter character))
+                return;
+
             IMatchingCharacterQueue matchingCharacterQueue = character.GetMatchingCharacterQueue(matchType);
+            if (matchingCharacterQueue == null)
+                return;
+
             matchingCharacterQueue.MatchingQueueGroup.RemoveMatchingQueueProposal(matchingCharacterQueue.MatchingQueueProposal);
         }
 
@@ -344,9 +349,19 @@ namespace NexusForever.Game.Matching.Queue
         {
             log.LogTrace($"Leave queue request, Character: {player.Identity}.");
 
-            IMatchingCharacter character = GetMatchingCharacter(player.Identity);
-            foreach (IMatchingCharacterQueue matchingCharacterQueue in character.GetMatchingCharacterQueues())
+            if (!characters.TryGetValue(player.Identity, out IMatchingCharacter character))
+                return;
+
+            IMatchingCharacterQueue[] matchingCharacterQueues = character.GetMatchingCharacterQueues().ToArray();
+            foreach (IMatchingCharacterQueue matchingCharacterQueue in matchingCharacterQueues)
+            {
+                IMatchingCharacterQueue currentMatchingCharacterQueue = character.GetMatchingCharacterQueue(
+                    matchingCharacterQueue.MatchingQueueProposal.MatchType);
+                if (!ReferenceEquals(currentMatchingCharacterQueue, matchingCharacterQueue))
+                    continue;
+
                 matchingCharacterQueue.MatchingQueueGroup.RemoveMatchingQueueProposal(matchingCharacterQueue.MatchingQueueProposal);
+            }
         }
 
         /// <summary>

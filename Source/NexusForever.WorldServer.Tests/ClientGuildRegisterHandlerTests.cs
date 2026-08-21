@@ -8,6 +8,7 @@ using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Guild;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
+using NexusForever.Network;
 using NexusForever.Network.Message;
 using NexusForever.Network.World.Message.Model.Guild;
 using NexusForever.WorldServer.Network;
@@ -149,11 +150,32 @@ namespace NexusForever.WorldServer.Tests
 
         [Theory]
         [InlineData(GuildType.None)]
+        [InlineData((GuildType)8)]
+        [InlineData((GuildType)9)]
+        [InlineData((GuildType)10)]
+        [InlineData((GuildType)11)]
+        [InlineData((GuildType)12)]
+        [InlineData((GuildType)13)]
+        [InlineData((GuildType)14)]
+        [InlineData((GuildType)15)]
+        public void NonClientGuildType_IsRejectedBeforeDependencies(GuildType guildType)
+        {
+            RegisterFixture fixture = CreateFixture(0u);
+
+            Assert.Throws<InvalidPacketValueException>(() =>
+                fixture.Handler.HandleMessage(fixture.Session.Object, CreateMessage(guildType)));
+
+            fixture.Session.VerifyNoOtherCalls();
+            fixture.Player.VerifyNoOtherCalls();
+            fixture.GameTableManager.VerifyNoOtherCalls();
+        }
+
+        [Theory]
         [InlineData(GuildType.Circle)]
         [InlineData(GuildType.ArenaTeam2v2)]
         [InlineData(GuildType.ArenaTeam3v3)]
         [InlineData(GuildType.ArenaTeam5v5)]
-        public void OtherGuildType_HasNoNewMinimumLevelOrFormulaGate(GuildType guildType)
+        public void OtherClientGuildType_HasNoNewMinimumLevelOrFormulaGate(GuildType guildType)
         {
             RegisterFixture fixture = CreateFixture(0u);
             ClientGuildRegister message = CreateMessage(guildType);

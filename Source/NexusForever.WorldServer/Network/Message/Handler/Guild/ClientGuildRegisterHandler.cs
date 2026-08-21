@@ -5,6 +5,7 @@ using NexusForever.Game.Static.Entity;
 using NexusForever.Game.Static.Guild;
 using NexusForever.GameTable;
 using NexusForever.GameTable.Model;
+using NexusForever.Network;
 using NexusForever.Network.Message;
 using NexusForever.Network.World.Message.Model.Guild;
 
@@ -29,6 +30,15 @@ namespace NexusForever.WorldServer.Network.Message.Handler.Guild
 
         public void HandleMessage(IWorldSession session, ClientGuildRegister guildRegister)
         {
+            if (guildRegister.GuildType is not (GuildType.Guild
+                or GuildType.Circle
+                or GuildType.WarParty
+                or GuildType.ArenaTeam2v2
+                or GuildType.ArenaTeam3v3
+                or GuildType.ArenaTeam5v5
+                or GuildType.Community))
+                throw new InvalidPacketValueException();
+
             IGuildResultInfo GetResult()
             {
                 uint? minimumLevelFormulaId = guildRegister.GuildType switch
