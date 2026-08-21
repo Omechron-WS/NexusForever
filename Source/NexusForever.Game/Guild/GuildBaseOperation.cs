@@ -207,6 +207,9 @@ namespace NexusForever.Game.Guild
                 if (!member.Rank.HasPermission(GuildRankPermission.CreateAndRemoveRank))
                     return new GuildResultInfo(GuildResult.RankLacksRankRenamePermission);
 
+                if (operation.Rank > 9u)
+                    return new GuildResultInfo(GuildResult.InvalidRank, Identity, operation.TextValue, operation.Rank);
+
                 if (GetRank((byte)operation.Rank) != null)
                     return new GuildResultInfo(GuildResult.InvalidRank, Identity, operation.TextValue, operation.Rank);
 
@@ -241,6 +244,9 @@ namespace NexusForever.Game.Guild
             {
                 if (!member.Rank.HasPermission(GuildRankPermission.CreateAndRemoveRank))
                     return new GuildResultInfo(GuildResult.RankLacksRankRenamePermission);
+
+                if (operation.Rank > 9u)
+                    return new GuildResultInfo(GuildResult.InvalidRank, Identity, operation.TextValue, operation.Rank);
 
                 rank = GetRank((byte)operation.Rank);
                 if (rank == null)
@@ -278,6 +284,9 @@ namespace NexusForever.Game.Guild
                 if (!member.Rank.HasPermission(GuildRankPermission.RenameRank))
                     return new GuildResultInfo(GuildResult.RankLacksRankRenamePermission);
 
+                if (operation.Rank > 9u)
+                    return new GuildResultInfo(GuildResult.InvalidRank, Identity, operation.TextValue, operation.Rank);
+
                 rank = GetRank((byte)operation.Rank);
                 if (rank == null)
                     return new GuildResultInfo(GuildResult.InvalidRank, Identity, operation.TextValue, operation.Rank);
@@ -314,6 +323,9 @@ namespace NexusForever.Game.Guild
             {
                 if (!member.Rank.HasPermission(GuildRankPermission.EditLowerRankPermissions))
                     return new GuildResultInfo(GuildResult.RankLacksRankRenamePermission);
+
+                if (operation.Rank > 9u)
+                    return new GuildResultInfo(GuildResult.InvalidRank, Identity, operation.TextValue, operation.Rank);
 
                 rank = GetRank((byte)operation.Rank);
                 if (rank == null)
