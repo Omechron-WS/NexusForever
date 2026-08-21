@@ -135,7 +135,7 @@ namespace NexusForever.Game.Map.Instance
                 if (result.HasValue)
                 {
                     pending.Player.OnTeleportToFailed(result.Value);
-                    return;
+                    continue;
                 }
 
                 UpdatePosition(pending.Player, pending.MapPosition);

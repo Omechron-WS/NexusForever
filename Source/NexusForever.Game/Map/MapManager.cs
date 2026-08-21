@@ -77,7 +77,7 @@ namespace NexusForever.Game.Map
                 if (result.HasValue)
                 {
                     pending.Player.OnTeleportToFailed(result.Value);
-                    return;
+                    continue;
                 }
 
                 map.EnqueueAdd(pending.Player, pending.MapPosition);
