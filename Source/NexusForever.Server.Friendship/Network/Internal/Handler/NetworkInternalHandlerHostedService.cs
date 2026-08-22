@@ -27,6 +27,7 @@ namespace NexusForever.Server.Friendship.Network.Internal.Handler
             await _bus.Subscribe<FriendshipAccountRemoveMessage>();
             await _bus.Subscribe<FriendshipAccountStatusUpdateMessage>();
             await _bus.Subscribe<FriendshipInviteMarkSeenMessage>();
+            await _bus.Subscribe<FriendshipIdentityInviteRequestMessage>();
             await _bus.Subscribe<FriendshipNameInviteRequestMessage>();
             await _bus.Subscribe<FriendshipInviteResponseMessage>();
             await _bus.Subscribe<FriendshipLocationRequestMessage>();

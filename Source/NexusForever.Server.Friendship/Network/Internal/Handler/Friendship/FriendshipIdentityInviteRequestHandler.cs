@@ -24,7 +24,7 @@ namespace NexusForever.Server.Friendship.Network.Internal.Handler.Friendship
 
         public FriendshipIdentityInviteRequestHandler(
             FriendshipContext context,
-            IInternalMessagePublisher messagePublisher,
+            OutboxMessagePublisher messagePublisher,
             CharacterManager characterManager,
             FriendInviteValidator inviteValidator,
             FriendRequestHandler friendRequestHandler,

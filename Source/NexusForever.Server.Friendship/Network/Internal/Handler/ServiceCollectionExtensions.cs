@@ -19,6 +19,7 @@ namespace NexusForever.Server.Friendship.Network.Internal.Handler
             sc.AddRebusHandler<FriendshipAccountRemoveHandler>();
             sc.AddRebusHandler<FriendshipAccountStatusUpdateHandler>();
             sc.AddRebusHandler<FriendshipInviteMarkSeenHandler>();
+            sc.AddRebusHandler<FriendshipIdentityInviteRequestHandler>();
             sc.AddRebusHandler<FriendshipNameInviteRequestHandler>();
             sc.AddRebusHandler<FriendshipInviteResponseHandler>();
             sc.AddRebusHandler<FriendshipLocationRequestHandler>();

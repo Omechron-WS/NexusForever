@@ -99,8 +99,8 @@ namespace NexusForever.WorldServer.Tests
         public void ClientType_ByIdentityForwardsAuthenticatedAndTargetIdentities(FriendshipType type)
         {
             (Mock<IWorldSession> session, Mock<IPlayer> player) = CreateSession();
-            FriendshipNameInviteRequestMessage published = null;
-            var publisher = CreatePublisher(message => published = message);
+            FriendshipIdentityInviteRequestMessage published = null;
+            var publisher = CreateIdentityPublisher(message => published = message);
             var handler = new ClientFriendshipAddByIdentityHandler(publisher.Object);
 
             handler.HandleMessage(session.Object, CreateIdentityMessage(type));
@@ -136,6 +136,17 @@ namespace NexusForever.WorldServer.Tests
             publisher
                 .Setup(value => value.PublishAsync(It.IsAny<object>()))
                 .Callback<object>(message => published(Assert.IsType<FriendshipNameInviteRequestMessage>(message)))
+                .Returns(Task.CompletedTask);
+            return publisher;
+        }
+
+        private static Mock<IInternalMessagePublisher> CreateIdentityPublisher(
+            Action<FriendshipIdentityInviteRequestMessage> published)
+        {
+            var publisher = new Mock<IInternalMessagePublisher>(MockBehavior.Strict);
+            publisher
+                .Setup(value => value.PublishAsync(It.IsAny<object>()))
+                .Callback<object>(message => published(Assert.IsType<FriendshipIdentityInviteRequestMessage>(message)))
                 .Returns(Task.CompletedTask);
             return publisher;
         }
